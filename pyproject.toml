@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wednesday-tts"
+version = "0.1.0"
+description = "Wednesday TTS — text normalization and speech synthesis service"
+requires-python = ">=3.10"
+dependencies = [
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+pocket = [
+    "pocket-tts",
+    "sounddevice",
+    "soundfile",
+    "numpy",
+]
+kokoro = [
+    "kokoro",
+    "sounddevice",
+    "numpy",
+]
+test = [
+    "pytest>=7",
+    "pytest-cov",
+]
+dev = [
+    "wednesday-tts[test]",
+    "ruff",
+    "pre-commit",
+]
+
+[project.scripts]
+wednesday-tts = "wednesday_tts.server.app:main"
+wednesday-tts-daemon = "wednesday_tts.server.daemon:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100

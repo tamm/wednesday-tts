@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Venvs
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Node (prettier pre-commit env)
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plan — living document, keep updated as work progresses
+PLAN.md
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Claude Code project-local settings (keep .claude/settings.json out — it's machine-specific)
+.claude/settings.local.json
+
+# Environment / secrets
+.env
+.env.*
+*.local.json
+tts-config.json
+
+# Voice model files — ignore by default, but track the bundled DWP voice
+voices/**/*.wav
+voices/**/*.safetensors
+voices/**/*.pt
+voices/**/*.bin
+!voices/dwp/*.safetensors
+
+# Data files with local paths or API keys
+config/tts-config.json
+
+# Temp server source copies
+tts-service.py
+tts-server.py
+.claude/

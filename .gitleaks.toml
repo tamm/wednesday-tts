@@ -1,0 +1,17 @@
+# Gitleaks configuration for wednesday-tts
+# All default rules remain active. Only allowlist entries are defined here.
+
+[allowlist]
+  description = "Project-level allowlist"
+
+  # data/ holds pronunciation dictionaries (words, not secrets)
+  paths = [
+    '''^data/''',
+  ]
+
+  # Test fixtures may contain placeholder strings that look like secrets
+  regexTarget = "line"
+  regexes = [
+    # Pytest fixture placeholders and example tokens used in unit tests
+    '''(?i)(fake|dummy|example|test|fixture|placeholder)[_-]?(key|token|secret|password|api.?key)''',
+  ]

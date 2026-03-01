@@ -1,0 +1,41 @@
+{
+  "_comment": "Wednesday TTS config template. Copy to ~/.claude/tts-config.json and fill in real paths.",
+  "active_model": "pocket",
+  "max_chars": 500,
+  "models": {
+    "pocket": {
+      "_comment": "Voice-cloned Pocket TTS via kokoro-style venv. Recommended for local Windows use.",
+      "venv_path": "C:\\path\\to\\your\\tts-venv",
+      "voice": "C:\\path\\to\\your\\voice.safetensors",
+      "fallback_voice": "fantine",
+      "speed": 1.25,
+      "lsd_decode_steps": 1,
+      "noise_clamp": null,
+      "eos_threshold": -4.0
+    },
+    "kokoro": {
+      "_comment": "Kokoro TTS using a built-in named voice. No voice clone needed.",
+      "venv_path": "C:\\path\\to\\your\\tts-venv",
+      "voice": "af_bella",
+      "speed": 1.3,
+      "samplerate": 24000
+    },
+    "soprano": {
+      "_comment": "Soprano transformer-based TTS. Requires CUDA GPU.",
+      "venv_path": "C:\\path\\to\\your\\soprano-venv",
+      "backend": "transformers",
+      "device": "cuda",
+      "temperature": 0.6,
+      "top_p": 0.94,
+      "repetition_penalty": 1.25,
+      "samplerate": 32000
+    },
+    "chatterbox": {
+      "_comment": "Chatterbox voice-cloning TTS. Requires CUDA GPU and a WAV reference clip.",
+      "venv_path": "C:\\path\\to\\your\\chatterbox-venv",
+      "device": "cuda",
+      "samplerate": 16000,
+      "voice_clone": "C:\\path\\to\\your\\reference-clip.wav"
+    }
+  }
+}
