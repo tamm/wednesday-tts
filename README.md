@@ -19,6 +19,12 @@ The script detects Python, creates a venv, installs Pocket TTS with the bundled 
 male voice, writes `~/.claude/tts-config.json`, and offers to wire up the Claude Code hooks
 and auto-start.
 
+**Requires a HuggingFace login** to download the Pocket TTS model weights:
+
+```bash
+hf auth login
+```
+
 Requires Python 3.10+. Works on macOS, Linux, and Windows (Git Bash / MSYS2).
 
 ---

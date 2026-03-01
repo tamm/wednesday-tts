@@ -38,7 +38,9 @@ def normalize_file_extensions(text, filenames_dict):
 def normalize_tilde_paths(text):
     """Convert tilde paths to spoken form.
 
-    ~/.claude/hooks/ -> "tilde slash dot claude slash hooks"
+    ~/dev/foo -> "home slash dev slash foo"
+    ~/.claude/hooks/ -> "home slash dot claude slash hooks"
+    ~ alone -> "tilde"
     """
     def tilde_path_to_speech(m):
         path = m.group(0).rstrip('/')
@@ -46,14 +48,18 @@ def normalize_tilde_paths(text):
         spoken = []
         for p in parts:
             if p == '~':
-                spoken.append('tilde')
+                spoken.append('home')
             elif p.startswith('.'):
                 spoken.append('dot ' + p[1:])
             else:
                 spoken.append(p)
         return ' slash '.join(spoken)
 
-    text = re.sub(r'~/[^\s,;:!?\)]+', tilde_path_to_speech, text)
+    # ~/path or bare ~/
+    text = re.sub(r'~/[^\s,;:!?\)]*', tilde_path_to_speech, text)
+
+    # Bare ~ not followed by /
+    text = re.sub(r'(?<!\w)~(?!/)', 'tilde', text)
     return text
 
 

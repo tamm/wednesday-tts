@@ -27,15 +27,31 @@ def test_bare_extension(sample_filenames_dict):
 
 def test_tilde_path():
     result = normalize_tilde_paths("~/.claude/hooks/")
-    assert "tilde" in result
+    assert "home" in result
     assert "dot claude" in result
     assert "hooks" in result
 
 
 def test_tilde_path_dotfile():
     result = normalize_tilde_paths("~/.bashrc")
-    assert "tilde" in result
+    assert "home" in result
     assert "dot bashrc" in result
+
+
+def test_tilde_path_plain():
+    result = normalize_tilde_paths("~/dev/foo")
+    assert result == "home slash dev slash foo"
+
+
+def test_bare_tilde():
+    result = normalize_tilde_paths("use ~ as shorthand")
+    assert "tilde" in result
+    assert result == "use tilde as shorthand"
+
+
+def test_bare_tilde_slash():
+    result = normalize_tilde_paths("~/")
+    assert result == "home"
 
 
 def test_slash_path():
