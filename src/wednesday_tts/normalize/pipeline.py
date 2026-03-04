@@ -22,6 +22,7 @@ from wednesday_tts.normalize.numbers import (
     normalize_regular_decimals, normalize_http_codes, normalize_repeated_punctuation,
     normalize_standalone_punctuation,
 )
+from wednesday_tts.normalize.dates import normalize_years, normalize_dates
 from wednesday_tts.normalize.versions import normalize_model_versions, normalize_semver
 from wednesday_tts.normalize.camelcase import normalize_all_caps, normalize_camelcase
 from wednesday_tts.normalize.markdown import clean_text_for_speech
@@ -83,6 +84,12 @@ def normalize_technical(text, dictionary=None, filenames_dict=None):
 
     # 1b. Progress fractions
     text = normalize_fractions(text)
+
+    # 1b2. Slash-format dates (must run AFTER fractions, BEFORE slash paths)
+    text = normalize_dates(text)
+
+    # 1b3. Standalone years (must run BEFORE generic number rules eat them)
+    text = normalize_years(text)
 
     # 1c. Model/tool version strings
     text = normalize_model_versions(text)

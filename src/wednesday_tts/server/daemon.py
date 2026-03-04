@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import signal
 import socket
 import struct
@@ -32,6 +33,114 @@ from .backends import REGISTRY, TTSBackend
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.25"))
+
+# ---------------------------------------------------------------------------
+# Per-request voice override cache
+# ---------------------------------------------------------------------------
+_voice_cache: dict[str, TTSBackend] = {}
+_voice_cache_lock = threading.Lock()
+
+
+def _get_override_backend(name: str) -> TTSBackend | None:
+    """Lazy-init and cache a secondary backend for per-request voice overrides."""
+    with _voice_cache_lock:
+        if name in _voice_cache:
+            return _voice_cache[name]
+    # Load outside lock (may be slow for neural backends, instant for SAM)
+    cls = REGISTRY.get(name)
+    if cls is None:
+        print(f"[voice-override] Unknown backend: {name!r}", flush=True)
+        return None
+    try:
+        # Read config for this backend if available
+        cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+        model_cfg: dict = {}
+        if os.path.isfile(cfg_path):
+            with open(cfg_path) as f:
+                model_cfg = json.load(f).get("models", {}).get(name, {})
+        # Filter out comment keys
+        kwargs = {k: v for k, v in model_cfg.items() if not k.startswith("_")}
+        backend = cls(**kwargs)
+        print(f"[voice-override] Loading {name}...", flush=True)
+        backend.load()
+        print(f"[voice-override] {name} ready.", flush=True)
+    except Exception as exc:
+        print(f"[voice-override] Failed to load {name}: {exc}", flush=True)
+        return None
+    with _voice_cache_lock:
+        _voice_cache[name] = backend
+    return backend
+
+
+def _split_voice_segments(
+    text: str, pattern: "re.Pattern[str]"
+) -> list[tuple[str | None, str]]:
+    """Split text into segments of (voice_name, text).
+
+    Plain text segments have voice_name=None (use primary backend).
+    Tagged segments like {voice:sam}words{/voice} have voice_name="sam".
+
+    Returns a list of (voice, text) tuples preserving original order.
+    Empty segments are skipped.
+    """
+    segments: list[tuple[str | None, str]] = []
+    last_end = 0
+    for m in pattern.finditer(text):
+        # Plain text before this tag
+        before = text[last_end:m.start()].strip()
+        if before:
+            segments.append((None, before))
+        # Tagged segment
+        voice_name = m.group(1)
+        tagged_text = m.group(2).strip()
+        if tagged_text:
+            segments.append((voice_name, tagged_text))
+        last_end = m.end()
+    # Trailing plain text after last tag
+    after = text[last_end:].strip()
+    if after:
+        segments.append((None, after))
+    # If no tags found at all, return the whole text as one segment
+    if not segments and text.strip():
+        segments.append((None, text.strip()))
+    return segments
+
+
+def _render_segments(
+    segments: list[tuple[str | None, str]],
+    primary_backend: TTSBackend,
+    speed: float,
+    gen_snap: int,
+) -> "np.ndarray | None":
+    """Render a list of voice segments and concatenate into one audio array.
+
+    Each segment is rendered with its specified backend (or the primary if None).
+    All audio is resampled to the primary backend's sample rate before concatenation.
+    """
+    chunks: list[np.ndarray] = []
+    target_rate = primary_backend.sample_rate
+
+    for voice_name, segment_text in segments:
+        if _stop_gen != gen_snap:
+            break
+
+        if voice_name and voice_name != _active_backend_name:
+            render_backend = _get_override_backend(voice_name)
+            if render_backend is None:
+                render_backend = primary_backend
+        else:
+            render_backend = primary_backend
+
+        audio = render_backend.generate(segment_text, speed=speed)
+        if audio is not None:
+            if render_backend.sample_rate != target_rate:
+                audio = _upsample(audio, render_backend.sample_rate, target_rate)
+            chunks.append(audio)
+
+    if not chunks:
+        return None
+    return np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+
 
 # ---------------------------------------------------------------------------
 # Telemetry
@@ -124,6 +233,7 @@ _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
 
 playback_queue: queue.Queue = queue.Queue()
 _active_backend: TTSBackend | None = None
+_active_backend_name: str = ""
 
 
 def _stop_playback() -> None:
@@ -412,11 +522,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 except ValueError:
                     pass
             # Optional content_type prefix embedded in text: __ct:markdown__
-            import re
-            _ct = re.match(r"^__ct:(\w+)__", text)
+            _ct = re.match(r"^__ct:([a-zA-Z]+)__", text)
             if _ct:
                 content_type = _ct.group(1)
                 text = text[_ct.end():]
+            # Strip wall-clock timestamp prefix added by hook: __t:1234567890.123__
+            text = re.sub(r"^__t:[\d.]+__", "", text)
 
         elif message.startswith("SPEED:"):
             parts = message.split(":", 2)
@@ -431,13 +542,20 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         if content_type != "normalized":
             text = run_normalize(text, content_type=content_type)
 
+        # ── Parse voice segments: split on {voice:X}...{/voice} tags ─────
+        _VOICE_TAG_RE = re.compile(r"\{voice:(\w+)\}(.*?)\{/voice\}", re.DOTALL)
+        segments = _split_voice_segments(text, _VOICE_TAG_RE)
+        has_mixed_voices = any(v is not None for v, _ in segments)
+
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
 
         # Streaming path: SEQ:0 with a streaming-capable backend plays audio
         # directly through an OutputStream for lowest time-to-first-sound.
+        # Disabled for mixed-voice messages (need batch to stitch segments).
         use_streaming = (
             seq == 0
+            and not has_mixed_voices
             and getattr(backend, "supports_streaming", False)
             and _stop_gen == gen_snap
         )
@@ -451,8 +569,8 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             conn.send(b"ok")
             return
 
-        # Batch render
-        audio = backend.generate(text, speed=speed)
+        # Batch render — stitch segments from different backends
+        audio = _render_segments(segments, backend, speed, gen_snap)
 
         # ── Enqueue in order ──────────────────────────────────────────────
         if seq is not None:
@@ -510,9 +628,48 @@ def main() -> None:
         print(f"Unknown TTS_BACKEND={backend_name!r}. Choose from: {', '.join(REGISTRY)}", flush=True)
         raise SystemExit(1)
 
-    global _active_backend
-    backend = backend_cls()
+    # Load config file — same path and shape as app.py uses on Windows.
+    # Env vars override config file values.
+    _config_path = os.path.join(os.path.expanduser("~"), ".claude", "tts-config.json")
+    _model_config: dict = {}
+    try:
+        import json as _json
+        with open(_config_path, encoding="utf-8") as _f:
+            _cfg = _json.load(_f)
+        _active_model = os.environ.get("TTS_BACKEND") or _cfg.get("active_model", backend_name)
+        _model_config = _cfg.get("models", {}).get(_active_model, {})
+        print(f"Loaded config from {_config_path} (model: {_active_model})", flush=True)
+    except FileNotFoundError:
+        print(f"No config file at {_config_path} — using env vars only", flush=True)
+    except Exception as exc:
+        print(f"Warning: could not load config {_config_path}: {exc}", flush=True)
+
+    # Build kwargs from config, then override with env vars
+    _kwargs: dict = {}
+    if backend_name == "pocket":
+        if _model_config.get("voice"):
+            _kwargs["voice"] = _model_config["voice"]
+        if _model_config.get("fallback_voice"):
+            _kwargs["fallback_voice"] = _model_config["fallback_voice"]
+        if _model_config.get("speed") is not None:
+            _kwargs["speed"] = _model_config["speed"]
+        if _model_config.get("lsd_decode_steps") is not None:
+            _kwargs["lsd_decode_steps"] = _model_config["lsd_decode_steps"]
+        if _model_config.get("noise_clamp") is not None:
+            _kwargs["noise_clamp"] = _model_config["noise_clamp"]
+        if _model_config.get("eos_threshold") is not None:
+            _kwargs["eos_threshold"] = _model_config["eos_threshold"]
+        if _model_config.get("frames_after_eos") is not None:
+            _kwargs["frames_after_eos"] = _model_config["frames_after_eos"]
+        # Env var overrides config
+        _env_voice = os.environ.get("POCKET_TTS_VOICE")
+        if _env_voice:
+            _kwargs["voice"] = _env_voice
+
+    global _active_backend, _active_backend_name
+    backend = backend_cls(**_kwargs)
     _active_backend = backend
+    _active_backend_name = backend_name
     print(f"Loading {backend_name} model...", flush=True)
     try:
         backend.load()

@@ -15,6 +15,7 @@ def speak(
     text: str,
     content_type: str = "markdown",
     server: str = "http://localhost:5678",
+    voice: str | None = None,
 ) -> bool:
     """Send text to the TTS service for synthesis.
 
@@ -22,12 +23,17 @@ def speak(
         text:         Text to speak. Interpreted according to content_type.
         content_type: "markdown" (default) | "plain" | "normalized"
         server:       Base URL of the TTS service.
+        voice:        Optional voice override (e.g. "sam") for this request only.
 
     Returns:
         True if the request was accepted, False on any error.
     """
     if not text:
         return False
+
+    # Wrap text with voice tags if a per-request override is requested
+    if voice:
+        text = f"{{voice:{voice}}}{text}{{/voice}}"
 
     url = f"{server}/speak?content_type={content_type}"
     data = text.encode("utf-8")
@@ -66,6 +72,17 @@ def normalize(
             return resp.read().decode("utf-8")
     except (urllib.error.URLError, OSError, ConnectionError):
         return ""
+
+
+def voice_tag(text: str, voice: str) -> str:
+    """Wrap text with voice override tags for the daemon.
+
+    Example::
+
+        tagged = voice_tag("Exterminate", "sam")
+        # "{voice:sam}Exterminate{/voice}"
+    """
+    return f"{{voice:{voice}}}{text}{{/voice}}"
 
 
 def is_server_running(server: str = "http://localhost:5678") -> bool:

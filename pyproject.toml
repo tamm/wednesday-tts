@@ -23,6 +23,10 @@ kokoro = [
     "sounddevice",
     "numpy",
 ]
+sam = [
+    "samtts",
+    "numpy",
+]
 test = [
     "pytest>=7",
     "pytest-cov",

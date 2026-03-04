@@ -36,6 +36,13 @@
       "device": "cuda",
       "samplerate": 16000,
       "voice_clone": "C:\\path\\to\\your\\reference-clip.wav"
+    },
+    "sam": {
+      "_comment": "SAM (Software Automatic Mouth) — 1982 retro formant synth. Pure Python, no GPU, no model files. Gloriously robotic.",
+      "speed": 72,
+      "pitch": 64,
+      "mouth": 128,
+      "throat": 128
     }
   }
 }

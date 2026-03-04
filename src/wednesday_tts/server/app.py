@@ -287,6 +287,17 @@ def get_model():
             backend.load()
             current_model = backend
 
+        elif model_name == "sam":
+            from .backends.sam import SAMBackend
+            backend = SAMBackend(
+                speed=model_config.get("speed", 72),
+                pitch=model_config.get("pitch", 64),
+                mouth=model_config.get("mouth", 128),
+                throat=model_config.get("throat", 128),
+            )
+            backend.load()
+            current_model = backend
+
         else:
             raise ValueError(f"Unknown model: {model_name!r}")
 

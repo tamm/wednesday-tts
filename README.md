@@ -42,6 +42,49 @@ Claude response
 
 ---
 
+## Backends
+
+| Backend | Quality | Speed | GPU | Install extra | Notes |
+|---------|---------|-------|-----|---------------|-------|
+| **Pocket** | Neural, voice-cloned | Fast, streaming | No | `.[pocket]` | Default. DWP Aussie voice bundled |
+| **Kokoro** | Neural, built-in voices | Fast | No | `.[kokoro]` | Good quality, many voices |
+| **SAM** | Retro 8-bit formant | Instant | No | `.[sam]` | 1982 Commodore 64 synth. Pure Python, zero deps. Gloriously robotic |
+| **Soprano** | Neural transformer | Slow | Yes | manual | High quality, needs CUDA |
+| **Chatterbox** | Neural, voice-cloned | Slow | Yes | manual | Voice cloning, needs CUDA |
+
+---
+
+## Voice switching
+
+You can switch voices mid-sentence using `{voice:X}...{/voice}` tags in any text sent to the daemon:
+
+```
+Normal speech here. {voice:sam}I am now a robot from 1982.{/voice} And back to normal.
+```
+
+The daemon renders each segment with its respective backend, resamples to a common sample rate, and stitches the audio together seamlessly. Override backends are lazy-loaded on first use and cached.
+
+From the Python client API:
+
+```python
+from wednesday_tts.client.api import speak, voice_tag
+
+# Whole message in SAM
+speak("Exterminate", voice="sam")
+
+# Build mixed text manually
+text = f"Hello. {voice_tag('I am a robot', 'sam')} Goodbye."
+speak(text)
+```
+
+In raw daemon protocol (hooks):
+
+```
+SEQ:0:1.0:__ct:markdown__Normal text. {voice:sam}Robot text.{/voice} More normal.
+```
+
+---
+
 ## Manual setup
 
 <details>
@@ -57,8 +100,11 @@ uv pip install -e ".[pocket]"
 # Kokoro — built-in named voices, no voice file needed
 uv pip install -e ".[kokoro]"
 
-# Both + dev tools
-uv pip install -e ".[pocket,kokoro,dev]"
+# SAM — retro robot voice, pure Python, no model files
+uv pip install -e ".[sam]"
+
+# Multiple backends + dev tools
+uv pip install -e ".[pocket,sam,dev]"
 ```
 
 **Config**
@@ -69,9 +115,10 @@ cp config/tts-config-template.json ~/.claude/tts-config.json
 
 | Key              | Value                                                                 |
 | ---------------- | --------------------------------------------------------------------- |
-| `active_model`   | `pocket` (default) or `kokoro`                                        |
+| `active_model`   | `pocket` (default), `kokoro`, or `sam`                                |
 | `voice` (pocket) | Path to a `.safetensors` file — bundled DWP voice is at `voices/dwp/` |
 | `voice` (kokoro) | Built-in name e.g. `af_bella`                                         |
+| `speed` (sam)    | 1–255 (default 72). Higher = slower. Also: `pitch`, `mouth`, `throat` |
 
 **Run the server**
 
@@ -132,7 +179,7 @@ To use a different voice, point `voice` in `~/.claude/tts-config.json` at any `.
 ```
 src/wednesday_tts/
   normalize/      17 normalization modules + pipeline
-  server/         Flask HTTP server + backends (pocket, kokoro, soprano, chatterbox)
+  server/         Flask HTTP server + backends (pocket, kokoro, sam, soprano, chatterbox)
   client/         Thin HTTP client library
   platform.py     Cross-platform helpers
 integrations/
@@ -141,7 +188,7 @@ data/             tts-dictionary.json, tts-filenames.json
 config/           Config template + macOS plist
 scripts/          Start/stop/install scripts
 docs/normalization/  Rule library (15 rule docs)
-tests/            406 tests
+tests/            489 tests
 ```
 
 ---
