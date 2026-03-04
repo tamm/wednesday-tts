@@ -17,6 +17,7 @@ If the server is not running, the hook exits silently (no error, no crash).
 import hashlib
 import json
 import os
+import socket
 import sys
 import time
 import urllib.request
@@ -26,6 +27,8 @@ TTS_URL = "http://localhost:5678/speak?content_type=markdown"
 HEALTH_URL = "http://localhost:5678/health"
 SPOKEN_TTL = 240  # seconds — don't repeat same text within this window
 CONNECT_TIMEOUT = 1.0  # seconds — bail fast if server not running
+UNIX_SOCKET_PATH = "/tmp/tts-daemon.sock"
+_IS_WINDOWS = os.name == "nt"
 
 
 # ---------------------------------------------------------------------------
@@ -157,24 +160,53 @@ def _get_unspoken_assistant_text(transcript_path: str | None, session_id: str) -
 # ---------------------------------------------------------------------------
 
 def _post_to_server(text: str, session_id: str) -> bool:
-    """POST text to the wednesday-tts server. Returns True on success."""
-    body = text.encode("utf-8")
-    req = urllib.request.Request(
-        TTS_URL,
-        data=body,
-        headers={
-            "Content-Type": "text/plain; charset=utf-8",
-            "X-Session-Id": session_id,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT) as resp:
-            return resp.status < 400
-    except urllib.error.URLError:
-        return False  # server not running — silent fail
-    except Exception:
-        return False
+    """Send text to the wednesday-tts server. Returns True on success.
+
+    On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
+    On Windows: HTTP POST to localhost:5678.
+    """
+    if _IS_WINDOWS:
+        body = text.encode("utf-8")
+        req = urllib.request.Request(
+            TTS_URL,
+            data=body,
+            headers={
+                "Content-Type": "text/plain; charset=utf-8",
+                "X-Session-Id": session_id,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT) as resp:
+                return resp.status < 400
+        except urllib.error.URLError:
+            return False
+        except Exception:
+            return False
+    else:
+        # Unix socket — daemon protocol: SEQ:0:speed:content_type:text
+        try:
+            cmd = f"SEQ:0:1.0:__ct:markdown__{text}\n".encode("utf-8")
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(CONNECT_TIMEOUT)
+            s.connect(UNIX_SOCKET_PATH)
+            try:
+                s.sendall(cmd)
+                s.settimeout(0.5)
+                try:
+                    s.recv(64)
+                except Exception:
+                    pass
+                return True
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
+            return False
+        except Exception:
+            return False
 
 
 # ---------------------------------------------------------------------------

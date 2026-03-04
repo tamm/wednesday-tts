@@ -9,8 +9,8 @@ PID_FILE="/tmp/tts-daemon.pid"
 SOCKET_PATH="/tmp/tts-daemon.sock"
 LOCK_PATH="/tmp/tts-daemon.lock"
 SUPPRESS_PATH="/tmp/dictation-suppress"
-PLIST_LABEL="com.user.tts-daemon"
-PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+PLIST_LABEL="com.tamm.tts-server"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.tamm.tts-server.plist"
 GUI_TARGET="gui/$(id -u)"
 
 if [[ -f "$MUTE_FILE" ]]; then

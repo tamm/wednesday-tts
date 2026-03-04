@@ -27,6 +27,8 @@ import time
 SERVICE_HOST = "127.0.0.1"
 SERVICE_PORT = 5678
 SERVICE_URL = f"http://localhost:{SERVICE_PORT}"
+UNIX_SOCKET_PATH = "/tmp/tts-daemon.sock"
+_IS_WINDOWS = os.name == "nt"
 
 # Path to mute sentinel file (shared with old hooks via tts_platform)
 _TEMP = tempfile.gettempdir()
@@ -85,36 +87,55 @@ def _get_last_assistant_message(transcript_path: str | None) -> str:
 
 
 def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
-    """POST text to /speak using a raw socket (fire-and-forget, no wait for response).
+    """Send text to the TTS server.
+
+    On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
+    On Windows: raw HTTP POST to localhost:5678.
 
     Prepends __t:<wall_time>__ for server-side end-to-end timing.
-    Sets content_type=markdown so the server runs the full normalization pipeline.
     """
     body_str = f"__t:{wall_time}__" + text
-    body = body_str.encode("utf-8")
 
-    request_line = "POST /speak?content_type=markdown HTTP/1.0\r\n"
-    headers = (
-        f"Content-Length: {len(body)}\r\n"
-        f"X-Session-Id: {session_id}\r\n"
-        "\r\n"
-    )
-    raw = (request_line + headers).encode("utf-8") + body
-
-    s = socket.create_connection((SERVICE_HOST, SERVICE_PORT), timeout=2)
-    try:
-        s.sendall(raw)
-        # Give the server a moment to read the request before we close
-        s.settimeout(0.5)
+    if _IS_WINDOWS:
+        body = body_str.encode("utf-8")
+        request_line = "POST /speak?content_type=markdown HTTP/1.0\r\n"
+        headers = (
+            f"Content-Length: {len(body)}\r\n"
+            f"X-Session-Id: {session_id}\r\n"
+            "\r\n"
+        )
+        raw = (request_line + headers).encode("utf-8") + body
+        s = socket.create_connection((SERVICE_HOST, SERVICE_PORT), timeout=2)
         try:
-            s.recv(256)
-        except Exception:
-            pass
-    finally:
+            s.sendall(raw)
+            s.settimeout(0.5)
+            try:
+                s.recv(256)
+            except Exception:
+                pass
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    else:
+        # Unix socket — daemon protocol: SEQ:0:speed:text
+        cmd = f"SEQ:0:1.0:__ct:markdown__{body_str}\n".encode("utf-8")
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(UNIX_SOCKET_PATH)
         try:
-            s.close()
-        except Exception:
-            pass
+            s.sendall(cmd)
+            s.settimeout(0.5)
+            try:
+                s.recv(64)
+            except Exception:
+                pass
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

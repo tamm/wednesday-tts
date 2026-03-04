@@ -155,13 +155,13 @@ hooks = cfg.setdefault("hooks", {})
 added = []
 
 stop = hooks.setdefault("Stop", [])
-cmd_stop = "python ~/.claude/hooks/speak-response.py"
+cmd_stop = "python3 ~/.claude/hooks/speak-response.py"
 if not any(h.get("command") == cmd_stop for h in stop):
     stop.append({"command": cmd_stop})
     added.append("Stop")
 
 pre = hooks.setdefault("PreToolUse", [])
-cmd_pre = "python ~/.claude/hooks/pre-tool-speak.py"
+cmd_pre = "python3 ~/.claude/hooks/pre-tool-speak.py"
 if not any(h.get("command") == cmd_pre for h in pre):
     pre.append({"command": cmd_pre})
     added.append("PreToolUse")
@@ -180,8 +180,8 @@ PYEOF
         warn "~/.claude/settings.json not found — create it with:"
         echo '  {'
         echo '    "hooks": {'
-        echo '      "Stop":       [{ "command": "python ~/.claude/hooks/speak-response.py" }],'
-        echo '      "PreToolUse": [{ "command": "python ~/.claude/hooks/pre-tool-speak.py" }]'
+        echo '      "Stop":       [{ "command": "python3 ~/.claude/hooks/speak-response.py" }],'
+        echo '      "PreToolUse": [{ "command": "python3 ~/.claude/hooks/pre-tool-speak.py" }]'
         echo '    }'
         echo '  }'
     fi
@@ -202,7 +202,7 @@ if [[ "${REPLY:-y}" =~ ^[Yy]?$ ]]; then
             -e "s|REPLACE_WITH_VENV_PATH|$VENV_DIR|g" \
             -e "s|REPLACE_WITH_REPO_PATH|$REPO_DIR|g" \
             "$PLIST_SRC" > "$PLIST_DEST"
-        launchctl load "$PLIST_DEST"
+        launchctl bootstrap gui/$(id -u) "$PLIST_DEST"
         ok "launchd agent loaded — TTS starts at login"
         echo "  Logs: /tmp/wednesday-tts.log  /tmp/wednesday-tts.err"
     elif [[ "$OS" == MINGW* ]] || [[ "$OS" == CYGWIN* ]] || [[ "$OS" == MSYS* ]]; then
