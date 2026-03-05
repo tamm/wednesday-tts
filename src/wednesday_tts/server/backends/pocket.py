@@ -149,15 +149,17 @@ class PocketTTSBackend(TTSBackend):
         use_speed = speed if speed is not None else self._speed
         needs_speed = abs(use_speed - 1.0) > 0.01
 
-        # Fix 5: one OutputStream at a time
+        # One OutputStream at a time.
         with _streaming_lock:
-            # Fix 2: match device native rate (e.g. 48kHz) rather than model rate (24kHz)
-            device_rate = _get_device_samplerate(self.sample_rate)
-
-            # Fix 1: retry OutputStream open/start up to 3 times (PortAudio error -50)
+            # Retry open/start up to 3 times. On each attempt force a full
+            # PortAudio terminate/initialize cycle so err=-50 is recovered.
             out_stream = None
+            device_rate = self.sample_rate  # fallback; updated on each attempt
             for _attempt in range(3):
                 try:
+                    sd._terminate()
+                    sd._initialize()
+                    device_rate = _get_device_samplerate(self.sample_rate)
                     out_stream = sd.OutputStream(
                         samplerate=device_rate, channels=1, dtype="float32",
                     )
@@ -175,7 +177,7 @@ class PocketTTSBackend(TTSBackend):
                             pass
                         out_stream = None
                     if _attempt < 2:
-                        time.sleep(0.5)
+                        time.sleep(1.0)
             if out_stream is None:
                 print(
                     "[TTS] play_streaming: failed to open audio stream after 3 attempts, aborting.",
@@ -189,6 +191,9 @@ class PocketTTSBackend(TTSBackend):
                 remainder_chunks: list[np.ndarray] = []
                 stopped = False
 
+                # Collect all chunks first under the model lock, then write
+                # outside it so a stalled audio write never blocks generate().
+                chunks_to_write: list[np.ndarray] = []
                 with self._lock:
                     for audio_chunk in self._model.generate_audio_stream(
                         self._voice_state,
@@ -198,15 +203,22 @@ class PocketTTSBackend(TTSBackend):
                         if self._active_stream is None:
                             stopped = True
                             break
-
                         arr = audio_chunk.numpy() if hasattr(audio_chunk, "numpy") else np.array(audio_chunk)
                         if arr.ndim > 1:
                             arr = arr.flatten()
-                        if arr.size == 0:
-                            continue
+                        if arr.size > 0:
+                            chunks_to_write.append(arr)
 
+                # Write to stream outside the model lock.
+                # Catch write errors (e.g. PortAudio -50) and bail immediately
+                # rather than blocking indefinitely.
+                for arr in chunks_to_write:
+                    if self._active_stream is None:
+                        stopped = True
+                        break
+
+                    try:
                         if not needs_speed:
-                            # Fix 2: upsample to device rate before writing
                             up = _upsample(arr.astype(np.float32), self.sample_rate, device_rate)
                             out_stream.write(up.reshape(-1, 1))
                         else:
@@ -214,7 +226,6 @@ class PocketTTSBackend(TTSBackend):
                                 remaining = self._LEADIN_SAMPLES - leadin_written
                                 direct = arr[:remaining]
                                 leftover = arr[remaining:]
-                                # Fix 2: upsample lead-in to device rate
                                 up = _upsample(direct.astype(np.float32), self.sample_rate, device_rate)
                                 out_stream.write(up.reshape(-1, 1))
                                 leadin_written += direct.size
@@ -222,6 +233,10 @@ class PocketTTSBackend(TTSBackend):
                                     remainder_chunks.append(leftover)
                             else:
                                 remainder_chunks.append(arr)
+                    except Exception as _write_exc:
+                        print(f"[TTS] stream write failed: {_write_exc}", flush=True)
+                        stopped = True
+                        break
 
                 # Fix 3: run soundstretch in background thread; feed bridge silence to
                 # keep stream alive while it processes (max 1.5 s of silence).
@@ -249,18 +264,24 @@ class PocketTTSBackend(TTSBackend):
                             break
                         if bridge_written >= MAX_BRIDGE:
                             break
-                        out_stream.write(silence)
+                        try:
+                            out_stream.write(silence)
+                        except Exception:
+                            stopped = True
+                            break
                         bridge_written += BRIDGE_CHUNK
 
                     if not stopped:
                         stretch_done.wait(timeout=5.0)
 
                     if not stopped and stretch_result[0] is not None:
-                        # Fix 2: upsample stretched audio to device rate
                         up = _upsample(
                             stretch_result[0].astype(np.float32), self.sample_rate, device_rate
                         )
-                        out_stream.write(up.reshape(-1, 1))
+                        try:
+                            out_stream.write(up.reshape(-1, 1))
+                        except Exception:
+                            pass
 
                 # Trailing silence prevents final-syllable clipping
                 if not stopped:

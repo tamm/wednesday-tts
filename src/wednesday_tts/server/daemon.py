@@ -396,14 +396,22 @@ def _audio_health_worker() -> None:
 
     If the audio subsystem wedges (kAudioHardwareNotRunningError / PortAudio
     error -50), exit so launchd/Task Scheduler can restart the daemon cleanly.
+
+    Skips the probe while audio is actively playing — opening a second
+    OutputStream while one is live causes PortAudio to return -50 on macOS,
+    which would be a false positive.
     """
-    GRACE = 30        # seconds before first check — let daemon stabilise
-    INTERVAL = 15     # seconds between checks
-    MAX_FAILS = 3     # consecutive failures before exit
+    GRACE = 60        # seconds before first check — let daemon stabilise
+    INTERVAL = 30     # seconds between checks
+    MAX_FAILS = 3     # consecutive *idle* failures before exit
 
     time.sleep(GRACE)
     fails = 0
     while True:
+        time.sleep(INTERVAL)
+        # Skip probe if audio is actively playing
+        if _active_backend is not None and getattr(_active_backend, '_active_stream', None) is not None:
+            continue
         try:
             device = get_default_output_device()
             stream = sd.OutputStream(
@@ -424,7 +432,6 @@ def _audio_health_worker() -> None:
             if fails >= MAX_FAILS:
                 print("[HEALTH] audio subsystem wedged — exiting for restart", flush=True)
                 os._exit(1)
-        time.sleep(INTERVAL)
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +626,23 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         )
 
         if use_streaming:
-            backend.play_streaming(text, speed=speed)  # type: ignore[union-attr]
+            # Run in a thread with a hard timeout — out_stream.write() can
+            # block indefinitely if PortAudio goes bad mid-stream.
+            _stream_timeout = max(30.0, len(text) * 0.1)
+            _t = threading.Thread(
+                target=backend.play_streaming,  # type: ignore[union-attr]
+                kwargs={"text": text, "speed": speed},
+                daemon=True,
+            )
+            _t.start()
+            _t.join(timeout=_stream_timeout)
+            if _t.is_alive():
+                print(
+                    f"[stream] play_streaming hung after {_stream_timeout:.0f}s, aborting",
+                    flush=True,
+                )
+                if hasattr(backend, "abort_stream"):
+                    backend.abort_stream()
             with _order_cond:
                 if _stop_gen == gen_snap:
                     _next_seq = 1
