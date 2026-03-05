@@ -195,8 +195,8 @@ hr
 ask "Set up auto-start for the TTS server? [Y/n]"
 if [[ "${REPLY:-y}" =~ ^[Yy]?$ ]]; then
     if [[ "$OS" == "Darwin" ]]; then
-        PLIST_SRC="$REPO_DIR/config/com.anthropic.wednesday-tts.plist"
-        PLIST_DEST="$HOME/Library/LaunchAgents/com.anthropic.wednesday-tts.plist"
+        PLIST_SRC="$REPO_DIR/config/com.tamm.wednesday-tts.plist"
+        PLIST_DEST="$HOME/Library/LaunchAgents/com.tamm.wednesday-tts.plist"
         sed \
             -e "s|/REPLACE_WITH_VENV_PATH/bin/python|$VENV_DIR/bin/python|g" \
             -e "s|REPLACE_WITH_VENV_PATH|$VENV_DIR|g" \

@@ -86,7 +86,7 @@ automatically at login.
 Copy the plist template from the repo:
 
 ```bash
-cp config/com.anthropic.wednesday-tts.plist ~/Library/LaunchAgents/com.anthropic.wednesday-tts.plist
+cp config/com.tamm.wednesday-tts.plist ~/Library/LaunchAgents/com.tamm.wednesday-tts.plist
 ```
 
 Edit the copy and replace both placeholders:
@@ -99,19 +99,19 @@ Edit the copy and replace both placeholders:
 ### Start
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.anthropic.wednesday-tts.plist
+launchctl load ~/Library/LaunchAgents/com.tamm.wednesday-tts.plist
 ```
 
 ### Stop
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.anthropic.wednesday-tts.plist
+launchctl unload ~/Library/LaunchAgents/com.tamm.wednesday-tts.plist
 ```
 
 ### Restart
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.anthropic.wednesday-tts
+launchctl kickstart -k gui/$(id -u)/com.tamm.wednesday-tts
 ```
 
 ### Socket vs HTTP

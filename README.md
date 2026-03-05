@@ -132,7 +132,7 @@ Server listens on `localhost:5678`.
 **Auto-start**
 
 - Windows: elevated PowerShell → `scripts/install-tts-service.ps1`
-- macOS: `bash quickstart.sh` handles launchd, or see `config/com.anthropic.wednesday-tts.plist`
+- macOS: `bash quickstart.sh` handles launchd, or see `config/com.tamm.wednesday-tts.plist`
 
 **Claude Code hooks**
 
