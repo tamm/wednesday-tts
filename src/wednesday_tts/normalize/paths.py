@@ -1,17 +1,26 @@
 """File path and extension normalization for TTS."""
 
+import random as _random
 import re
 
+# Probability of eliding "dot" in "filename dot ext" -> "filename ext".
+# Bare dotfiles (.sh, .py) always keep "dot" — that's how they're said aloud.
+_DOT_ELIDE_PROB = 0.4
 
-def normalize_file_extensions(text, filenames_dict):
+_DEFAULT_RNG = _random.Random()
+
+
+def normalize_file_extensions(text, filenames_dict, rng=None):
     """Convert file extensions to spoken form using the filenames dictionary.
 
-    "claude.md" -> "claude dot markdown"
+    "claude.md" -> "claude dot markdown"  (or occasionally "claude markdown")
     Must run BEFORE general dictionary so extension pronunciation takes priority.
+
+    Args:
+        rng: Optional random.Random instance for deterministic testing.
+             Defaults to a shared module-level RNG.
     """
-    def _ext_to_speech(m):
-        ext_spoken = filenames_dict.get(m.group(2).lower(), m.group(2))
-        return m.group(1) + ' dot ' + ext_spoken
+    _rng = rng if rng is not None else _DEFAULT_RNG
 
     _KNOWN_EXTS = set(filenames_dict.keys()) | {
         'py', 'js', 'ts', 'jsx', 'tsx', 'json', 'jsonl', 'yaml', 'yml',
@@ -20,9 +29,15 @@ def normalize_file_extensions(text, filenames_dict):
         'lock', 'env', 'plist', 'xml',
     }
     _EXT_PAT = '|'.join(re.escape(e) for e in sorted(_KNOWN_EXTS, key=len, reverse=True))
+
+    def _ext_to_speech(m):
+        ext_spoken = filenames_dict.get(m.group(2).lower(), m.group(2))
+        sep = ' ' if _rng.random() < _DOT_ELIDE_PROB else ' dot '
+        return m.group(1) + sep + ext_spoken
+
     text = re.sub(r'\b([a-zA-Z0-9_-]+)\.(' + _EXT_PAT + r')\b', _ext_to_speech, text)
 
-    # Bare dotfile extensions: ".sh", ".py", ".env"
+    # Bare dotfiles: ".sh", ".py", ".env" — always say "dot", never elide.
     def _bare_ext_to_speech(m):
         ext = m.group(1).lower()
         return 'dot ' + filenames_dict.get(ext, ext)

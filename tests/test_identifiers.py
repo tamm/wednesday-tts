@@ -2,7 +2,7 @@
 
 from wednesday_tts.normalize.identifiers import (
     normalize_identifiers, normalize_escape_sequences, normalize_hashes,
-    pattern_descriptor_to_speech,
+    normalize_dotted_names, pattern_descriptor_to_speech,
 )
 
 
@@ -103,3 +103,43 @@ def test_heading_hash_preserved():
     # Heading hashes (followed by space at line start) should be preserved
     result = normalize_hashes("# Title")
     assert result == "# Title"
+
+
+# --- normalize_dotted_names ---
+
+def test_dotted_module_attr():
+    assert normalize_dotted_names("socket.timeout") == "socket dot timeout"
+
+
+def test_dotted_chained():
+    assert normalize_dotted_names("os.path.join") == "os dot path dot join"
+
+
+def test_dotted_in_prose():
+    result = normalize_dotted_names("Use socket.timeout to handle it.")
+    assert "socket dot timeout" in result
+    # trailing sentence dot should NOT become "dot"
+    assert result.endswith(".")
+
+
+def test_dotted_standalone_domain():
+    assert normalize_dotted_names("example.com") == "example dot com"
+
+
+def test_dotted_subdomain():
+    assert normalize_dotted_names("api.github.com") == "api dot github dot com"
+
+
+def test_dotted_not_decimal():
+    # digit.digit is NOT a dotted name — left alone for the decimal rules
+    assert normalize_dotted_names("3.14") == "3.14"
+
+
+def test_dotted_not_url_path():
+    # Already-converted URL text won't re-trigger (no bare dot left)
+    assert normalize_dotted_names("ta dot mw slash unwatch") == "ta dot mw slash unwatch"
+
+
+def test_dotted_not_file_extension_already_converted():
+    # After file-ext rule runs, "claude dot markdown" has no bare dot — safe
+    assert normalize_dotted_names("claude dot markdown") == "claude dot markdown"

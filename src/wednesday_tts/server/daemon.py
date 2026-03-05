@@ -158,10 +158,16 @@ _stats: dict = {
     "service_start_time": None,
 }
 
+# Timestamp of the last time in-flight count changed (request started or finished).
+# Used by the hung-request watchdog to detect generate() hangs.
+_last_activity_time: float = 0.0
+
 
 def _stat_inc(key: str, n: float = 1) -> None:
+    global _last_activity_time
     with _stats_lock:
         _stats[key] += n
+        _last_activity_time = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -313,19 +319,72 @@ def _upsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
 
 
 def _try_play(item: np.ndarray, sample_rate: int) -> bool:
-    """Attempt sd.play() with current default device. Returns True on success."""
+    """Attempt sd.play() with current default device. Returns True on success.
+
+    get_default_output_device() forces a PortAudio terminate/initialize cycle
+    before querying, which recovers from err=-50 (hardware not running).
+    """
     device = get_default_output_device()
-    sd.play(item, samplerate=sample_rate, device=device)
+    try:
+        sd.play(item, samplerate=sample_rate, device=device)
+    except Exception as exc:
+        print(f"sd.play() failed: {exc}", flush=True)
+        return False
     duration_s = len(item) / sample_rate
     deadline = duration_s + 5.0
     start = time.monotonic()
-    while sd.get_stream().active:
+    while True:
+        try:
+            active = sd.get_stream().active
+        except Exception:
+            # PortAudio in bad state — treat as finished
+            return False
+        if not active:
+            break
         if time.monotonic() - start > deadline:
             print(f"Playback watchdog: exceeded {deadline:.1f}s, stopping", flush=True)
             sd.stop()
             return False
         time.sleep(0.05)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Hung-request watchdog
+# ---------------------------------------------------------------------------
+
+def _hung_request_watchdog() -> None:
+    """Background thread: exit if a request has been in-flight too long.
+
+    generate() has no internal timeout — if the TTS model or audio device
+    wedges mid-inference the handler thread hangs forever. This watchdog
+    detects when total > completed+stopped+errored for longer than the
+    threshold and forces a clean exit so launchd restarts the daemon.
+    """
+    HUNG_THRESHOLD = 120  # seconds before declaring a request hung
+    POLL = 10             # check every N seconds
+
+    time.sleep(30)  # grace period — let first request finish loading model
+    while True:
+        time.sleep(POLL)
+        with _stats_lock:
+            in_flight = (
+                _stats["requests_total"]
+                - _stats["requests_completed"]
+                - _stats["requests_stopped"]
+                - _stats["requests_errored"]
+            )
+            last = _last_activity_time
+
+        if in_flight > 0 and last > 0:
+            age = time.monotonic() - last
+            if age > HUNG_THRESHOLD:
+                print(
+                    f"[WATCHDOG] {in_flight} request(s) in-flight for {age:.0f}s — "
+                    "generate() appears hung, exiting for restart",
+                    flush=True,
+                )
+                os._exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -338,8 +397,8 @@ def _audio_health_worker() -> None:
     If the audio subsystem wedges (kAudioHardwareNotRunningError / PortAudio
     error -50), exit so launchd/Task Scheduler can restart the daemon cleanly.
     """
-    GRACE = 120       # seconds before first check — let daemon stabilise
-    INTERVAL = 30     # seconds between checks
+    GRACE = 30        # seconds before first check — let daemon stabilise
+    INTERVAL = 15     # seconds between checks
     MAX_FAILS = 3     # consecutive failures before exit
 
     time.sleep(GRACE)
@@ -380,23 +439,14 @@ def playback_worker(backend: TTSBackend) -> None:
             break
         try:
             if not _try_play(item, backend.sample_rate):
-                time.sleep(0.5)
-                print("Retrying playback after watchdog...", flush=True)
-                try:
-                    _try_play(item, backend.sample_rate)
-                except Exception:
-                    pass
+                # _try_play already called get_default_output_device() which
+                # reinits PortAudio. Wait briefly then retry once — the reinit
+                # inside _try_play will run again on the second attempt.
+                time.sleep(1.0)
+                print("Retrying playback after failure...", flush=True)
+                _try_play(item, backend.sample_rate)
         except Exception as exc:
             print(f"Playback error: {exc}", flush=True)
-            try:
-                sd.stop()
-            except Exception:
-                pass
-            time.sleep(0.5)
-            try:
-                _try_play(item, backend.sample_rate)
-            except Exception:
-                pass
         finally:
             playback_queue.task_done()
 
@@ -699,6 +749,9 @@ def main() -> None:
 
     health_thread = threading.Thread(target=_audio_health_worker, daemon=True)
     health_thread.start()
+
+    watchdog_thread = threading.Thread(target=_hung_request_watchdog, daemon=True)
+    watchdog_thread.start()
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)

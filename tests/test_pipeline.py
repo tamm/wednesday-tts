@@ -110,6 +110,16 @@ class TestURLs:
         assert "dot" in result
         assert "slash" in result
 
+    def test_bare_domain_short_tld(self):
+        result = norm("ta.mw/unwatch")
+        assert "ta dot mw slash unwatch" in result
+
+    def test_bare_domain_dot_in_path(self):
+        # Dots inside path segments should also be spoken
+        result = norm("docs.python.org/3/library/re.html")
+        assert "docs dot python dot org" in result
+        assert "re dot" in result
+
 
 # ---------------------------------------------------------------------------
 # Numbers and units

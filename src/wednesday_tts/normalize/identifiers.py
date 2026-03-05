@@ -109,6 +109,30 @@ def normalize_identifiers(text):
     return text
 
 
+# Matches dotted names like socket.timeout, os.path.join, example.com.
+# Each segment must start with a letter. Excludes digit-only segments (decimals)
+# and excludes matches immediately followed by / (URL paths already handled).
+_DOTTED_NAME_RE = re.compile(
+    r'(?<![.\d/])\b([a-zA-Z]\w*(?:\.[a-zA-Z]\w*)+)\b(?![/])'
+)
+
+
+def normalize_dotted_names(text):
+    """Convert inline dotted names to spoken form with "dot" between segments.
+
+    Handles module.attribute, chained names, and bare domain names that aren't
+    caught by the URL or file-extension rules.
+
+    socket.timeout -> "socket dot timeout"
+    os.path.join   -> "os dot path dot join"
+    example.com    -> "example dot com"
+
+    Must run AFTER normalize_urls and normalize_file_extensions so those are
+    already consumed, and BEFORE decimals/semver which handle digit-dot-digit.
+    """
+    return _DOTTED_NAME_RE.sub(lambda m: m.group(1).replace('.', ' dot '), text)
+
+
 def normalize_escape_sequences(text):
     """Convert literal escape sequences to spoken form.
 

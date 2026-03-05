@@ -20,10 +20,6 @@ def test_url_with_trailing_punct():
     assert result.count("dot com slash page") == 1
 
 
-def test_bare_domain_path():
-    result = normalize_urls("ta.mw/unwatch")
-    assert "ta dot mw slash unwatch" in result
-
 
 def test_url_with_subdomain():
     result = normalize_urls("https://docs.python.org/3/library")

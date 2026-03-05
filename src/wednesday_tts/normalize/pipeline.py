@@ -4,6 +4,7 @@ from wednesday_tts.normalize.code_blocks import normalize_code_blocks
 from wednesday_tts.normalize.urls import normalize_urls
 from wednesday_tts.normalize.identifiers import (
     normalize_identifiers, normalize_escape_sequences, normalize_hashes,
+    normalize_dotted_names,
 )
 from wednesday_tts.normalize.regex_speech import (
     normalize_regex, normalize_html_tags, normalize_hotkeys,
@@ -99,6 +100,10 @@ def normalize_technical(text, dictionary=None, filenames_dict=None):
 
     # 4b. Remaining slash-separated content
     text = normalize_slash_paths(text)
+
+    # 4c-pre. Dotted names: module.attr, os.path.join, example.com
+    # Runs AFTER slash_paths so path dots inside segments (some.file) are also caught.
+    text = normalize_dotted_names(text)
 
     # 4c. Time/unit abbreviations (must run BEFORE small-decimal rule)
     text = normalize_time_units(text)

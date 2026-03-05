@@ -25,15 +25,4 @@ def normalize_urls(text):
 
     text = re.sub(r'https?://([^\s\)\]>"]+)', url_to_speech, text)
 
-    # Bare domain/path patterns: "ta.mw/unwatch" -> "ta dot m w slash unwatch"
-    def rel_url_to_speech(m):
-        domain = m.group(1).replace('.', ' dot ')
-        path = m.group(2).lstrip('/').replace('/', ' slash ').replace('.', ' dot ')
-        return f'{domain} slash {path}'
-
-    text = re.sub(
-        r'\b([a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z]{2,6})(/[^\s\)\]>,;"]+)',
-        rel_url_to_speech, text
-    )
-
     return text
