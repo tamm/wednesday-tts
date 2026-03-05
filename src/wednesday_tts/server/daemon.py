@@ -353,9 +353,11 @@ def _audio_health_worker() -> None:
                 channels=1,
                 dtype="float32",
             )
-            stream.start()
-            stream.stop()
-            stream.close()
+            try:
+                stream.start()
+                stream.stop()
+            finally:
+                stream.close()
             fails = 0  # success — reset counter
         except Exception as exc:
             fails += 1
@@ -462,7 +464,13 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── DRAIN ─────────────────────────────────────────────────────────
         if message == "DRAIN":
-            playback_queue.join()
+            # join() has no built-in timeout — poll with a deadline instead
+            deadline = time.monotonic() + 30
+            while not playback_queue.empty():
+                if time.monotonic() > deadline:
+                    print("DRAIN timeout after 30s", flush=True)
+                    break
+                time.sleep(0.05)
             with _order_cond:
                 _next_seq = 0
                 _order_cond.notify_all()
@@ -704,6 +712,7 @@ def main() -> None:
                 print(f"accept() error: {exc}, retrying in 1s", flush=True)
                 time.sleep(1)
                 continue
+            conn.settimeout(30)
             t = threading.Thread(target=handle_client, args=(conn, backend), daemon=True)
             t.start()
     except KeyboardInterrupt:
