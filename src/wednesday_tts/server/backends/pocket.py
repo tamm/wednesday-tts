@@ -110,22 +110,23 @@ class PocketTTSBackend(TTSBackend):
 
         use_speed = speed if speed is not None else self._speed
         needs_speed = abs(use_speed - 1.0) > 0.01
-        _GENERATE_DEADLINE = 8.0
+        _FIRST_CHUNK_TIMEOUT = 8.0  # bail if no audio within 8s (model wedged)
 
         # If we have a queue, stream directly into it
         if playback_queue is not None:
             if needs_speed:
                 return self._generate_streaming_pipe(
-                    text, use_speed, playback_queue, stop_check, _GENERATE_DEADLINE
+                    text, use_speed, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT
                 )
             # speed ~= 1.0: queue raw chunks directly, no soundstretch
             return self._generate_streaming_direct(
-                text, playback_queue, stop_check, _GENERATE_DEADLINE
+                text, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT
             )
 
         # No queue: collect all chunks, concatenate, return
         chunks: list[np.ndarray] = []
         gen_start = time.monotonic()
+        got_first = False
 
         with self._lock:
             for audio_chunk in self._model.generate_audio_stream(
@@ -135,13 +136,14 @@ class PocketTTSBackend(TTSBackend):
             ):
                 if stop_check and stop_check():
                     break
-                if time.monotonic() - gen_start > _GENERATE_DEADLINE:
-                    print(f"[stream] generation deadline ({_GENERATE_DEADLINE}s) hit", flush=True)
+                if not got_first and time.monotonic() - gen_start > _FIRST_CHUNK_TIMEOUT:
+                    print(f"[stream] first-chunk timeout ({_FIRST_CHUNK_TIMEOUT}s) — model may be wedged", flush=True)
                     break
                 arr = audio_chunk.numpy() if hasattr(audio_chunk, "numpy") else np.array(audio_chunk)
                 if arr.ndim > 1:
                     arr = arr.flatten()
                 if arr.size > 0:
+                    got_first = True
                     chunks.append(arr)
 
         if not chunks:
@@ -157,7 +159,7 @@ class PocketTTSBackend(TTSBackend):
         return result
 
     def _generate_streaming_direct(self, text: str, playback_queue,
-                                    stop_check, deadline: float) -> None:
+                                    stop_check, first_chunk_timeout: float) -> None:
         """Stream model chunks directly into playback_queue (no soundstretch)."""
         gen_start = time.monotonic()
         total_samples = 0
@@ -171,8 +173,8 @@ class PocketTTSBackend(TTSBackend):
             ):
                 if stop_check and stop_check():
                     break
-                if time.monotonic() - gen_start > deadline:
-                    print(f"[stream-direct] generation deadline ({deadline}s) hit", flush=True)
+                if n_chunks == 0 and time.monotonic() - gen_start > first_chunk_timeout:
+                    print(f"[stream-direct] first-chunk timeout ({first_chunk_timeout}s) — model may be wedged", flush=True)
                     break
                 arr = audio_chunk.numpy() if hasattr(audio_chunk, "numpy") else np.array(audio_chunk)
                 if arr.ndim > 1:
@@ -188,7 +190,7 @@ class PocketTTSBackend(TTSBackend):
 
     def _generate_streaming_pipe(self, text: str, speed: float,
                                   playback_queue, stop_check,
-                                  deadline: float) -> None:
+                                  first_chunk_timeout: float) -> None:
         """Stream model output through soundstretch pipe, queue stretched chunks.
 
         Pipeline:
@@ -260,6 +262,7 @@ class PocketTTSBackend(TTSBackend):
         # Writer: generate chunks, convert to int16 PCM, feed to soundstretch stdin
         gen_start = time.monotonic()
         total_samples = 0
+        n_chunks = 0
         try:
             proc.stdin.write(_wav_header(sr))
             proc.stdin.flush()
@@ -272,8 +275,8 @@ class PocketTTSBackend(TTSBackend):
                 ):
                     if stop_check and stop_check():
                         break
-                    if time.monotonic() - gen_start > deadline:
-                        print(f"[stream-pipe] generation deadline ({deadline}s) hit", flush=True)
+                    if n_chunks == 0 and time.monotonic() - gen_start > first_chunk_timeout:
+                        print(f"[stream-pipe] first-chunk timeout ({first_chunk_timeout}s) — model may be wedged", flush=True)
                         break
                     arr = audio_chunk.numpy() if hasattr(audio_chunk, "numpy") else np.array(audio_chunk)
                     if arr.ndim > 1:
@@ -290,6 +293,7 @@ class PocketTTSBackend(TTSBackend):
                         print("[stream-pipe] soundstretch pipe broke", flush=True)
                         break
                     total_samples += arr.size
+                    n_chunks += 1
 
         except Exception as exc:
             print(f"[stream-pipe] writer error: {exc}", flush=True)
