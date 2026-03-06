@@ -34,7 +34,7 @@ from .backends import REGISTRY, TTSBackend
 
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
-DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.2"))
+DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +492,26 @@ def playback_worker(backend: TTSBackend) -> None:
             # Upsample to device rate
             audio = _upsample(item.astype(np.float32), backend.sample_rate, device_rate)
 
+            # Anti-click: trim tail artefacts, fade edges, pad with silence.
+            # Soundstretch can leave junk in the last few ms — chop it,
+            # then apply a clean fade so the signal reaches zero smoothly.
+            TRIM_START = int(device_rate * 0.005)  # chop first 5ms
+            TRIM_END = int(device_rate * 0.005)    # chop last 5ms
+            PAD_START = int(device_rate * 0.050)
+            PAD_END = int(device_rate * 0.050)
+            FADE_IN = int(device_rate * 0.015)
+            FADE_OUT = int(device_rate * 0.015)
+            if len(audio) > TRIM_START + TRIM_END + FADE_IN + FADE_OUT:
+                audio = audio[TRIM_START:]           # trim start artefacts
+                audio = audio[:-TRIM_END].copy()     # trim end artefacts (copy to ensure contiguous)
+                audio[:FADE_IN] *= np.linspace(0.0, 1.0, FADE_IN, dtype=np.float32)
+                audio[-FADE_OUT:] *= np.linspace(1.0, 0.0, FADE_OUT, dtype=np.float32)
+                audio = np.concatenate([
+                    np.zeros(PAD_START, dtype=np.float32),
+                    audio,
+                    np.zeros(PAD_END, dtype=np.float32),
+                ])
+
             # Open stream if needed
             if out_stream is None or not out_stream.active:
                 if out_stream is not None:
@@ -512,11 +532,17 @@ def playback_worker(backend: TTSBackend) -> None:
             write_gen = _stop_gen
             flat = audio.reshape(-1)
             offset = 0
+            is_last = playback_queue.empty()
             try:
                 while offset < len(flat) and _stop_gen == write_gen:
                     end = min(offset + WRITE_CHUNK, len(flat))
                     out_stream.write(flat[offset:end].reshape(-1, 1))
                     offset = end
+                # If nothing else queued, write 100ms of silence through the
+                # stream so the DAC settles to zero before we stop writing.
+                if is_last and _stop_gen == write_gen:
+                    silence = np.zeros((int(device_rate * 0.1), 1), dtype=np.float32)
+                    out_stream.write(silence)
             except Exception as exc:
                 print(f"[playback] write failed: {exc}, reopening stream", flush=True)
                 try:
