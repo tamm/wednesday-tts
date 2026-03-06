@@ -24,6 +24,7 @@ import re
 import signal
 import socket
 import struct
+import subprocess
 import threading
 import time
 
@@ -35,6 +36,32 @@ from .backends import REGISTRY, TTSBackend
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
+
+# Error chime — played when a request times out or errors.
+# Looks for a custom sound first (not committed — drop your own mp3 here),
+# falls back to macOS system alert sound.
+_ERROR_CHIME_CANDIDATES = [
+    os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data", "sounds", "error.mp3")
+    ),
+    os.path.expanduser("~/dev/parent-repo/sounds/errors/input_failed_clean.mp3"),
+    "/System/Library/Sounds/Sosumi.aiff",
+]
+
+
+def _play_error_chime() -> None:
+    """Play an error chime in a background process."""
+    for path in _ERROR_CHIME_CANDIDATES:
+        if os.path.isfile(path):
+            try:
+                subprocess.Popen(
+                    ["afplay", path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                continue
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +437,8 @@ def _hung_request_watchdog() -> None:
                     "generate() appears hung, exiting for restart",
                     flush=True,
                 )
+                _play_error_chime()
+                time.sleep(1)  # let chime start playing before exit
                 os._exit(1)
 
 
@@ -441,6 +470,8 @@ def _audio_health_worker() -> None:
             print(f"[HEALTH] device query failed ({probe_fails}/{MAX_FAILS}): {exc}", flush=True)
             if probe_fails >= MAX_FAILS:
                 print("[HEALTH] audio subsystem wedged — exiting for restart", flush=True)
+                _play_error_chime()
+                time.sleep(1)
                 os._exit(1)
 
 
@@ -808,6 +839,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
     except Exception as exc:
         _stat_inc("requests_errored")
         print(f"Error handling client: {exc}", flush=True)
+        _play_error_chime()
         try:
             conn.send(b"error")
         except Exception:
