@@ -10,16 +10,16 @@ from wednesday_tts.client.api import voice_tag
 from wednesday_tts.server.daemon import _split_voice_segments, _render_segments
 
 
-_VOICE_TAG_RE = re.compile(r"\{voice:(\w+)\}(.*?)\{/voice\}", re.DOTALL)
+_VOICE_TAG_RE = re.compile(r"\u00ab\u00ab(.*?)\u00bb\u00bb", re.DOTALL)
 
 
 class TestVoiceTag:
     def test_wraps_text(self) -> None:
-        assert voice_tag("Hello", "sam") == "{voice:sam}Hello{/voice}"
+        assert voice_tag("Hello", "sam") == "««Hello»»"
 
     def test_various_backends(self) -> None:
-        assert voice_tag("Hi", "kokoro") == "{voice:kokoro}Hi{/voice}"
-        assert voice_tag("Hi", "pocket") == "{voice:pocket}Hi{/voice}"
+        assert voice_tag("Hi", "kokoro") == "««Hi»»"
+        assert voice_tag("Hi", "pocket") == "««Hi»»"
 
 
 class TestSplitVoiceSegments:
@@ -28,11 +28,11 @@ class TestSplitVoiceSegments:
         assert segs == [(None, "Hello world")]
 
     def test_single_tagged_block(self) -> None:
-        segs = _split_voice_segments("{voice:sam}Hello{/voice}", _VOICE_TAG_RE)
+        segs = _split_voice_segments("««Hello»»", _VOICE_TAG_RE)
         assert segs == [("sam", "Hello")]
 
     def test_tagged_with_surrounding_text(self) -> None:
-        text = "Normal voice. {voice:sam}Robot voice.{/voice} Normal again."
+        text = "Normal voice. ««Robot voice.»» Normal again."
         segs = _split_voice_segments(text, _VOICE_TAG_RE)
         assert len(segs) == 3
         assert segs[0] == (None, "Normal voice.")
@@ -40,38 +40,38 @@ class TestSplitVoiceSegments:
         assert segs[2] == (None, "Normal again.")
 
     def test_multiple_tagged_blocks(self) -> None:
-        text = "Start. {voice:sam}Robot.{/voice} Middle. {voice:kokoro}Kokoro.{/voice} End."
+        text = "Start. ««Robot.»» Middle. ««More robot.»» End."
         segs = _split_voice_segments(text, _VOICE_TAG_RE)
         assert len(segs) == 5
         assert segs[0] == (None, "Start.")
         assert segs[1] == ("sam", "Robot.")
         assert segs[2] == (None, "Middle.")
-        assert segs[3] == ("kokoro", "Kokoro.")
+        assert segs[3] == ("sam", "More robot.")
         assert segs[4] == (None, "End.")
 
     def test_adjacent_tagged_blocks(self) -> None:
-        text = "{voice:sam}Robot.{/voice}{voice:kokoro}Neural.{/voice}"
+        text = "««Robot.»»««Neural.»»"
         segs = _split_voice_segments(text, _VOICE_TAG_RE)
         assert len(segs) == 2
         assert segs[0] == ("sam", "Robot.")
-        assert segs[1] == ("kokoro", "Neural.")
+        assert segs[1] == ("sam", "Neural.")
 
     def test_only_leading_text(self) -> None:
-        text = "Hello {voice:sam}Robot{/voice}"
+        text = "Hello ««Robot»»"
         segs = _split_voice_segments(text, _VOICE_TAG_RE)
         assert len(segs) == 2
         assert segs[0] == (None, "Hello")
         assert segs[1] == ("sam", "Robot")
 
     def test_only_trailing_text(self) -> None:
-        text = "{voice:sam}Robot{/voice} Bye"
+        text = "««Robot»» Bye"
         segs = _split_voice_segments(text, _VOICE_TAG_RE)
         assert len(segs) == 2
         assert segs[0] == ("sam", "Robot")
         assert segs[1] == (None, "Bye")
 
     def test_empty_tagged_block_skipped(self) -> None:
-        text = "Hello {voice:sam}{/voice} world"
+        text = "Hello ««»» world"
         segs = _split_voice_segments(text, _VOICE_TAG_RE)
         assert len(segs) == 2
         assert segs[0] == (None, "Hello")

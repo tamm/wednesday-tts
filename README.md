@@ -56,10 +56,10 @@ Claude response
 
 ## Voice switching
 
-You can switch voices mid-sentence using `{voice:X}...{/voice}` tags in any text sent to the daemon:
+You can switch to SAM voice mid-sentence using `««...»»` guillemet tags in any text sent to the daemon:
 
 ```
-Normal speech here. {voice:sam}I am now a robot from 1982.{/voice} And back to normal.
+Normal speech here. ««I am now a robot from 1982.»» And back to normal.
 ```
 
 The daemon renders each segment with its respective backend, resamples to a common sample rate, and stitches the audio together seamlessly. Override backends are lazy-loaded on first use and cached.
@@ -80,7 +80,7 @@ speak(text)
 In raw daemon protocol (hooks):
 
 ```
-SEQ:0:1.0:markdown::Normal text. {voice:sam}Robot text.{/voice} More normal.
+SEQ:0:1.0:markdown::Normal text. ««Robot text.»» More normal.
 ```
 
 ---

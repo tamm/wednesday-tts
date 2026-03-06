@@ -74,7 +74,7 @@ Currently, hooks only send SEQ:0 (single chunk per response). The mechanism supp
 
 ## Voice Switching
 
-Text can contain inline voice tags: `{voice:sam}words{/voice}`
+Text can contain inline voice tags: `««words»»` (SAM voice)
 
 Processing:
 

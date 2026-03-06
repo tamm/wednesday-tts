@@ -108,7 +108,7 @@ def _split_voice_segments(
     """Split text into segments of (voice_name, text).
 
     Plain text segments have voice_name=None (use primary backend).
-    Tagged segments like {voice:sam}words{/voice} have voice_name="sam".
+    Tagged segments like ««words»» have voice_name="sam".
 
     Returns a list of (voice, text) tuples preserving original order.
     Empty segments are skipped.
@@ -120,9 +120,9 @@ def _split_voice_segments(
         before = text[last_end:m.start()].strip()
         if before:
             segments.append((None, before))
-        # Tagged segment
-        voice_name = m.group(1)
-        tagged_text = m.group(2).strip()
+        # Tagged segment — ««»» always means SAM voice
+        voice_name = "sam"
+        tagged_text = m.group(1).strip()
         if tagged_text:
             segments.append((voice_name, tagged_text))
         last_end = m.end()
@@ -770,8 +770,8 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             conn.send(b"ok")
             return
 
-        # ── Parse voice segments: split on {voice:X}...{/voice} tags ─────
-        _VOICE_TAG_RE = re.compile(r"\{voice:(\w+)\}(.*?)\{/voice\}", re.DOTALL)
+        # ── Parse voice segments: split on ««...»» tags (SAM voice) ─────
+        _VOICE_TAG_RE = re.compile(r"\u00ab\u00ab(.*?)\u00bb\u00bb", re.DOTALL)
         segments = _split_voice_segments(text, _VOICE_TAG_RE)
         has_mixed_voices = any(v is not None for v, _ in segments)
 

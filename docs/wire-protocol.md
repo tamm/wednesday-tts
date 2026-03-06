@@ -32,7 +32,7 @@ SEQ:0:1.0:markdown::Hello world\n
 **Behaviour:**
 
 1. If `content_type != "normalized"`, text is run through the normalisation pipeline
-2. Voice tags (`{voice:X}...{/voice}`) are parsed into segments
+2. Voice tags (`««...»»`) are parsed into segments
 3. If `seq == 0` and backend supports streaming and no mixed voices: uses streaming path
 4. Otherwise: batch render via `_render_segments()`
 5. Audio is enqueued in sequence order (waits for `_next_seq == seq`, 5s timeout)

@@ -33,7 +33,7 @@ def speak(
 
     # Wrap text with voice tags if a per-request override is requested
     if voice:
-        text = f"{{voice:{voice}}}{text}{{/voice}}"
+        text = f"\u00ab\u00ab{text}\u00bb\u00bb"
 
     url = f"{server}/speak?content_type={content_type}"
     data = text.encode("utf-8")
@@ -80,9 +80,9 @@ def voice_tag(text: str, voice: str) -> str:
     Example::
 
         tagged = voice_tag("Exterminate", "sam")
-        # "{voice:sam}Exterminate{/voice}"
+        # "««Exterminate»»"
     """
-    return f"{{voice:{voice}}}{text}{{/voice}}"
+    return f"\u00ab\u00ab{text}\u00bb\u00bb"
 
 
 def is_server_running(server: str = "http://localhost:5678") -> bool:

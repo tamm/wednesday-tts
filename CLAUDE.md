@@ -17,7 +17,7 @@ Phases 1–3 complete. Phase 4 (cutover) in progress.
 - 18 normalization modules under `src/wednesday_tts/normalize/` (including dates/years), 489 tests passing
 - Server at `src/wednesday_tts/server/` — Flask on localhost:5678, backends extracted
 - SAM backend (retro 1982 formant synth) with lowpass + reverb post-processing
-- Per-request voice switching via `{voice:X}...{/voice}` tags — mid-sentence backend swaps
+- Per-request voice switching via `««...»»` guillemet tags (SAM voice) — mid-sentence backend swaps
 - Thin Claude Code hooks in `integrations/claude-code/`
 - Client library at `src/wednesday_tts/client/api.py`
 - `.venv/` initialized with uv (Python 3.12), package installed
