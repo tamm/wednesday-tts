@@ -26,6 +26,9 @@ Thumbs.db
 # Plan — living document, keep updated as work progresses
 PLAN.md
 
+# Investigation docs — contain references to private repos / local paths
+docs/troubleshooting-runbook.md
+
 # Test / coverage
 .coverage
 htmlcov/

@@ -119,18 +119,45 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
             except Exception:
                 pass
     else:
-        # Unix socket — daemon protocol: SEQ:0:speed:text
+        # Hook sends SEQ:0 blindly. Daemon is responsible for all fallback.
+        # If no response in 10s, ping to diagnose and optionally restart.
+        import subprocess
+
         cmd = f"SEQ:0:1.0:__ct:markdown__{body_str}\n".encode("utf-8")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(2)
+        s.settimeout(10)
         s.connect(UNIX_SOCKET_PATH)
         try:
             s.sendall(cmd)
             s.settimeout(0.5)
             try:
                 s.recv(64)
-            except Exception:
+            except socket.timeout:
+                # No confirmation yet — daemon may be busy, that's fine
                 pass
+        except socket.timeout:
+            # 10s connect timeout — daemon may be dead, diagnose with PING
+            try:
+                ps = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                ps.settimeout(2)
+                ps.connect(UNIX_SOCKET_PATH)
+                try:
+                    ps.sendall(b"PING\n")
+                    ps.settimeout(1)
+                    resp = ps.recv(16).strip()
+                except Exception:
+                    resp = b""
+                finally:
+                    ps.close()
+            except Exception:
+                resp = b""
+            if resp in (b"dying", b"") :
+                # Daemon unreachable or dying — kick it
+                subprocess.run(
+                    ["launchctl", "kickstart", "-k",
+                     f"gui/{os.getuid()}/com.tamm.wednesday-tts"],
+                    capture_output=True,
+                )
         finally:
             try:
                 s.close()

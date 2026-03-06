@@ -29,16 +29,14 @@ if [[ -f "$PID_FILE" ]]; then
     kill -USR1 "$(cat "$PID_FILE")" 2>/dev/null
 fi
 
-# Ping to check health — also serves as socket STOP fallback if SIGUSR1 unavailable
+# Always send STOP via socket to drain the playback queue
 python3 -c "
-import socket, json, os
-pid_ok = os.path.exists('/tmp/tts-daemon.pid')
+import socket, json
 try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(1)
     s.connect('/tmp/tts-daemon.sock')
-    # If SIGUSR1 couldn't fire, send STOP via socket
-    s.send(b'PING' if pid_ok else b'STOP')
+    s.send(b'STOP')
     ok = s.recv(16)
     s.close()
     if ok not in (b'ok',):

@@ -34,6 +34,7 @@ SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.25"))
 
+
 # ---------------------------------------------------------------------------
 # Per-request voice override cache
 # ---------------------------------------------------------------------------
@@ -379,6 +380,9 @@ def _hung_request_watchdog() -> None:
         if in_flight > 0 and last > 0:
             age = time.monotonic() - last
             if age > HUNG_THRESHOLD:
+                # Don't kill the process while audio is queued or playing
+                if not playback_queue.empty():
+                    continue
                 print(
                     f"[WATCHDOG] {in_flight} request(s) in-flight for {age:.0f}s — "
                     "generate() appears hung, exiting for restart",
@@ -394,26 +398,30 @@ def _hung_request_watchdog() -> None:
 def _audio_health_worker() -> None:
     """Background thread: periodically probe PortAudio.
 
-    If the audio subsystem wedges (kAudioHardwareNotRunningError / PortAudio
-    error -50), exit so launchd/Task Scheduler can restart the daemon cleanly.
+    If MAX_FAILS consecutive idle probes fail, the audio subsystem is
+    wedged — exit for launchd restart.
 
-    Skips the probe while audio is actively playing — opening a second
-    OutputStream while one is live causes PortAudio to return -50 on macOS,
-    which would be a false positive.
+    Skips the probe while audio is actively playing or queued — opening a
+    second OutputStream while one is live causes PortAudio to return -50 on
+    macOS, which would be a false positive.
     """
     GRACE = 60        # seconds before first check — let daemon stabilise
     INTERVAL = 30     # seconds between checks
     MAX_FAILS = 3     # consecutive *idle* failures before exit
 
     time.sleep(GRACE)
-    fails = 0
+    probe_fails = 0
     while True:
         time.sleep(INTERVAL)
-        # Skip probe if audio is actively playing
-        if _active_backend is not None and getattr(_active_backend, '_active_stream', None) is not None:
+
+        # Skip probe while audio is queued or playing — never kill mid-speech.
+        if not playback_queue.empty():
             continue
+
+        # ── Probe PortAudio ──────────────────────────────────────────────
         try:
             device = get_default_output_device()
+            sd.query_devices(kind="output")
             stream = sd.OutputStream(
                 samplerate=_get_device_samplerate(24000),
                 device=device,
@@ -425,12 +433,18 @@ def _audio_health_worker() -> None:
                 stream.stop()
             finally:
                 stream.close()
-            fails = 0  # success — reset counter
+            probe_fails = 0
         except Exception as exc:
-            fails += 1
-            print(f"[HEALTH] audio probe failed ({fails}/{MAX_FAILS}): {exc}", flush=True)
-            if fails >= MAX_FAILS:
-                print("[HEALTH] audio subsystem wedged — exiting for restart", flush=True)
+            probe_fails += 1
+            print(f"[HEALTH] audio probe failed ({probe_fails}/{MAX_FAILS}): {exc}", flush=True)
+            if probe_fails >= MAX_FAILS:
+                if not playback_queue.empty():
+                    print("[HEALTH] audio probe failing but playback queue not empty — deferring", flush=True)
+                    continue
+                print(
+                    "[HEALTH] audio subsystem wedged — exiting for restart",
+                    flush=True,
+                )
                 os._exit(1)
 
 
@@ -439,16 +453,17 @@ def _audio_health_worker() -> None:
 # ---------------------------------------------------------------------------
 
 def playback_worker(backend: TTSBackend) -> None:
-    """Dedicated thread: plays audio arrays from the queue in FIFO order."""
+    """Dedicated thread: plays audio arrays from the queue in FIFO order.
+
+    This is the ONLY code that plays audio. All paths (streaming and batch)
+    enqueue np.ndarray chunks here; nothing else touches the audio device.
+    """
     while True:
         item = playback_queue.get()
         if item is None:
             break
         try:
             if not _try_play(item, backend.sample_rate):
-                # _try_play already called get_default_output_device() which
-                # reinits PortAudio. Wait briefly then retry once — the reinit
-                # inside _try_play will run again on the second attempt.
                 time.sleep(1.0)
                 print("Retrying playback after failure...", flush=True)
                 _try_play(item, backend.sample_rate)
@@ -587,14 +602,19 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 except ValueError:
                     pass
             # Optional content_type prefix embedded in text: __ct:markdown__
+            # NOTE: Internal tag prepended by the hook, not user content.
+            # If user text literally starts with "__ct:<word>__" it would be
+            # misinterpreted as a content-type tag. Risk is negligible in practice.
             _ct = re.match(r"^__ct:([a-zA-Z]+)__", text)
             if _ct:
                 content_type = _ct.group(1)
                 text = text[_ct.end():]
             # Strip wall-clock timestamp prefix added by hook: __t:1234567890.123__
+            # Same caveat: user text starting with "__t:<digits>__" would be stripped.
             text = re.sub(r"^__t:[\d.]+__", "", text)
 
         elif message.startswith("SPEED:"):
+            # DEPRECATED: use SEQ:0 instead. Will be removed in a future version.
             parts = message.split(":", 2)
             if len(parts) == 3:
                 try:
@@ -615,9 +635,9 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
 
-        # Streaming path: SEQ:0 with a streaming-capable backend plays audio
-        # directly through an OutputStream for lowest time-to-first-sound.
-        # Disabled for mixed-voice messages (need batch to stitch segments).
+        # Streaming path: SEQ:0 with a streaming-capable backend feeds
+        # audio chunks into playback_queue for the playback_worker to play.
+        # No direct OutputStream — playback_worker is the ONLY audio player.
         use_streaming = (
             seq == 0
             and not has_mixed_voices
@@ -626,27 +646,51 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         )
 
         if use_streaming:
-            # Run in a thread with a hard timeout — out_stream.write() can
-            # block indefinitely if PortAudio goes bad mid-stream.
-            _stream_timeout = max(30.0, len(text) * 0.1)
-            _t = threading.Thread(
-                target=backend.play_streaming,  # type: ignore[union-attr]
-                kwargs={"text": text, "speed": speed},
-                daemon=True,
-            )
-            _t.start()
-            _t.join(timeout=_stream_timeout)
-            if _t.is_alive():
-                print(
-                    f"[stream] play_streaming hung after {_stream_timeout:.0f}s, aborting",
-                    flush=True,
-                )
-                if hasattr(backend, "abort_stream"):
-                    backend.abort_stream()
-            with _order_cond:
-                if _stop_gen == gen_snap:
-                    _next_seq = 1
-                    _order_cond.notify_all()
+            gen_snap_local = _stop_gen
+            first_chunk_event = threading.Event()
+
+            def _stream_to_queue() -> None:
+                try:
+                    for chunk in backend.stream_chunks(text, speed):
+                        if _stop_gen != gen_snap_local:
+                            return
+                        if chunk.size == 0:
+                            continue
+                        first_chunk_event.set()
+                        playback_queue.put(chunk)
+                except Exception as exc:
+                    print(f"[stream] chunk generation error: {exc}", flush=True)
+                finally:
+                    first_chunk_event.set()  # unblock waiter even on error
+
+            t = threading.Thread(target=_stream_to_queue, daemon=True)
+            t.start()
+
+            # Wait up to 8s for first chunk — if nothing, fall back to batch
+            if not first_chunk_event.wait(timeout=8.0):
+                print("[stream] no first chunk in 8s, falling back to batch", flush=True)
+                t.join(timeout=0.1)
+                audio = _render_segments(segments, backend, speed, gen_snap)
+                if seq is not None:
+                    with _order_cond:
+                        if _stop_gen != gen_snap:
+                            conn.send(b"ok")
+                            return
+                        if audio is not None:
+                            playback_queue.put(audio)
+                        _next_seq += 1
+                        _order_cond.notify_all()
+                elif audio is not None:
+                    playback_queue.put(audio)
+            else:
+                # Streaming started — thread is feeding the queue.
+                # Advance seq so subsequent chunks can enqueue.
+                with _order_cond:
+                    if _stop_gen == gen_snap:
+                        _next_seq = 1
+                        _order_cond.notify_all()
+
+            _stat_inc("requests_completed")
             conn.send(b"ok")
             return
 
