@@ -114,6 +114,7 @@
     { "pattern": "nginx",        "pocket": "engine X", "case_sensitive": false },
     { "pattern": "kubectl",      "pocket": "Cube control" },
     { "pattern": "OAuth",        "pocket": "o-auth", "case_sensitive": false },
+    { "pattern": "SMTP",         "pocket": "S M T P" },
     { "pattern": "OIDC",         "pocket": "O I D C" },
     { "pattern": "UUID",         "pocket": "you you eye dee" },
     { "pattern": "UUIDs",        "pocket": "you you eye dees" },

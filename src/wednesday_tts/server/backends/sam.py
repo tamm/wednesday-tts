@@ -15,7 +15,7 @@ import numpy as np
 from .base import TTSBackend, DEFAULT_SPEED
 
 # Lowpass: single-pole IIR coefficient.  Higher = more smoothing (0–1).
-_LOWPASS_ALPHA = 0.35
+_LOWPASS_ALPHA = 0.55
 
 # Reverb: short impulse response simulating a small room / speaker cabinet.
 # Delays in samples at 22050 Hz, with exponential decay.
@@ -59,6 +59,7 @@ class SAMBackend(TTSBackend):
         pitch   — fundamental frequency (1–255, default 64)
         mouth   — mouth formant freq (1–255, default 128)
         throat  — throat formant freq (1–255, default 128)
+        volume  — output gain 0.0–1.0 (default 0.45, matched to pocket levels)
     """
 
     sample_rate = 22050
@@ -70,6 +71,7 @@ class SAMBackend(TTSBackend):
         pitch: int = 64,
         mouth: int = 128,
         throat: int = 128,
+        volume: float = 0.20,
         **_kwargs: object,
     ) -> None:
         self._sam = None
@@ -77,6 +79,7 @@ class SAMBackend(TTSBackend):
         self._pitch = pitch
         self._mouth = mouth
         self._throat = throat
+        self._volume = max(0.0, min(1.0, volume))
 
     def load(self) -> None:
         from samtts import SamTTS  # type: ignore[import-untyped]
@@ -120,6 +123,10 @@ class SAMBackend(TTSBackend):
                 fade_in = np.linspace(0.0, 1.0, FADE_SAMPLES, dtype=np.float32)
                 arr[:FADE_SAMPLES] *= fade_in
                 arr[-FADE_SAMPLES:] *= fade_in[::-1]
+
+            # Scale to match pocket output levels (reverb normalises to peak 1.0
+            # which is much louder than neural TTS output).
+            arr *= self._volume
 
             return arr
         except Exception as exc:
