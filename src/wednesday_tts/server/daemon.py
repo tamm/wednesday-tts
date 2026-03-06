@@ -511,6 +511,11 @@ def playback_worker(backend: TTSBackend) -> None:
                     audio,
                     np.zeros(PAD_END, dtype=np.float32),
                 ])
+            else:
+                # Chunk too small for full treatment — just fade the whole thing
+                n = len(audio)
+                fade = np.linspace(0.0, 1.0, n, dtype=np.float32)
+                audio = audio.copy() * fade * fade[::-1]  # fade in AND out
 
             # Open stream if needed
             if out_stream is None or not out_stream.active:
@@ -903,7 +908,7 @@ def main() -> None:
                 print(f"accept() error: {exc}, retrying in 1s", flush=True)
                 time.sleep(1)
                 continue
-            conn.settimeout(30)
+            conn.settimeout(300)  # 5min — generation can take a while, STOP handles cancellation
             t = threading.Thread(target=handle_client, args=(conn, backend), daemon=True)
             t.start()
     except KeyboardInterrupt:
