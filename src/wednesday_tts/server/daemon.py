@@ -34,7 +34,7 @@ from .backends import REGISTRY, TTSBackend
 
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
-DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.25"))
+DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.2"))
 
 
 # ---------------------------------------------------------------------------
@@ -266,11 +266,14 @@ _active_backend_name: str = ""
 
 
 def _stop_playback() -> None:
-    """Stop current audio and drain the queue. Safe to call from any thread."""
+    """Stop current audio and drain the queue. Safe to call from any thread.
+
+    Drains the playback queue so no more items play. The persistent
+    OutputStream stays open but goes silent (nothing to write).
+    Increments _stop_gen so in-flight generation threads bail out.
+    """
     global _next_seq, _stop_gen
-    sd.stop()
-    if _active_backend is not None and hasattr(_active_backend, "abort_stream"):
-        _active_backend.abort_stream()  # type: ignore[union-attr]
+    # Drain the queue — discard all pending items
     while True:
         try:
             playback_queue.get_nowait()
@@ -346,6 +349,9 @@ def _try_play(item: np.ndarray, sample_rate: int) -> bool:
 
     get_default_output_device() forces a PortAudio terminate/initialize cycle
     before querying, which recovers from err=-50 (hardware not running).
+
+    NOTE: Only used as fallback if the persistent OutputStream fails.
+    Normal playback goes through the persistent stream in playback_worker.
     """
     device = get_default_output_device()
     try:
@@ -360,7 +366,6 @@ def _try_play(item: np.ndarray, sample_rate: int) -> bool:
         try:
             active = sd.get_stream().active
         except Exception:
-            # PortAudio in bad state — treat as finished
             return False
         if not active:
             break
@@ -475,24 +480,93 @@ def _audio_health_worker() -> None:
 # ---------------------------------------------------------------------------
 
 def playback_worker(backend: TTSBackend) -> None:
-    """Dedicated thread: plays audio arrays from the queue in FIFO order.
+    """Dedicated thread: plays audio from the queue through a persistent OutputStream.
 
-    This is the ONLY code that plays audio. All paths (streaming and batch)
-    enqueue np.ndarray chunks here; nothing else touches the audio device.
+    This is the ONLY code that touches the audio device. Queue items are
+    np.ndarray chunks (any size). They're written to one long-lived
+    OutputStream — no gaps between clips, no start/stop overhead.
+
+    If the OutputStream dies (device switch, PortAudio error), it's
+    reopened on the next item.
     """
+    out_stream: sd.OutputStream | None = None
+    device_rate = _get_device_samplerate(backend.sample_rate)
+
+    def _open_stream() -> sd.OutputStream | None:
+        nonlocal device_rate
+        for _attempt in range(3):
+            try:
+                if _attempt > 0:
+                    sd._terminate()
+                    sd._initialize()
+                device = get_default_output_device()
+                device_rate = _get_device_samplerate(backend.sample_rate)
+                s = sd.OutputStream(
+                    samplerate=device_rate,
+                    device=device,
+                    channels=1,
+                    dtype="float32",
+                )
+                s.start()
+                return s
+            except Exception as exc:
+                print(f"[playback] OutputStream open failed (attempt {_attempt + 1}/3): {exc}", flush=True)
+                if _attempt < 2:
+                    time.sleep(1.0)
+        return None
+
     while True:
         item = playback_queue.get()
         if item is None:
             break
         try:
-            if not _try_play(item, backend.sample_rate):
-                time.sleep(1.0)
-                print("Retrying playback after failure...", flush=True)
-                _try_play(item, backend.sample_rate)
+            # Upsample to device rate
+            audio = _upsample(item.astype(np.float32), backend.sample_rate, device_rate)
+
+            # Open stream if needed
+            if out_stream is None or not out_stream.active:
+                if out_stream is not None:
+                    try:
+                        out_stream.close()
+                    except Exception:
+                        pass
+                out_stream = _open_stream()
+                if out_stream is None:
+                    print("[playback] no stream, falling back to sd.play()", flush=True)
+                    _try_play(item, backend.sample_rate)
+                    continue
+
+            # Write in small chunks so STOP can interrupt mid-playback.
+            # Each chunk is ~100ms — short enough for responsive stop,
+            # long enough to avoid write() call overhead.
+            WRITE_CHUNK = int(device_rate * 0.1)
+            write_gen = _stop_gen
+            flat = audio.reshape(-1)
+            offset = 0
+            try:
+                while offset < len(flat) and _stop_gen == write_gen:
+                    end = min(offset + WRITE_CHUNK, len(flat))
+                    out_stream.write(flat[offset:end].reshape(-1, 1))
+                    offset = end
+            except Exception as exc:
+                print(f"[playback] write failed: {exc}, reopening stream", flush=True)
+                try:
+                    out_stream.close()
+                except Exception:
+                    pass
+                out_stream = _open_stream()
         except Exception as exc:
-            print(f"Playback error: {exc}", flush=True)
+            print(f"[playback] error: {exc}", flush=True)
         finally:
             playback_queue.task_done()
+
+    # Shutdown
+    if out_stream is not None:
+        try:
+            out_stream.stop()
+            out_stream.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +755,20 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         )
         if use_streaming:
             print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}", flush=True)
-            audio = backend.generate_streaming(text, speed=speed)
+            _gs = gen_snap  # capture for closure
+            audio = backend.generate_streaming(
+                text, speed=speed,
+                playback_queue=playback_queue,
+                stop_check=lambda: _stop_gen != _gs,
+            )
+            # If audio is None, generate_streaming already queued chunks directly
+            if audio is None:
+                with _order_cond:
+                    _next_seq = 0
+                    _order_cond.notify_all()
+                _stat_inc("requests_completed")
+                conn.send(b"ok")
+                return
         else:
             print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}", flush=True)
             audio = _render_segments(segments, backend, speed, gen_snap)

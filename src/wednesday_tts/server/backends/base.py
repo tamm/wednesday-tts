@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 
-DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.0"))
+DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.2"))
 
 
 def soundstretch_tempo(audio_arr: np.ndarray, samplerate: int, speed: float) -> np.ndarray:

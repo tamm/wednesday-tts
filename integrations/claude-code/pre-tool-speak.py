@@ -105,7 +105,7 @@ def _post_to_server(text: str, session_id: str) -> bool:
     else:
         # Unix socket — daemon protocol: SEQ:0:speed:ct:ts:text
         try:
-            cmd = f"SEQ:0:1.0:markdown::{text}\n".encode("utf-8")
+            cmd = f"SEQ:0:N:markdown::{text}\n".encode("utf-8")
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(CONNECT_TIMEOUT)
             s.connect(UNIX_SOCKET_PATH)

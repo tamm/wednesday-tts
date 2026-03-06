@@ -69,7 +69,7 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
     On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
     On Windows: raw HTTP POST to localhost:5678.
 
-    Uses colon-delimited fields: SEQ:0:1.0:markdown:<wall_time>:<text>
+    Uses colon-delimited fields: SEQ:0:N:markdown:<wall_time>:<text>
     """
     body_str = text
 
@@ -100,7 +100,7 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
         # If no response in 10s, ping to diagnose and optionally restart.
         import subprocess
 
-        cmd = f"SEQ:0:1.0:markdown:{wall_time}:{body_str}\n".encode("utf-8")
+        cmd = f"SEQ:0:N:markdown:{wall_time}:{body_str}\n".encode("utf-8")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10)
         s.connect(UNIX_SOCKET_PATH)
