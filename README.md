@@ -80,7 +80,7 @@ speak(text)
 In raw daemon protocol (hooks):
 
 ```
-SEQ:0:1.0:__ct:markdown__Normal text. {voice:sam}Robot text.{/voice} More normal.
+SEQ:0:1.0:markdown::Normal text. {voice:sam}Robot text.{/voice} More normal.
 ```
 
 ---

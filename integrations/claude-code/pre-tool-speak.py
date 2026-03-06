@@ -5,112 +5,35 @@ PreToolUse hook — speaks any unread assistant text before each tool call.
 Claude often writes a sentence before running a tool (e.g. "Let me check that.")
 The Stop hook only fires at end of a full turn, so those mid-turn messages are
 never spoken. This hook fires before every tool call, finds assistant text blocks
-from the current turn that haven't been spoken yet, and POSTs them to the
-wednesday-tts server for normalization and synthesis.
-
-State tracking:
-  /tmp/tts-spoken-<session_id>  — newline-separated hashes of already-spoken text
+from the current turn and sends them to the wednesday-tts daemon for synthesis.
+Dedup is handled server-side by the daemon's ring buffer.
 
 If the server is not running, the hook exits silently (no error, no crash).
 """
 
-import hashlib
 import json
 import os
 import socket
 import sys
-import time
 import urllib.request
 import urllib.error
 
 TTS_URL = "http://localhost:5678/speak?content_type=markdown"
-HEALTH_URL = "http://localhost:5678/health"
-SPOKEN_TTL = 240  # seconds — don't repeat same text within this window
 CONNECT_TIMEOUT = 1.0  # seconds — bail fast if server not running
 UNIX_SOCKET_PATH = "/tmp/tts-daemon.sock"
 _IS_WINDOWS = os.name == "nt"
 
 
 # ---------------------------------------------------------------------------
-# Spoken-hash tracking (deduplication across concurrent hooks)
-# ---------------------------------------------------------------------------
-
-def _spoken_hashes_path(session_id: str) -> str:
-    tmp = os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
-    safe_id = session_id.replace("/", "_").replace("\\", "_")
-    return os.path.join(tmp, f"tts-spoken-{safe_id}")
-
-
-def _text_hash(text: str) -> str:
-    return hashlib.sha1(text.encode()).hexdigest()[:16]
-
-
-def _load_spoken_approx(session_id: str) -> set:
-    """Non-atomic pre-filter — used only to skip obviously-already-spoken text."""
-    path = _spoken_hashes_path(session_id)
-    now = time.time()
-    try:
-        with open(path) as f:
-            recent = set()
-            for line in f:
-                parts = line.strip().split(" ", 1)
-                if len(parts) == 2:
-                    h, ts = parts
-                    try:
-                        if now - float(ts) < SPOKEN_TTL:
-                            recent.add(h)
-                    except ValueError:
-                        pass
-                elif parts[0]:
-                    recent.add(parts[0])
-            return recent
-    except FileNotFoundError:
-        return set()
-
-
-def _claim_unspoken(session_id: str, hashes: list) -> list:
-    """Atomically claim hashes so concurrent hooks don't double-speak the same text."""
-    path = _spoken_hashes_path(session_id)
-    now = time.time()
-    try:
-        try:
-            f = open(path, "r+")
-        except FileNotFoundError:
-            f = open(path, "w+")
-        with f:
-            # Read current state
-            f.seek(0)
-            recent = set()
-            for line in f.readlines():
-                parts = line.strip().split(" ", 1)
-                if len(parts) == 2:
-                    h, ts = parts
-                    try:
-                        if now - float(ts) < SPOKEN_TTL:
-                            recent.add(h)
-                    except ValueError:
-                        pass
-                elif parts[0]:
-                    recent.add(parts[0])
-            unclaimed = [h for h in hashes if h not in recent]
-            if unclaimed:
-                f.seek(0, 2)  # append
-                ts_str = f"{now:.3f}"
-                for h in unclaimed:
-                    f.write(f"{h} {ts_str}\n")
-                f.flush()
-        return unclaimed
-    except Exception:
-        # Can't lock — fall back to all (may duplicate, but better than silence)
-        return list(hashes)
-
-
-# ---------------------------------------------------------------------------
 # Transcript parsing
 # ---------------------------------------------------------------------------
 
-def _get_unspoken_assistant_text(transcript_path: str | None, session_id: str) -> list:
-    """Return (hash, raw_text) pairs for unseen assistant text in the current turn."""
+def _get_unsent_assistant_texts(transcript_path: str | None) -> list[str]:
+    """Return raw text blocks for assistant messages in the current turn.
+
+    Dedup is handled server-side by the daemon's ring buffer — this hook
+    just extracts all assistant text blocks after the last user message.
+    """
     if not transcript_path or not os.path.exists(transcript_path):
         return []
 
@@ -133,8 +56,7 @@ def _get_unspoken_assistant_text(transcript_path: str | None, session_id: str) -
     if last_user_idx < 0:
         return []
 
-    spoken_approx = _load_spoken_approx(session_id)
-    candidates = []
+    texts = []
 
     for msg in messages[last_user_idx + 1:]:
         if msg.get("type") != "assistant":
@@ -146,13 +68,10 @@ def _get_unspoken_assistant_text(transcript_path: str | None, session_id: str) -
             if block.get("type") != "text":
                 continue
             raw = block.get("text", "").strip()
-            if not raw:
-                continue
-            h = _text_hash(raw)
-            if h not in spoken_approx:
-                candidates.append((h, raw))
+            if raw:
+                texts.append(raw)
 
-    return candidates
+    return texts
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +103,9 @@ def _post_to_server(text: str, session_id: str) -> bool:
         except Exception:
             return False
     else:
-        # Unix socket — daemon protocol: SEQ:0:speed:content_type:text
+        # Unix socket — daemon protocol: SEQ:0:speed:ct:ts:text
         try:
-            cmd = f"SEQ:0:1.0:__ct:markdown__{text}\n".encode("utf-8")
+            cmd = f"SEQ:0:1.0:markdown::{text}\n".encode("utf-8")
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(CONNECT_TIMEOUT)
             s.connect(UNIX_SOCKET_PATH)
@@ -226,21 +145,14 @@ def main() -> None:
         session_id = input_data.get("session_id", "unknown")
         transcript_path = input_data.get("transcript_path")
 
-        candidates = _get_unspoken_assistant_text(transcript_path, session_id)
-        if not candidates:
+        texts = _get_unsent_assistant_texts(transcript_path)
+        if not texts:
             sys.exit(0)
 
-        # Atomically claim the hashes — concurrent hooks that race us will see
-        # them already claimed and exit without speaking.
-        claimed_hashes = _claim_unspoken(session_id, [h for h, _ in candidates])
-        if not claimed_hashes:
-            sys.exit(0)
-
-        claimed_set = set(claimed_hashes)
-        claimed_texts = [raw for h, raw in candidates if h in claimed_set]
-
-        # Combine all claimed blocks and send as a single request
-        combined = " ".join(claimed_texts).strip()
+        # Combine all text blocks and send as a single request.
+        # The daemon deduplicates — if it already spoke this text it will
+        # return "ok" without rendering or playing it again.
+        combined = " ".join(texts).strip()
         if len(combined) < 5:
             sys.exit(0)
 

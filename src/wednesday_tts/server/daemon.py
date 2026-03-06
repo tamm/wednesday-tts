@@ -660,6 +660,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── Dedup: skip if this text was recently spoken ─────────────────
         if _dedup_check(text):
+            print(f"[req] dedup skip, seq={seq}, {len(text)} chars", flush=True)
             _stat_inc("requests_completed")
             conn.send(b"ok")
             return
@@ -672,12 +673,18 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
 
-        # Streaming disabled — batch generate() renders one complete audio
-        # array, queued as a single clip. No choppy per-chunk playback.
-        use_streaming = False
-
-        # Batch render — stitch segments from different backends
-        audio = _render_segments(segments, backend, speed, gen_snap)
+        # Render: use streaming inference if single-voice, else batch
+        use_streaming = (
+            not has_mixed_voices
+            and hasattr(backend, "generate_streaming")
+            and _stop_gen == gen_snap
+        )
+        if use_streaming:
+            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}", flush=True)
+            audio = backend.generate_streaming(text, speed=speed)
+        else:
+            print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}", flush=True)
+            audio = _render_segments(segments, backend, speed, gen_snap)
 
         # ── Enqueue in order ──────────────────────────────────────────────
         if seq is not None:
@@ -701,7 +708,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     return
                 if audio is not None:
                     playback_queue.put(audio)
-                _next_seq += 1
+                _next_seq = 0
                 _order_cond.notify_all()
         elif audio is not None:
             playback_queue.put(audio)

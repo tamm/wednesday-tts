@@ -18,33 +18,6 @@ from .base import TTSBackend, DEFAULT_SPEED, soundstretch_tempo
 
 _streaming_lock = threading.Lock()
 
-# Sentinel object used to signal end-of-stream to the PortAudio callback.
-# Using a distinct object (not None) lets the callback distinguish "buffer
-# temporarily empty, keep playing silence" from "producer is done, stop".
-_STREAM_SENTINEL = object()
-
-# Consecutive PortAudio write failures. When this hits the threshold,
-# the process exits so launchd restarts with a fresh PortAudio init.
-# A successful stream resets the counter to zero.
-_consecutive_stream_failures = 0
-_stream_failure_lock = threading.Lock()
-_STREAM_FAILURE_EXIT_THRESHOLD = 3
-
-
-def _record_stream_failure() -> int:
-    """Increment and return the consecutive stream failure count."""
-    global _consecutive_stream_failures
-    with _stream_failure_lock:
-        _consecutive_stream_failures += 1
-        return _consecutive_stream_failures
-
-
-def _reset_stream_failures() -> None:
-    """Reset consecutive stream failure count after a successful stream."""
-    global _consecutive_stream_failures
-    with _stream_failure_lock:
-        _consecutive_stream_failures = 0
-
 
 # ---------------------------------------------------------------------------
 # Device/sample-rate helpers (duplicated from daemon.py to avoid circular import)
@@ -160,292 +133,25 @@ class PocketTTSBackend(TTSBackend):
             arr = soundstretch_tempo(arr, self.sample_rate, use_speed)
         return arr
 
-    def play_streaming(self, text: str, speed: float | None = None) -> None:
-        """Stream audio directly to output device — lowest latency to first sound.
+    def generate_streaming(self, text: str, speed: float | None = None) -> "np.ndarray | None":
+        """Generate audio using streaming inference, return one concatenated array.
 
-        Uses callback-mode OutputStream so PortAudio pulls audio from a queue
-        via a Python callback. Our thread feeds the queue and never blocks at
-        C level — if PortAudio stops consuming, queue.put(timeout=2.0) times
-        out instead of hanging forever.
+        Uses generate_audio_stream() for fast chunk-by-chunk inference, collects
+        all chunks, concatenates, applies soundstretch if needed. Returns the
+        same thing as generate() but may be faster to first result since streaming
+        inference can start yielding before the full sequence is planned.
 
-        When speed ~= 1.0: pure streaming, all chunks fed straight into the
-        audio buffer.
-        When speed != 1.0: hybrid — lead-in at native speed for instant first
-        sound, then ALL post-lead-in audio is accumulated and passed through a
-        SINGLE soundstretch call (run in a background thread) to eliminate
-        boundary pops/clicks. The callback drains bridge silence while
-        soundstretch runs.
-        """
-        import queue as _queue
-
-        import sounddevice as sd  # type: ignore[import]
-
-        if self._model is None:
-            raise RuntimeError("PocketTTSBackend not loaded — call load() first")
-
-        use_speed = speed if speed is not None else self._speed
-        needs_speed = abs(use_speed - 1.0) > 0.01
-
-        # One OutputStream at a time. Timeout prevents new requests piling up
-        # behind a previous hung stream forever.
-        _LOCK_TIMEOUT = 35.0  # slightly longer than daemon's min streaming timeout
-        if not _streaming_lock.acquire(timeout=_LOCK_TIMEOUT):
-            print(
-                f"[TTS] _streaming_lock not acquired after {_LOCK_TIMEOUT:.0f}s — "
-                "previous stream likely hung, skipping",
-                flush=True,
-            )
-            return
-
-        try:
-            # Retry open/start up to 3 times. On each attempt force a full
-            # PortAudio terminate/initialize cycle so err=-50 is recovered.
-            out_stream = None
-            device_rate = self.sample_rate  # fallback; updated on each attempt
-            for _attempt in range(3):
-                try:
-                    # Reinit PortAudio only on retries — not on the first attempt.
-                    # On first attempt PortAudio is in a known state (either freshly
-                    # initialised by sounddevice's lazy init, or already running).
-                    # Calling _terminate() while another thread may have a reference
-                    # to PortAudio resources can corrupt state. Only reinit after a
-                    # failure to recover from a bad state.
-                    if _attempt > 0:
-                        sd._terminate()
-                        sd._initialize()
-                    device_rate = _get_device_samplerate(self.sample_rate)
-
-                    # Audio buffer: our thread enqueues chunks; PortAudio
-                    # callback dequeues them. maxsize=8 gives ~170 ms of
-                    # buffering at 48 kHz / 1024 frames per block.
-                    audio_buf: _queue.Queue[np.ndarray | None] = _queue.Queue(maxsize=8)
-                    callback_done = threading.Event()
-
-                    def _callback(
-                        outdata: np.ndarray,
-                        frames: int,
-                        time_info: object,
-                        status: object,
-                        _buf: _queue.Queue = audio_buf,  # type: ignore[type-arg]
-                    ) -> None:
-                        # Called by PortAudio in its own thread — must not block.
-                        try:
-                            chunk = _buf.get_nowait()
-                        except _queue.Empty:
-                            # Buffer temporarily empty — output silence and keep going.
-                            # Model inference takes time; don't stop the stream yet.
-                            outdata[:] = 0
-                            return
-                        if chunk is _STREAM_SENTINEL:
-                            # Producer signalled end-of-stream — stop cleanly.
-                            outdata[:] = 0
-                            raise sd.CallbackStop()
-                        n = min(len(chunk), frames)
-                        outdata[:n, 0] = chunk[:n]
-                        if n < frames:
-                            outdata[n:] = 0
-                        # Put remainder back so no audio is lost
-                        if len(chunk) > frames:
-                            try:
-                                _buf.put_nowait(chunk[frames:])
-                            except _queue.Full:
-                                pass  # drop remainder on overflow
-
-                    out_stream = sd.OutputStream(
-                        samplerate=device_rate, channels=1, dtype="float32",
-                        callback=_callback,
-                        finished_callback=callback_done.set,
-                        blocksize=1024,  # ~21 ms at 48 kHz
-                    )
-                    out_stream.start()
-                    break
-                except Exception as exc:
-                    print(
-                        f"[TTS] OutputStream open/start failed (attempt {_attempt + 1}/3): {exc}",
-                        flush=True,
-                    )
-                    if out_stream is not None:
-                        try:
-                            out_stream.close()
-                        except Exception:
-                            pass
-                        out_stream = None
-                    if _attempt < 2:
-                        time.sleep(1.0)
-
-            if out_stream is None:
-                _n = _record_stream_failure()
-                print(
-                    f"[TTS] play_streaming: failed to open audio stream after 3 attempts "
-                    f"({_n} consecutive failures), aborting.",
-                    flush=True,
-                )
-                if _n >= _STREAM_FAILURE_EXIT_THRESHOLD:
-                    print("[TTS] Too many open failures — exiting for restart", flush=True)
-                    os._exit(1)
-                return
-
-            self._active_stream = out_stream
-            self._stream_start_time = time.monotonic()
-
-            # _buf_put: enqueue a pre-upsampled float32 column vector.
-            # Returns False if the callback stopped consuming (PortAudio wedged).
-            def _buf_put(arr: np.ndarray) -> bool:
-                """Enqueue arr into audio_buf. Returns False on timeout."""
-                up = _upsample(arr.astype(np.float32), self.sample_rate, device_rate)
-                flat = up.reshape(-1)
-                try:
-                    audio_buf.put(flat, timeout=8.0)
-                    return True
-                except _queue.Full:
-                    print(
-                        "[TTS] callback not consuming audio — PortAudio may be wedged",
-                        flush=True,
-                    )
-                    _record_stream_failure()
-                    return False
-
-            stopped = False
-            try:
-                leadin_written = 0
-                remainder_chunks: list[np.ndarray] = []
-
-                with self._lock:
-                    for audio_chunk in self._model.generate_audio_stream(
-                        self._voice_state,
-                        text,
-                        frames_after_eos=self._frames_after_eos,
-                    ):
-                        if self._active_stream is None:
-                            stopped = True
-                            break
-                        arr = audio_chunk.numpy() if hasattr(audio_chunk, "numpy") else np.array(audio_chunk)
-                        if arr.ndim > 1:
-                            arr = arr.flatten()
-                        if arr.size == 0:
-                            continue
-
-                        if not needs_speed:
-                            if not _buf_put(arr):
-                                _n = _record_stream_failure()
-                                if _n >= _STREAM_FAILURE_EXIT_THRESHOLD:
-                                    print(
-                                        f"[TTS] {_n} consecutive stream failures "
-                                        "— PortAudio is broken, exiting for restart",
-                                        flush=True,
-                                    )
-                                    os._exit(1)
-                                stopped = True
-                                break
-                        else:
-                            if leadin_written < self._LEADIN_SAMPLES:
-                                remaining = self._LEADIN_SAMPLES - leadin_written
-                                direct = arr[:remaining]
-                                leftover = arr[remaining:]
-                                if not _buf_put(direct):
-                                    _n = _record_stream_failure()
-                                    if _n >= _STREAM_FAILURE_EXIT_THRESHOLD:
-                                        print(
-                                            f"[TTS] {_n} consecutive stream failures "
-                                            "— PortAudio is broken, exiting for restart",
-                                            flush=True,
-                                        )
-                                        os._exit(1)
-                                    stopped = True
-                                    break
-                                leadin_written += direct.size
-                                if leftover.size > 0:
-                                    remainder_chunks.append(leftover)
-                            else:
-                                remainder_chunks.append(arr)
-
-                # Soundstretch remainder: run in background, feed bridge silence
-                # into the buffer to keep the callback alive while it processes.
-                if not stopped and needs_speed and remainder_chunks:
-                    full_remainder = np.concatenate(remainder_chunks)
-
-                    stretch_result: list[np.ndarray | None] = [None]
-                    stretch_done = threading.Event()
-
-                    def _do_stretch() -> None:
-                        stretch_result[0] = soundstretch_tempo(
-                            full_remainder, self.sample_rate, use_speed
-                        )
-                        stretch_done.set()
-
-                    threading.Thread(target=_do_stretch, daemon=True).start()
-
-                    # Feed bridge silence while soundstretch processes
-                    BRIDGE_CHUNK = int(device_rate * 0.02)   # 20 ms per chunk
-                    MAX_BRIDGE   = int(device_rate * 1.5)    # cap at 1.5 s silence
-                    silence = np.zeros(BRIDGE_CHUNK, dtype=np.float32)
-                    bridge_written = 0
-                    while not stretch_done.is_set() and not stopped:
-                        if self._active_stream is None:
-                            stopped = True
-                            break
-                        if bridge_written >= MAX_BRIDGE:
-                            break
-                        try:
-                            audio_buf.put(silence, timeout=2.0)
-                        except _queue.Full:
-                            stopped = True
-                            break
-                        bridge_written += BRIDGE_CHUNK
-
-                    if not stopped:
-                        stretch_done.wait(timeout=5.0)
-
-                    if not stopped and stretch_result[0] is not None:
-                        _buf_put(stretch_result[0])
-
-                # Trailing silence prevents final-syllable clipping
-                if not stopped:
-                    pad = np.zeros(int(device_rate * 0.08), dtype=np.float32)
-                    try:
-                        audio_buf.put(pad, timeout=2.0)
-                    except _queue.Full:
-                        pass
-
-                # Send sentinel to tell the callback to stop
-                try:
-                    audio_buf.put(_STREAM_SENTINEL, timeout=2.0)
-                except _queue.Full:
-                    pass
-
-                # Wait for PortAudio to drain and finish
-                if not callback_done.wait(timeout=10.0):
-                    print("[TTS] callback did not finish in 10s — PortAudio wedged", flush=True)
-                    _record_stream_failure()
-
-            except Exception:
-                pass  # stream aborted by stop — expected
-            finally:
-                self._active_stream = None
-                try:
-                    out_stream.abort()
-                    out_stream.close()
-                except Exception:
-                    pass
-                # Reset failure counter on any stream that didn't hit an error
-                if not stopped:
-                    _reset_stream_failures()
-        finally:
-            _streaming_lock.release()
-
-    def stream_chunks(self, text: str, speed: float | None = None):
-        """Yield np.ndarray audio chunks without playing them.
-
-        Each chunk is a 1-D float32 array at self.sample_rate. Speed adjustment
-        (soundstretch) is NOT applied here — the caller is responsible for that
-        if needed, or can enqueue raw chunks for natural-speed playback.
-
-        Uses the model's generate_audio_stream() for true streaming inference.
+        Hard deadline: if generation exceeds _GENERATE_DEADLINE, returns what
+        we have so far.
         """
         if self._model is None:
             raise RuntimeError("PocketTTSBackend not loaded — call load() first")
 
         use_speed = speed if speed is not None else self._speed
+        _GENERATE_DEADLINE = 8.0
+
+        chunks: list[np.ndarray] = []
+        gen_start = time.monotonic()
 
         with self._lock:
             for audio_chunk in self._model.generate_audio_stream(
@@ -453,24 +159,24 @@ class PocketTTSBackend(TTSBackend):
                 text,
                 frames_after_eos=self._frames_after_eos,
             ):
+                if time.monotonic() - gen_start > _GENERATE_DEADLINE:
+                    print(f"[stream] generation deadline ({_GENERATE_DEADLINE}s) hit, returning what we have", flush=True)
+                    break
                 arr = audio_chunk.numpy() if hasattr(audio_chunk, "numpy") else np.array(audio_chunk)
                 if arr.ndim > 1:
                     arr = arr.flatten()
-                if arr.size == 0:
-                    continue
+                if arr.size > 0:
+                    chunks.append(arr)
 
-                # Apply soundstretch per-chunk if speed != 1.0
-                if abs(use_speed - 1.0) > 0.01:
-                    arr = soundstretch_tempo(arr, self.sample_rate, use_speed)
+        gen_elapsed = time.monotonic() - gen_start
+        total_samples = sum(c.size for c in chunks)
+        audio_dur = total_samples / self.sample_rate if total_samples else 0
+        print(f"[stream] generated {len(chunks)} chunks, {audio_dur:.1f}s audio in {gen_elapsed:.1f}s wall", flush=True)
 
-                yield arr.astype(np.float32)
+        if not chunks:
+            return None
 
-    def abort_stream(self) -> None:
-        """Abort the active OutputStream if one is running."""
-        s = self._active_stream
-        if s is not None:
-            self._active_stream = None
-            try:
-                s.abort()
-            except Exception:
-                pass
+        arr = np.concatenate(chunks)
+        if abs(use_speed - 1.0) > 0.01:
+            arr = soundstretch_tempo(arr, self.sample_rate, use_speed)
+        return arr

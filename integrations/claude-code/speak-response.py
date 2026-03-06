@@ -12,7 +12,6 @@ server. This script stays under 120 lines.
 Environment variables:
     TTS_MUTE=1   Disable TTS (also honoured via /tmp/tts-mute file)
 """
-import hashlib
 import json
 import os
 import socket
@@ -38,28 +37,6 @@ MUTE_PATH = os.path.join(_TEMP, "tts-mute")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _spoken_hashes_path(session_id: str) -> str:
-    """Per-session dedup file — prevents double-speak if Stop fires twice."""
-    return os.path.join(_TEMP, f"tts-spoken-{session_id}")
-
-
-def _already_spoken(text: str, session_id: str) -> bool:
-    """Return True if this text hash has already been sent this session."""
-    h = hashlib.md5(text.encode()).hexdigest()
-    path = _spoken_hashes_path(session_id)
-    try:
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                if h in {line.strip() for line in f}:
-                    return True
-        # Record now so a racing second invocation sees it
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(h + "\n")
-    except Exception:
-        pass
-    return False
-
 
 def _get_last_assistant_message(transcript_path: str | None) -> str:
     """Fallback: extract last assistant message from the transcript JSON."""
@@ -92,9 +69,9 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
     On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
     On Windows: raw HTTP POST to localhost:5678.
 
-    Prepends __t:<wall_time>__ for server-side end-to-end timing.
+    Uses colon-delimited fields: SEQ:0:1.0:markdown:<wall_time>:<text>
     """
-    body_str = f"__t:{wall_time}__" + text
+    body_str = text
 
     if _IS_WINDOWS:
         body = body_str.encode("utf-8")
@@ -123,7 +100,7 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
         # If no response in 10s, ping to diagnose and optionally restart.
         import subprocess
 
-        cmd = f"SEQ:0:1.0:__ct:markdown__{body_str}\n".encode("utf-8")
+        cmd = f"SEQ:0:1.0:markdown:{wall_time}:{body_str}\n".encode("utf-8")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10)
         s.connect(UNIX_SOCKET_PATH)
@@ -189,10 +166,6 @@ def main() -> None:
            _get_last_assistant_message(payload.get("transcript_path"))
 
     if not text or len(text.strip()) < 5:
-        sys.exit(0)
-
-    # Dedup guard — bail if we've already sent this text this session
-    if _already_spoken(text, session_id):
         sys.exit(0)
 
     # Send to server — silent fail if server is not running

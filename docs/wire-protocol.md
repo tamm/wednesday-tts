@@ -4,30 +4,30 @@ The daemon listens on a Unix socket at `/tmp/tts-daemon.sock`. Each connection c
 
 ## Commands
 
-### SEQ:N:speed:text
+### SEQ:N:speed:ct:ts:text
 
 Primary command. Render text and play audio in sequence order.
 
 **Wire format:**
 ```
-SEQ:<seq_num>:<speed>:<text>\n
+SEQ:<seq_num>:<speed>:<content_type>:<timestamp>:<text>\n
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | seq_num | int | Sequence number (0-based). Playback order follows sequence order. |
 | speed | float or "N" | Tempo multiplier. "N" means use server default (TTS_SPEED env, default 1.25). |
-| text | string | The text to speak. May contain optional prefixes (see below). |
-
-**Optional text prefixes** (parsed and stripped by the daemon):
-
-- `__ct:<content_type>__` — content type for normalisation. Values: `markdown`, `normalized`. Default if absent: `normalized` (no normalisation applied).
-- `__t:<unix_timestamp>__` — wall-clock time the hook sent the request, used for end-to-end latency tracking.
+| content_type | string | Content type for normalisation. Values: `markdown`, `normalized`. Empty string defaults to `markdown`. |
+| timestamp | float or "" | Wall-clock epoch when the hook sent the request. Used for end-to-end latency tracking. Empty string if not available. |
+| text | string | Everything after the 5th colon. The text to speak. |
 
 **Example:**
 ```
-SEQ:0:1.0:__ct:markdown____t:1709715600.123__Hello world\n
+SEQ:0:1.0:markdown:1709715600.123:Hello world\n
+SEQ:0:1.0:markdown::Hello world\n
 ```
+
+**Backward compatibility:** The daemon also accepts the old 4-field format `SEQ:N:speed:text` where `__ct:` and `__t:` prefixes are embedded in the text. This will be removed in a future version.
 
 **Behaviour:**
 
