@@ -169,7 +169,21 @@ def _render_segments(
 
     if not chunks:
         return None
-    return np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+    if len(chunks) == 1:
+        return chunks[0]
+
+    # Cross-fade segment boundaries to prevent clicks at voice transitions.
+    XFADE = int(target_rate * 0.008)  # 8ms overlap
+    merged = chunks[0]
+    for chunk in chunks[1:]:
+        overlap = min(XFADE, len(merged), len(chunk))
+        if overlap > 1:
+            fade = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
+            merged[-overlap:] *= fade[::-1]  # fade out tail
+            chunk = chunk.copy()
+            chunk[:overlap] *= fade           # fade in head
+        merged = np.concatenate([merged, chunk])
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -236,21 +250,15 @@ def _load_normalize_deps() -> tuple[list, dict]:
         os.path.join(os.path.expanduser("~"), ".claude", "hooks"),
     ]
 
+    from wednesday_tts.normalize.dictionary import load_dictionary, load_filenames_dict
+
     for base in candidates:
         dict_path = os.path.join(base, "tts-dictionary.json")
         filenames_path = os.path.join(base, "tts-filenames.json")
         if os.path.exists(dict_path):
-            try:
-                with open(dict_path, encoding="utf-8") as f:
-                    dictionary = json.load(f).get("replacements", [])
-            except Exception:
-                pass
+            dictionary = load_dictionary(dict_path, backend="pocket")
         if os.path.exists(filenames_path):
-            try:
-                with open(filenames_path, encoding="utf-8") as f:
-                    filenames_dict = json.load(f)
-            except Exception:
-                pass
+            filenames_dict = load_filenames_dict(filenames_path)
         if dictionary or filenames_dict:
             break
 

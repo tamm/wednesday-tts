@@ -113,6 +113,14 @@ class SAMBackend(TTSBackend):
             arr = _lowpass(arr)
             arr = _reverb(arr)
 
+            # Anti-click: fade in/out to avoid pops from abrupt start/end.
+            # SAM's formant output often starts/ends at non-zero crossings.
+            FADE_SAMPLES = min(int(self.sample_rate * 0.010), len(arr) // 4)  # 10ms
+            if FADE_SAMPLES > 1:
+                fade_in = np.linspace(0.0, 1.0, FADE_SAMPLES, dtype=np.float32)
+                arr[:FADE_SAMPLES] *= fade_in
+                arr[-FADE_SAMPLES:] *= fade_in[::-1]
+
             return arr
         except Exception as exc:
             print(f"[sam] generate error: {exc}", flush=True)
