@@ -836,6 +836,10 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         _stat_inc("requests_completed")
         conn.send(b"ok")
 
+    except BrokenPipeError:
+        # Client closed socket before we replied — not a real error.
+        # The audio was (or will be) played fine; the hook just didn't wait.
+        pass
     except Exception as exc:
         _stat_inc("requests_errored")
         print(f"Error handling client: {exc}", flush=True)
