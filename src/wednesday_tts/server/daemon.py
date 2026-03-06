@@ -296,17 +296,12 @@ def _sigusr1_handler(sig: int, frame) -> None:
 # ---------------------------------------------------------------------------
 
 def get_default_output_device() -> int | None:
-    """Query the current default output device, forcing a PortAudio rescan.
+    """Query the current default output device.
 
-    PortAudio caches the device list at Pa_Initialize() time so it returns
-    stale results after Bluetooth device switches. Force a rescan by cycling
-    terminate/initialize before querying.
+    Does NOT cycle PortAudio terminate/initialize — that would kill any
+    active OutputStream. Device switches are handled by reopening the
+    stream on write failure.
     """
-    try:
-        sd._terminate()
-        sd._initialize()
-    except Exception:
-        pass
     try:
         return sd.query_devices(kind="output")["index"]
     except Exception:
@@ -423,55 +418,29 @@ def _hung_request_watchdog() -> None:
 # ---------------------------------------------------------------------------
 
 def _audio_health_worker() -> None:
-    """Background thread: periodically probe PortAudio.
+    """Background thread: monitor audio health via device query.
 
-    If MAX_FAILS consecutive idle probes fail, the audio subsystem is
-    wedged — exit for launchd restart.
-
-    Skips the probe while audio is actively playing or queued — opening a
-    second OutputStream while one is live causes PortAudio to return -50 on
-    macOS, which would be a false positive.
+    With the persistent OutputStream in playback_worker, we no longer open
+    test streams — that would conflict. Instead we just verify the device
+    is queryable. If it's not, playback_worker will catch write failures
+    and reopen the stream.
     """
-    GRACE = 60        # seconds before first check — let daemon stabilise
-    INTERVAL = 30     # seconds between checks
-    MAX_FAILS = 3     # consecutive *idle* failures before exit
+    GRACE = 60
+    INTERVAL = 30
+    MAX_FAILS = 5
 
     time.sleep(GRACE)
     probe_fails = 0
     while True:
         time.sleep(INTERVAL)
-
-        # Skip probe while audio is queued or playing — never kill mid-speech.
-        if not playback_queue.empty():
-            continue
-
-        # ── Probe PortAudio ──────────────────────────────────────────────
         try:
-            device = get_default_output_device()
             sd.query_devices(kind="output")
-            stream = sd.OutputStream(
-                samplerate=_get_device_samplerate(24000),
-                device=device,
-                channels=1,
-                dtype="float32",
-            )
-            try:
-                stream.start()
-                stream.stop()
-            finally:
-                stream.close()
             probe_fails = 0
         except Exception as exc:
             probe_fails += 1
-            print(f"[HEALTH] audio probe failed ({probe_fails}/{MAX_FAILS}): {exc}", flush=True)
+            print(f"[HEALTH] device query failed ({probe_fails}/{MAX_FAILS}): {exc}", flush=True)
             if probe_fails >= MAX_FAILS:
-                if not playback_queue.empty():
-                    print("[HEALTH] audio probe failing but playback queue not empty — deferring", flush=True)
-                    continue
-                print(
-                    "[HEALTH] audio subsystem wedged — exiting for restart",
-                    flush=True,
-                )
+                print("[HEALTH] audio subsystem wedged — exiting for restart", flush=True)
                 os._exit(1)
 
 
