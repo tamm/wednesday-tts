@@ -15,6 +15,8 @@ Run:
 """
 from __future__ import annotations
 
+import collections
+import hashlib
 import json
 import os
 import queue
@@ -141,6 +143,26 @@ def _render_segments(
     if not chunks:
         return None
     return np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+
+
+# ---------------------------------------------------------------------------
+# Dedup ring buffer — skip recently-spoken text
+# ---------------------------------------------------------------------------
+
+_DEDUP_SIZE = 20
+_dedup_ring: collections.deque[tuple[str, float]] = collections.deque(maxlen=_DEDUP_SIZE)
+_dedup_lock = threading.Lock()
+
+
+def _dedup_check(text: str) -> bool:
+    """Return True if text was recently spoken (duplicate). Adds it if not."""
+    h = hashlib.md5(text.encode()).hexdigest()
+    with _dedup_lock:
+        for stored_hash, _ in _dedup_ring:
+            if stored_hash == h:
+                return True
+        _dedup_ring.append((h, time.monotonic()))
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -481,14 +503,15 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
     """Handle one client connection.
 
     Protocols (wire format, newline-terminated or fixed recv):
-        SEQ:N:speed:text    render text with sequence N, play in order
-        SPEED:speed:text    legacy unsequenced render (backward compat)
-        PCM:speed:text      render and return raw PCM (4-byte LE sample_rate + float32)
-        NORMALIZE:ct:text   normalize text and return it as UTF-8 (no audio)
-        DRAIN               wait for all audio, reset seq counter
-        STOP                stop current audio, drain queue
-        PING                health check
-        STATS               return telemetry JSON
+        SEQ:N:speed:ct:ts:text  render text with sequence N, play in order
+                                ct=content_type (markdown|normalized), ts=epoch float or empty
+        SPEED:speed:text        legacy unsequenced render (backward compat, deprecated)
+        PCM:speed:text          render and return raw PCM (4-byte LE sample_rate + float32)
+        NORMALIZE:ct:text       normalize text and return it as UTF-8 (no audio)
+        DRAIN                   wait for all audio, reset seq counter
+        STOP                    stop current audio, drain queue
+        PING                    health check
+        STATS                   return telemetry JSON
     """
     global _next_seq
 
@@ -592,26 +615,34 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         content_type = "normalized"  # backward compat
 
         if message.startswith("SEQ:"):
-            # SEQ:N:speed:text  (speed=N means use default)
-            parts = message.split(":", 3)
-            if len(parts) >= 4:
+            # New format: SEQ:N:speed:content_type:timestamp:text
+            # Old format: SEQ:N:speed:text (with __ct:/__t: prefixes in text)
+            parts = message.split(":", 5)
+            if len(parts) >= 6:
+                # New format — proper colon-delimited fields
+                try:
+                    seq = int(parts[1])
+                    speed = DEFAULT_SPEED if parts[2] == "N" else float(parts[2])
+                    content_type = parts[3] if parts[3] else "markdown"
+                    # parts[4] is timestamp — logged but not used for logic
+                    text = parts[5]
+                except ValueError:
+                    pass
+            elif len(parts) >= 4:
+                # Old format — backward compat
                 try:
                     seq = int(parts[1])
                     speed = DEFAULT_SPEED if parts[2] == "N" else float(parts[2])
                     text = parts[3]
                 except ValueError:
                     pass
-            # Optional content_type prefix embedded in text: __ct:markdown__
-            # NOTE: Internal tag prepended by the hook, not user content.
-            # If user text literally starts with "__ct:<word>__" it would be
-            # misinterpreted as a content-type tag. Risk is negligible in practice.
-            _ct = re.match(r"^__ct:([a-zA-Z]+)__", text)
-            if _ct:
-                content_type = _ct.group(1)
-                text = text[_ct.end():]
-            # Strip wall-clock timestamp prefix added by hook: __t:1234567890.123__
-            # Same caveat: user text starting with "__t:<digits>__" would be stripped.
-            text = re.sub(r"^__t:[\d.]+__", "", text)
+                # Legacy __ct: prefix embedded in text
+                _ct = re.match(r"^__ct:([a-zA-Z]+)__", text)
+                if _ct:
+                    content_type = _ct.group(1)
+                    text = text[_ct.end():]
+                # Legacy __t: timestamp prefix
+                text = re.sub(r"^__t:[\d.]+__", "", text)
 
         elif message.startswith("SPEED:"):
             # DEPRECATED: use SEQ:0 instead. Will be removed in a future version.
@@ -627,6 +658,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         if content_type != "normalized":
             text = run_normalize(text, content_type=content_type)
 
+        # ── Dedup: skip if this text was recently spoken ─────────────────
+        if _dedup_check(text):
+            _stat_inc("requests_completed")
+            conn.send(b"ok")
+            return
+
         # ── Parse voice segments: split on {voice:X}...{/voice} tags ─────
         _VOICE_TAG_RE = re.compile(r"\{voice:(\w+)\}(.*?)\{/voice\}", re.DOTALL)
         segments = _split_voice_segments(text, _VOICE_TAG_RE)
@@ -635,64 +672,9 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
 
-        # Streaming path: SEQ:0 with a streaming-capable backend feeds
-        # audio chunks into playback_queue for the playback_worker to play.
-        # No direct OutputStream — playback_worker is the ONLY audio player.
-        use_streaming = (
-            seq == 0
-            and not has_mixed_voices
-            and getattr(backend, "supports_streaming", False)
-            and _stop_gen == gen_snap
-        )
-
-        if use_streaming:
-            gen_snap_local = _stop_gen
-            first_chunk_event = threading.Event()
-
-            def _stream_to_queue() -> None:
-                try:
-                    for chunk in backend.stream_chunks(text, speed):
-                        if _stop_gen != gen_snap_local:
-                            return
-                        if chunk.size == 0:
-                            continue
-                        first_chunk_event.set()
-                        playback_queue.put(chunk)
-                except Exception as exc:
-                    print(f"[stream] chunk generation error: {exc}", flush=True)
-                finally:
-                    first_chunk_event.set()  # unblock waiter even on error
-
-            t = threading.Thread(target=_stream_to_queue, daemon=True)
-            t.start()
-
-            # Wait up to 8s for first chunk — if nothing, fall back to batch
-            if not first_chunk_event.wait(timeout=8.0):
-                print("[stream] no first chunk in 8s, falling back to batch", flush=True)
-                t.join(timeout=0.1)
-                audio = _render_segments(segments, backend, speed, gen_snap)
-                if seq is not None:
-                    with _order_cond:
-                        if _stop_gen != gen_snap:
-                            conn.send(b"ok")
-                            return
-                        if audio is not None:
-                            playback_queue.put(audio)
-                        _next_seq += 1
-                        _order_cond.notify_all()
-                elif audio is not None:
-                    playback_queue.put(audio)
-            else:
-                # Streaming started — thread is feeding the queue.
-                # Advance seq so subsequent chunks can enqueue.
-                with _order_cond:
-                    if _stop_gen == gen_snap:
-                        _next_seq = 1
-                        _order_cond.notify_all()
-
-            _stat_inc("requests_completed")
-            conn.send(b"ok")
-            return
+        # Streaming disabled — batch generate() renders one complete audio
+        # array, queued as a single clip. No choppy per-chunk playback.
+        use_streaming = False
 
         # Batch render — stitch segments from different backends
         audio = _render_segments(segments, backend, speed, gen_snap)
