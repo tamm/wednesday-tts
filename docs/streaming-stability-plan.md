@@ -11,16 +11,6 @@ The TTS daemon wedges after a short period of use. Symptoms:
 - Logs show repeated `play_streaming hung after 30s` and `Broken pipe`
 - Only fix is killing the process and letting launchd restart it
 
-## History Note
-
-wednesday-tts was migrated from `../parent-repo` repo in March 2026. Earlier streaming stability history (pre-migration) exists in that repo under `services/tts-server.py`. The git log in THIS repo only goes back to 2026-03-02 when the migration happened.
-
-To see earlier streaming investigation history: check `parent-repo` git log:
-```bash
-cd ../parent-repo
-git log -- services/tts-server.py
-```
-
 ## What We Know
 
 ### Root cause: PortAudio write() blocks or errors

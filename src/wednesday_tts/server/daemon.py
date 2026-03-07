@@ -38,30 +38,41 @@ PID_PATH = "/tmp/tts-daemon.pid"
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
 
 # Error chime — played when a request times out or errors.
-# Looks for a custom sound first (not committed — drop your own mp3 here),
-# falls back to macOS system alert sound.
-_ERROR_CHIME_CANDIDATES = [
-    os.path.normpath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data", "sounds", "error.mp3")
-    ),
-    os.path.expanduser("~/dev/parent-repo/sounds/errors/input_failed_clean.mp3"),
-    "/System/Library/Sounds/Sosumi.aiff",
-]
+# Set "error_chime" in ~/.claude/tts-config.json to a sound file path.
+# Falls back to macOS system alert sound.
+_SYSTEM_CHIME = "/System/Library/Sounds/Sosumi.aiff"
+
+
+def _get_error_chime_path() -> str | None:
+    """Resolve error chime path from config, falling back to system sound."""
+    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    if os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                chime = json.load(f).get("error_chime")
+            if chime:
+                expanded = os.path.expanduser(chime)
+                if os.path.isfile(expanded):
+                    return expanded
+        except Exception:
+            pass
+    if os.path.isfile(_SYSTEM_CHIME):
+        return _SYSTEM_CHIME
+    return None
 
 
 def _play_error_chime() -> None:
     """Play an error chime in a background process."""
-    for path in _ERROR_CHIME_CANDIDATES:
-        if os.path.isfile(path):
-            try:
-                subprocess.Popen(
-                    ["afplay", path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except Exception:
-                continue
-            return
+    path = _get_error_chime_path()
+    if path:
+        try:
+            subprocess.Popen(
+                ["afplay", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

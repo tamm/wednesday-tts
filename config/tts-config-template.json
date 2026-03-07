@@ -1,6 +1,7 @@
 {
   "_comment": "Wednesday TTS config template. Copy to ~/.claude/tts-config.json and fill in real paths.",
   "active_model": "pocket",
+  "error_chime": "/path/to/your/error-sound.mp3",
   "max_chars": 500,
   "models": {
     "pocket": {

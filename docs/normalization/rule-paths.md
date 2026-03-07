@@ -9,7 +9,7 @@
 | Input                   | Output                                                                           |
 | ----------------------- | -------------------------------------------------------------------------------- |
 | `~/.claude/hooks/`      | `tilde slash dot claude slash hooks`                                             |
-| `~/dev/parent-repo` | `tilde slash dev slash parent-repo`                                          |
+| `~/dev/wednesday-tts`   | `tilde slash dev slash wednesday-tts`                                            |
 | `src/main.py`           | `src slash main dot py`                                                          |
 | `error/status/config`   | `error slash status slash config`                                                |
 | `tts-server.py`         | `tts-server dot py`                                                              |
