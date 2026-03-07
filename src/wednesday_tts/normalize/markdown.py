@@ -46,11 +46,12 @@ def clean_text_for_speech(text):
     # Inline code: keep content, strip backticks
     text = re.sub(r'`([^`]+)`', r'\1', text)
 
-    # Markdown formatting
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # bold
-    text = re.sub(r'__([^_]+)__', r'\1', text)       # bold
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)       # italic
-    text = re.sub(r'_([^_]+)_', r'\1', text)         # italic
+    # Markdown formatting — keep emphasis markers (bold/italic) so TTS
+    # engine can potentially use them; strip everything else
+    # text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # bold
+    # text = re.sub(r'__([^_]+)__', r'\1', text)       # bold
+    # text = re.sub(r'\*([^*]+)\*', r'\1', text)       # italic
+    # text = re.sub(r'_([^_]+)_', r'\1', text)         # italic
     text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)   # headers
     text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)        # blockquotes
     text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)    # unordered lists
