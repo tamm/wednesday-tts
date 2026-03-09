@@ -370,82 +370,56 @@ class TestAudioHealthWorker:
     """Verify the audio health probe handles failures correctly."""
 
     def test_health_probe_runs_when_idle(self):
-        """When no audio is queued, the health probe should run."""
+        """When no audio is queued, the health probe queries devices."""
         from wednesday_tts.server import daemon
 
-        saved_backend = daemon._active_backend
+        call_count = 0
+        def counted_sleep(n):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return
+            raise StopIteration
 
-        try:
-            daemon._active_backend = None
+        query_called = threading.Event()
+        def mock_query(kind=None):
+            query_called.set()
+            return {"index": 0, "name": "Test", "default_samplerate": 24000}
 
-            mock_stream = MagicMock()
-            probe_ran = threading.Event()
+        import sounddevice as _real_sd
+        with patch.object(_real_sd, "query_devices", side_effect=mock_query), \
+             patch.object(daemon, "get_default_output_device", return_value=0), \
+             patch.object(time, "sleep", side_effect=counted_sleep):
+            try:
+                daemon._audio_health_worker()
+            except StopIteration:
+                pass
 
-            def fake_output_stream(**kwargs):
-                probe_ran.set()
-                return mock_stream
-
-            call_count = 0
-            def counted_sleep(n):
-                nonlocal call_count
-                call_count += 1
-                if call_count <= 2:
-                    return
-                raise StopIteration
-
-            import sounddevice as _real_sd
-            with patch.object(_real_sd, "OutputStream", side_effect=fake_output_stream), \
-                 patch.object(_real_sd, "query_devices", return_value={"index": 0, "default_samplerate": 24000}), \
-                 patch.object(daemon, "get_default_output_device", return_value=0), \
-                 patch.object(daemon, "_get_device_samplerate", return_value=24000), \
-                 patch.object(daemon, "playback_queue") as mock_pq, \
-                 patch.object(time, "sleep", side_effect=counted_sleep):
-                mock_pq.empty.return_value = True
-                try:
-                    daemon._audio_health_worker()
-                except StopIteration:
-                    pass
-
-            assert probe_ran.is_set(), "Health probe did not run when idle"
-        finally:
-            daemon._active_backend = saved_backend
+        assert query_called.is_set(), "Health probe did not query devices"
 
     def test_health_probe_exits_on_repeated_failures(self):
-        """3 consecutive idle probe failures should cause os._exit."""
+        """5 consecutive device query failures should cause os._exit."""
         from wednesday_tts.server import daemon
 
-        saved_backend = daemon._active_backend
+        sleep_count = 0
+        def counted_sleep(n):
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count > 10:
+                raise StopIteration
 
-        try:
-            daemon._active_backend = None
+        import sounddevice as _real_sd
+        with patch.object(_real_sd, "query_devices", side_effect=OSError("PortAudio -50")), \
+             patch.object(daemon, "get_default_output_device", return_value=0), \
+             patch.object(daemon, "_play_error_chime"), \
+             patch("os._exit") as mock_exit, \
+             patch.object(time, "sleep", side_effect=counted_sleep):
+            try:
+                daemon._audio_health_worker()
+            except StopIteration:
+                pass
 
-            def failing_output_stream(**kwargs):
-                raise OSError("PortAudio -50")
-
-            sleep_count = 0
-            def counted_sleep(n):
-                nonlocal sleep_count
-                sleep_count += 1
-                if sleep_count > 10:
-                    raise StopIteration
-
-            import sounddevice as _real_sd
-            with patch.object(_real_sd, "OutputStream", side_effect=failing_output_stream), \
-                 patch.object(_real_sd, "query_devices", return_value={"index": 0, "default_samplerate": 24000}), \
-                 patch.object(daemon, "get_default_output_device", return_value=0), \
-                 patch.object(daemon, "_get_device_samplerate", return_value=24000), \
-                 patch.object(daemon, "playback_queue") as mock_pq, \
-                 patch("os._exit") as mock_exit, \
-                 patch.object(time, "sleep", side_effect=counted_sleep):
-                mock_pq.empty.return_value = True
-                try:
-                    daemon._audio_health_worker()
-                except StopIteration:
-                    pass
-
-            mock_exit.assert_called_with(1)
-        finally:
-            daemon._active_backend = saved_backend
+        mock_exit.assert_called_with(1)
 
 
 # ---------------------------------------------------------------------------

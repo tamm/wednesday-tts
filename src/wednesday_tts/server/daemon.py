@@ -307,6 +307,7 @@ _next_seq = 0       # sequence number the playback queue expects next
 _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
 
 playback_queue: queue.Queue = queue.Queue()
+_device_changed = threading.Event()  # set by health worker when default output device changes
 _active_backend: TTSBackend | None = None
 _active_backend_name: str = ""
 
@@ -466,24 +467,36 @@ def _hung_request_watchdog() -> None:
 # ---------------------------------------------------------------------------
 
 def _audio_health_worker() -> None:
-    """Background thread: monitor audio health via device query.
+    """Background thread: monitor audio health and detect device switches.
 
-    With the persistent OutputStream in playback_worker, we no longer open
-    test streams — that would conflict. Instead we just verify the device
-    is queryable. If it's not, playback_worker will catch write failures
-    and reopen the stream.
+    Checks two things every cycle:
+    1. Is the audio subsystem queryable? (exits daemon after 5 consecutive failures)
+    2. Has the default output device changed? (signals playback worker to reopen stream)
+
+    Device change detection catches Bluetooth headphones connecting/disconnecting,
+    which changes the macOS default output device. Without this, the persistent
+    OutputStream stays pinned to the old device (e.g. laptop speakers).
     """
     GRACE = 60
-    INTERVAL = 30
+    INTERVAL = 5   # check every 5s for responsive device switching
     MAX_FAILS = 5
 
     time.sleep(GRACE)
     probe_fails = 0
+    last_device: int | None = get_default_output_device()
+    print(f"[HEALTH] initial output device: {last_device}", flush=True)
+
     while True:
         time.sleep(INTERVAL)
         try:
-            sd.query_devices(kind="output")
+            dev_info = sd.query_devices(kind="output")
             probe_fails = 0
+            current_device = dev_info["index"]
+            if current_device != last_device:
+                dev_name = dev_info.get("name", "unknown")
+                print(f"[HEALTH] output device changed: {last_device} → {current_device} ({dev_name})", flush=True)
+                last_device = current_device
+                _device_changed.set()
         except Exception as exc:
             probe_fails += 1
             print(f"[HEALTH] device query failed ({probe_fails}/{MAX_FAILS}): {exc}", flush=True)
@@ -515,9 +528,11 @@ def playback_worker(backend: TTSBackend) -> None:
         nonlocal device_rate
         for _attempt in range(3):
             try:
-                if _attempt > 0:
-                    sd._terminate()
-                    sd._initialize()
+                # Always cycle PortAudio so it picks up device list changes
+                # (Bluetooth connect/disconnect). Safe because the old stream
+                # is already closed before we get here.
+                sd._terminate()
+                sd._initialize()
                 device = get_default_output_device()
                 device_rate = _get_device_samplerate(backend.sample_rate)
                 s = sd.OutputStream(
@@ -567,8 +582,16 @@ def playback_worker(backend: TTSBackend) -> None:
                 fade = np.linspace(0.0, 1.0, n, dtype=np.float32)
                 audio = audio.copy() * fade * fade[::-1]  # fade in AND out
 
-            # Open stream if needed
-            if out_stream is None or not out_stream.active:
+            # Reopen stream if device changed, stream died, or not yet opened
+            need_reopen = (
+                out_stream is None
+                or not out_stream.active
+                or _device_changed.is_set()
+            )
+            if need_reopen:
+                if _device_changed.is_set():
+                    print("[playback] device change detected, reopening stream", flush=True)
+                    _device_changed.clear()
                 if out_stream is not None:
                     try:
                         out_stream.close()
