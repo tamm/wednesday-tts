@@ -489,6 +489,11 @@ def _audio_health_worker() -> None:
     while True:
         time.sleep(INTERVAL)
         try:
+            # Cycle PortAudio so it refreshes the device list.
+            # Without this, Bluetooth connect/disconnect is invisible
+            # because PortAudio caches the device enumeration.
+            sd._terminate()
+            sd._initialize()
             dev_info = sd.query_devices(kind="output")
             probe_fails = 0
             current_device = dev_info["index"]
