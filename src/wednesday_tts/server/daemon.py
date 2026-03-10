@@ -308,6 +308,7 @@ _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
 
 playback_queue: queue.Queue = queue.Queue()
 _device_changed = threading.Event()  # set by health worker when default output device changes
+_portaudio_lock = threading.Lock()   # guards sd._terminate()/_initialize() vs active stream writes
 _active_backend: TTSBackend | None = None
 _active_backend_name: str = ""
 
@@ -492,9 +493,12 @@ def _audio_health_worker() -> None:
             # Cycle PortAudio so it refreshes the device list.
             # Without this, Bluetooth connect/disconnect is invisible
             # because PortAudio caches the device enumeration.
-            sd._terminate()
-            sd._initialize()
-            dev_info = sd.query_devices(kind="output")
+            # Lock prevents this from tearing down PA while the
+            # playback worker is mid-write.
+            with _portaudio_lock:
+                sd._terminate()
+                sd._initialize()
+                dev_info = sd.query_devices(kind="output")
             probe_fails = 0
             current_device = dev_info["index"]
             if current_device != last_device:
@@ -619,13 +623,15 @@ def playback_worker(backend: TTSBackend) -> None:
             try:
                 while offset < len(flat) and _stop_gen == write_gen:
                     end = min(offset + WRITE_CHUNK, len(flat))
-                    out_stream.write(flat[offset:end].reshape(-1, 1))
+                    with _portaudio_lock:
+                        out_stream.write(flat[offset:end].reshape(-1, 1))
                     offset = end
                 # If nothing else queued, write 100ms of silence through the
                 # stream so the DAC settles to zero before we stop writing.
                 if is_last and _stop_gen == write_gen:
                     silence = np.zeros((int(device_rate * 0.1), 1), dtype=np.float32)
-                    out_stream.write(silence)
+                    with _portaudio_lock:
+                        out_stream.write(silence)
             except Exception as exc:
                 print(f"[playback] write failed: {exc}, reopening stream", flush=True)
                 try:
