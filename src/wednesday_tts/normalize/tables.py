@@ -49,12 +49,31 @@ def parse_table_rows(lines):
     return headers, data
 
 
+_KNOWN_TOPICS = {
+    'word', 'term', 'name', 'entry', 'item', 'key',
+    'command', 'file', 'pattern', 'variable', 'var',
+    'setting', 'option', 'flag', 'param', 'parameter',
+    'hotkey', 'shortcut', 'preference', 'hook', 'service',
+    'step', 'action', 'field', 'property', 'module',
+    'endpoint', 'route', 'method', 'tool', 'plugin',
+}
+
+_PREAMBLES_TOPIC = [
+    '{topic}.',
+    'Table of {topic}.',
+    "Here's the {topic}.",
+    '{topic} coming up.',
+]
+
+_PREAMBLES_NONE = [None, None, None, '{count} rows.']
+
+
 def table_to_speech(table_text):
     """Convert a table (markdown or unicode box) to natural spoken form.
 
-    Reads like a person would: announce the topic, use column headers on the
-    first 1-3 data rows (weighted random), then just read cell values with
-    pauses between them for the rest.
+    Varies the preamble for natural speech. Recognised first-column headers
+    get a topic word; unrecognised headers skip the preamble entirely.
+    First 1-2 data rows include column headers for context, the rest don't.
     """
     lines = table_text.strip().split('\n')
     headers, data = parse_table_rows(lines)
@@ -65,18 +84,23 @@ def table_to_speech(table_text):
         return text
 
     first_hdr = headers[0].lower().rstrip('s')
-    if first_hdr in ('word', 'term', 'name', 'entry', 'item', 'key',
-                      'command', 'file', 'pattern', 'variable', 'var',
-                      'setting', 'option', 'flag', 'param', 'parameter'):
-        topic = f'{headers[0].lower()}s'
-    else:
-        topic = 'entries'
+    is_known = first_hdr in _KNOWN_TOPICS
 
-    r = random.random()
-    headed_rows = 1 if r < 0.60 else (2 if r < 0.85 else 3)
+    if is_known:
+        topic = headers[0].lower()
+        if not topic.endswith('s'):
+            topic += 's'
+        preamble_tpl = random.choice(_PREAMBLES_TOPIC)
+    else:
+        topic = None
+        preamble_tpl = random.choice(_PREAMBLES_NONE)
+
+    headed_rows = 1 if random.random() < 0.70 else 2
 
     parts = []
-    parts.append(f'Table of {topic}.')
+    if preamble_tpl is not None:
+        preamble = preamble_tpl.format(topic=topic, count=len(data))
+        parts.append(preamble)
 
     for idx, row in enumerate(data):
         row_parts = []

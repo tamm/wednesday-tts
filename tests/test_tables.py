@@ -1,10 +1,13 @@
 """Tests for pipe table and box-drawing table to speech conversion."""
 
+import random
+
 from wednesday_tts.normalize.tables import (
     parse_table_rows,
     table_to_speech,
     MARKDOWN_TABLE_RE,
     UNICODE_TABLE_RE,
+    _KNOWN_TOPICS,
 )
 
 
@@ -90,10 +93,15 @@ def test_parse_strips_leading_trailing_pipes():
 
 # --- table_to_speech ---
 
-def test_speech_starts_with_table_of():
+def test_speech_known_topic_has_preamble_sometimes():
+    """Known topics get a preamble mentioning the topic (not every time)."""
     table = '| Name | Score |\n|------|-------|\n| Alice | 95 |'
-    result = table_to_speech(table)
-    assert result.startswith('Table of')
+    results = set()
+    random.seed(0)
+    for _ in range(50):
+        results.add(table_to_speech(table).split('\n')[0])
+    # At least one result should mention "names" in the preamble
+    assert any('names' in r.lower() for r in results)
 
 
 def test_speech_known_topic_word():
@@ -109,10 +117,14 @@ def test_speech_known_topic_command():
     assert 'commands' in result.lower()
 
 
-def test_speech_unknown_header_uses_entries():
+def test_speech_unknown_header_skips_preamble_usually():
+    """Unknown first-column headers mostly skip the preamble entirely."""
     table = '| Score | Player |\n|-------|--------|\n| 100 | Alice |'
-    result = table_to_speech(table)
-    assert 'entries' in result.lower()
+    random.seed(0)
+    results = [table_to_speech(table) for _ in range(40)]
+    # Most results should start directly with row data (no "Table of" / topic)
+    no_preamble = sum(1 for r in results if r.split('\n')[0].startswith('Score:') or r.split('\n')[0] == '100.')
+    assert no_preamble > len(results) // 2
 
 
 def test_speech_contains_cell_values():
@@ -123,10 +135,11 @@ def test_speech_contains_cell_values():
 
 
 def test_speech_row_ends_with_period():
-    table = '| Item | Count |\n|------|-------|\n| apple | 3 |'
+    table = '| Item | Count |\n|------|-------|\n| apple | 3 |\n| banana | 5 |'
     result = table_to_speech(table)
     lines = result.strip().split('\n')
-    for line in lines[1:]:  # skip "Table of..." header
+    # Every line (preamble or data) ends with a period
+    for line in lines:
         assert line.endswith('.')
 
 
@@ -170,13 +183,31 @@ def test_unicode_table_re_matches():
 
 
 def test_known_topic_singular_stripped():
-    # Header "items" -> singular "item" -> topic "items" (re-pluralised)
+    # Header "items" -> singular "item" -> known topic -> "items"
     table = '| Items | Value |\n|-------|-------|\n| x | 1 |'
+    random.seed(42)
     result = table_to_speech(table)
-    assert 'entries' in result.lower() or 'items' in result.lower()
+    # Either gets a topic preamble with "items" or starts with data
+    assert 'items' in result.lower() or result.startswith('Items:') or result.startswith('x')
 
 
 def test_known_topic_param():
     table = '| Param | Default |\n|-------|----------|\n| timeout | 30 |'
+    random.seed(42)
     result = table_to_speech(table)
-    assert 'param' in result.lower() or 'entries' in result.lower()
+    assert 'param' in result.lower() or result.startswith('timeout')
+
+
+def test_known_topics_expanded():
+    """New topic words like hotkey, shortcut, etc. are recognised."""
+    for word in ('hotkey', 'shortcut', 'preference', 'hook', 'service',
+                 'step', 'action', 'endpoint', 'route', 'tool', 'plugin'):
+        assert word in _KNOWN_TOPICS
+
+
+def test_speech_variation_across_runs():
+    """Multiple calls produce varied preambles, not identical output."""
+    table = '| Command | Description |\n|---------|-------------|\n| ls | list |\n| cd | change dir |'
+    random.seed(0)
+    results = set(table_to_speech(table) for _ in range(30))
+    assert len(results) > 1
