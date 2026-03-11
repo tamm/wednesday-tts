@@ -372,6 +372,11 @@ _portaudio_lock = threading.Lock()   # guards sd._terminate()/_initialize() vs a
 _active_backend: TTSBackend | None = None
 _active_backend_name: str = ""
 
+# Playback liveness tracking — lets watchdogs detect a wedged out_stream.write()
+_playback_heartbeat: float = 0.0     # monotonic time of last successful stream write
+_playback_stream_ref: sd.OutputStream | None = None  # current stream; watchdog can abort this
+_playback_stream_lock = threading.Lock()  # protects _playback_stream_ref
+
 
 def _stop_playback() -> None:
     """Stop current audio and drain the queue. Safe to call from any thread.
@@ -510,9 +515,6 @@ def _hung_request_watchdog() -> None:
         if in_flight > 0 and last > 0:
             age = time.monotonic() - last
             if age > HUNG_THRESHOLD:
-                # Don't kill the process while audio is queued or playing
-                if not playback_queue.empty():
-                    continue
                 print(
                     f"[WATCHDOG] {in_flight} request(s) in-flight for {age:.0f}s — "
                     "generate() appears hung, exiting for restart",
@@ -527,20 +529,53 @@ def _hung_request_watchdog() -> None:
 # Audio health watchdog
 # ---------------------------------------------------------------------------
 
+def _query_default_device_subprocess() -> tuple[int, str] | None:
+    """Query the default output device in a subprocess.
+
+    PortAudio caches the device list at init time. The only way to see
+    Bluetooth connect/disconnect is to terminate and reinitialise PA.
+    But sd._terminate() invalidates ALL stream handles process-wide,
+    killing any active OutputStream.
+
+    Solution: spawn a short-lived subprocess that initialises its own
+    PA context, queries devices, and exits. The parent's PA state and
+    stream handles are untouched.
+    """
+    try:
+        result = subprocess.run(
+            [
+                os.sys.executable, "-c",
+                "import sounddevice as sd, json; "
+                "info = sd.query_devices(kind='output'); "
+                "print(json.dumps({'index': info['index'], 'name': info['name']}))",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            import json as _json
+            data = _json.loads(result.stdout.strip())
+            return (data["index"], data["name"])
+    except Exception:
+        pass
+    return None
+
+
 def _audio_health_worker() -> None:
     """Background thread: monitor audio health and detect device switches.
 
-    Checks two things every cycle:
-    1. Is the audio subsystem queryable? (exits daemon after 5 consecutive failures)
-    2. Has the default output device changed? (signals playback worker to reopen stream)
+    Checks three things every cycle:
+    1. Has the default output device changed? (via subprocess query)
+    2. Is the audio subsystem reachable? (exits after consecutive failures)
+    3. Is the playback worker making progress? (aborts wedged stream, exits if stuck)
 
-    Device change detection catches Bluetooth headphones connecting/disconnecting,
-    which changes the macOS default output device. Without this, the persistent
-    OutputStream stays pinned to the old device (e.g. laptop speakers).
+    Device detection uses a subprocess so PortAudio terminate/initialize
+    doesn't destroy the parent's active stream handles.
     """
     GRACE = 60
     INTERVAL = 5   # check every 5s for responsive device switching
     MAX_FAILS = 5
+    STALL_ABORT = 15   # seconds before aborting a wedged stream
+    STALL_EXIT = 45    # seconds before giving up and exiting for restart
 
     time.sleep(GRACE)
     probe_fails = 0
@@ -549,31 +584,54 @@ def _audio_health_worker() -> None:
 
     while True:
         time.sleep(INTERVAL)
-        try:
-            # Cycle PortAudio so it refreshes the device list.
-            # Without this, Bluetooth connect/disconnect is invisible
-            # because PortAudio caches the device enumeration.
-            # Lock prevents this from tearing down PA while the
-            # playback worker is mid-write.
-            with _portaudio_lock:
-                sd._terminate()
-                sd._initialize()
-                dev_info = sd.query_devices(kind="output")
+
+        # --- Device change detection (subprocess, no PA disruption) ---
+        result = _query_default_device_subprocess()
+        if result is not None:
             probe_fails = 0
-            current_device = dev_info["index"]
+            current_device, dev_name = result
             if current_device != last_device:
-                dev_name = dev_info.get("name", "unknown")
                 print(f"[HEALTH] output device changed: {last_device} → {current_device} ({dev_name})", flush=True)
                 last_device = current_device
                 _device_changed.set()
-        except Exception as exc:
+        else:
             probe_fails += 1
-            print(f"[HEALTH] device query failed ({probe_fails}/{MAX_FAILS}): {exc}", flush=True)
+            print(f"[HEALTH] device query failed ({probe_fails}/{MAX_FAILS})", flush=True)
             if probe_fails >= MAX_FAILS:
                 print("[HEALTH] audio subsystem wedged — exiting for restart", flush=True)
                 _play_error_chime()
                 time.sleep(1)
                 os._exit(1)
+
+        # --- Playback stall detection ---
+        # If items are queued but the playback worker hasn't written
+        # anything in STALL_ABORT seconds, the stream is wedged.
+        if not playback_queue.empty() and _playback_heartbeat > 0:
+            stall_age = time.monotonic() - _playback_heartbeat
+            if stall_age > STALL_EXIT:
+                print(
+                    f"[HEALTH] playback stalled for {stall_age:.0f}s — "
+                    "exiting for restart",
+                    flush=True,
+                )
+                _play_error_chime()
+                time.sleep(1)
+                os._exit(1)
+            elif stall_age > STALL_ABORT:
+                # Force-abort the wedged stream so the playback worker
+                # gets an exception and reopens on a fresh device.
+                with _playback_stream_lock:
+                    ref = _playback_stream_ref
+                if ref is not None:
+                    print(
+                        f"[HEALTH] playback stalled for {stall_age:.0f}s — "
+                        "aborting stream to unwedge",
+                        flush=True,
+                    )
+                    try:
+                        ref.abort()
+                    except Exception:
+                        pass
 
 
 # ---------------------------------------------------------------------------
@@ -590,38 +648,46 @@ def playback_worker(backend: TTSBackend) -> None:
     If the OutputStream dies (device switch, PortAudio error), it's
     reopened on the next item.
     """
+    global _playback_heartbeat
     out_stream: sd.OutputStream | None = None
     device_rate = _get_device_samplerate(backend.sample_rate)
 
     def _open_stream() -> sd.OutputStream | None:
         nonlocal device_rate
+        global _playback_stream_ref
         for _attempt in range(3):
             try:
-                # Always cycle PortAudio so it picks up device list changes
-                # (Bluetooth connect/disconnect). Safe because the old stream
-                # is already closed before we get here.
-                sd._terminate()
-                sd._initialize()
-                device = get_default_output_device()
-                device_rate = _get_device_samplerate(backend.sample_rate)
-                s = sd.OutputStream(
-                    samplerate=device_rate,
-                    device=device,
-                    channels=1,
-                    dtype="float32",
-                )
-                s.start()
+                # Cycle PortAudio under the lock so the health worker
+                # doesn't also cycle it at the same time (double-terminate
+                # can corrupt PA state).
+                with _portaudio_lock:
+                    sd._terminate()
+                    sd._initialize()
+                    device = get_default_output_device()
+                    device_rate = _get_device_samplerate(backend.sample_rate)
+                    s = sd.OutputStream(
+                        samplerate=device_rate,
+                        device=device,
+                        channels=1,
+                        dtype="float32",
+                    )
+                    s.start()
+                with _playback_stream_lock:
+                    _playback_stream_ref = s
                 return s
             except Exception as exc:
                 print(f"[playback] OutputStream open failed (attempt {_attempt + 1}/3): {exc}", flush=True)
                 if _attempt < 2:
                     time.sleep(1.0)
+        with _playback_stream_lock:
+            _playback_stream_ref = None
         return None
 
     while True:
         item = playback_queue.get()
         if item is None:
             break
+        _playback_heartbeat = time.monotonic()
         try:
             # Upsample to device rate
             audio = _upsample(item.astype(np.float32), backend.sample_rate, device_rate)
@@ -666,6 +732,8 @@ def playback_worker(backend: TTSBackend) -> None:
                         out_stream.close()
                     except Exception:
                         pass
+                    with _playback_stream_lock:
+                        _playback_stream_ref = None
                 out_stream = _open_stream()
                 if out_stream is None:
                     print("[playback] no stream, falling back to sd.play()", flush=True)
@@ -683,21 +751,22 @@ def playback_worker(backend: TTSBackend) -> None:
             try:
                 while offset < len(flat) and _stop_gen == write_gen:
                     end = min(offset + WRITE_CHUNK, len(flat))
-                    with _portaudio_lock:
-                        out_stream.write(flat[offset:end].reshape(-1, 1))
+                    out_stream.write(flat[offset:end].reshape(-1, 1))
+                    _playback_heartbeat = time.monotonic()
                     offset = end
                 # If nothing else queued, write 100ms of silence through the
                 # stream so the DAC settles to zero before we stop writing.
                 if is_last and _stop_gen == write_gen:
                     silence = np.zeros((int(device_rate * 0.1), 1), dtype=np.float32)
-                    with _portaudio_lock:
-                        out_stream.write(silence)
+                    out_stream.write(silence)
             except Exception as exc:
                 print(f"[playback] write failed: {exc}, reopening stream", flush=True)
                 try:
                     out_stream.close()
                 except Exception:
                     pass
+                with _playback_stream_lock:
+                    _playback_stream_ref = None
                 out_stream = _open_stream()
         except Exception as exc:
             print(f"[playback] error: {exc}", flush=True)
