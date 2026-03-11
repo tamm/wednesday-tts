@@ -131,9 +131,10 @@ def test_italic_asterisk_stripped():
     assert 'emphasis' in result
 
 
-def test_italic_underscore_stripped():
+def test_italic_underscore_kept_for_emphasis():
+    """Single underscores are TTS emphasis markers — they must survive."""
     result = clean_text_for_speech('_emphasis_ here')
-    assert '_emphasis_' not in result
+    assert '_emphasis_' in result
     assert 'emphasis' in result
 
 

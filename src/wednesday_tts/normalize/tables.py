@@ -59,13 +59,17 @@ _KNOWN_TOPICS = {
 }
 
 _PREAMBLES_TOPIC = [
+    None,
+    None,
+    '{topic}.',
     '{topic}.',
     'Table of {topic}.',
-    "Here's the {topic}.",
-    '{topic} coming up.',
+    'Got some {topic}.',
+    'A few {topic}.',
+    'The {topic}.',
 ]
 
-_PREAMBLES_NONE = [None, None, None, '{count} rows.']
+_PREAMBLES_NONE = [None, None, None, None, None]
 
 
 def table_to_speech(table_text):
@@ -99,7 +103,7 @@ def table_to_speech(table_text):
 
     parts = []
     if preamble_tpl is not None:
-        preamble = preamble_tpl.format(topic=topic, count=len(data))
+        preamble = preamble_tpl.format(topic=topic)
         parts.append(preamble)
 
     for idx, row in enumerate(data):
