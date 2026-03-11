@@ -37,6 +37,66 @@ SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
 
+def _check_competing_instances() -> list[str]:
+    """Log warnings if other processes or launchd services could conflict.
+
+    Checks for:
+    1. Other processes already running this daemon module.
+    2. Multiple launchd services that reference the same socket path or module.
+
+    Logs warnings only — does not kill or modify anything.
+    Returns the list of warnings (empty if clean).
+    """
+    my_pid = os.getpid()
+    warnings: list[str] = []
+
+    # --- 1. Duplicate daemon processes ---
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "wednesday_tts.server.daemon"],
+            capture_output=True, text=True, timeout=5,
+        )
+        other_pids = [
+            int(p) for p in result.stdout.strip().splitlines()
+            if p.strip() and int(p) != my_pid
+        ]
+        if other_pids:
+            warnings.append(
+                f"Other daemon processes already running: {other_pids}. "
+                "Multiple instances will fight over the socket and corrupt PortAudio."
+            )
+    except Exception as exc:
+        warnings.append(f"Could not check for duplicate processes: {exc}")
+
+    # --- 2. Competing launchd services ---
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True, text=True, timeout=5,
+        )
+        matching = []
+        for line in result.stdout.splitlines():
+            cols = line.split("\t")
+            if len(cols) < 3:
+                continue
+            label = cols[2].strip()
+            # Skip Apple's own TTS services
+            if label.startswith("com.apple."):
+                continue
+            if "tts" in label.lower():
+                matching.append(label)
+        if len(matching) > 1:
+            warnings.append(
+                f"Multiple TTS-related launchd services loaded: {matching}. "
+                "Stale plists in ~/Library/LaunchAgents/ may be spawning duplicates."
+            )
+    except Exception as exc:
+        warnings.append(f"Could not check launchd services: {exc}")
+
+    for w in warnings:
+        print(f"[startup] WARNING: {w}", flush=True)
+    return warnings
+
 # Error chime — played when a request times out or errors.
 # Set "error_chime" in ~/.claude/tts-config.json to a sound file path.
 # Falls back to macOS system alert sound.
@@ -984,6 +1044,17 @@ def main() -> None:
 
     watchdog_thread = threading.Thread(target=_hung_request_watchdog, daemon=True)
     watchdog_thread.start()
+
+    startup_warnings = _check_competing_instances()
+    if startup_warnings:
+        try:
+            audio = backend.generate(
+                "Warning. Competing TTS services detected at startup. "
+                "Check the daemon log for details."
+            )
+            playback_queue.put(audio)
+        except Exception:
+            pass  # logged already, don't block startup
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
