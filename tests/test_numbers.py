@@ -35,7 +35,7 @@ def test_fraction_range():
 
 def test_time_ms():
     result = normalize_time_units("300ms")
-    assert "300 milliseconds" in result
+    assert "three hundred milliseconds" in result
 
 
 def test_time_seconds():
@@ -51,7 +51,7 @@ def test_time_range():
 
 def test_storage_mb():
     result = normalize_storage_units("313MB")
-    assert "313 megs" in result
+    assert "three hundred and thirteen megs" in result
 
 
 def test_storage_gb_decimal():
@@ -122,3 +122,53 @@ def test_question_marks():
 def test_standalone_slash():
     result = normalize_standalone_punctuation("yes / no")
     assert "slash" in result
+
+
+# --- Large number + unit tests ---
+
+def test_time_large_ms():
+    result = normalize_time_units("1500ms")
+    assert result == "one thousand five hundred milliseconds"
+
+
+def test_time_large_kb():
+    """50023KB should speak the number as words."""
+    result = normalize_storage_units("50023KB")
+    assert result == "fifty thousand and twenty three kilobytes"
+
+
+def test_storage_large_mb():
+    result = normalize_storage_units("50023MB")
+    assert result == "fifty thousand and twenty three megs"
+
+
+def test_storage_small_stays_raw():
+    """1-2 digit integers should stay as raw digits."""
+    result = normalize_storage_units("64MB")
+    assert result == "64 megs"
+
+
+def test_storage_three_digit():
+    result = normalize_storage_units("313MB")
+    assert result == "three hundred and thirteen megs"
+
+
+def test_multiplier_large():
+    result = normalize_multipliers("1000x")
+    assert result == "one thousand times"
+
+
+def test_multiplier_small_stays_raw():
+    result = normalize_multipliers("2x")
+    assert result == "2 times"
+
+
+def test_time_range_large():
+    result = normalize_time_units("100-200ms")
+    assert result == "one hundred to two hundred milliseconds"
+
+
+def test_time_small_stays_raw():
+    """1-2 digit time integers should stay as raw digits."""
+    result = normalize_time_units("50ms")
+    assert result == "50 milliseconds"

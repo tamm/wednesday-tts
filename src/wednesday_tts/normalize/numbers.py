@@ -5,6 +5,7 @@ import re
 from wednesday_tts.normalize.constants import (
     DIGIT_WORDS, UNIT_MAP, STORAGE_MAP, digits_to_spoken, decimal_to_spoken,
 )
+from wednesday_tts.normalize.numbers_to_words import number_to_words
 
 
 def normalize_tilde_approx(text):
@@ -30,6 +31,28 @@ def normalize_fractions(text):
     return text
 
 
+_SEP_CHARS = re.compile(r"[,_']")
+
+def _strip_seps(s: str) -> str:
+    """Strip thousand separators from a number string."""
+    return _SEP_CHARS.sub('', s)
+
+
+def _num_spoken(raw: str) -> str:
+    """Convert a number string (possibly with separators/decimal) to spoken form."""
+    clean = _strip_seps(raw)
+    if '.' in clean:
+        return decimal_to_spoken(clean)
+    n = int(clean)
+    if len(clean) >= 3:
+        return number_to_words(n)
+    return clean
+
+
+# Number pattern: digits with optional thousand separators and optional decimal
+_NUM_PAT = r"\d[\d,_']*(?:\.\d+)?"
+
+
 def normalize_time_units(text):
     """Time/unit abbreviations: 300ms -> "300 milliseconds", 0.5s -> "zero point five seconds".
 
@@ -38,28 +61,26 @@ def normalize_time_units(text):
     """
     def range_unit_to_speech(m):
         lo, hi, unit = m.group(1), m.group(2), m.group(3)
-        return f'{lo} to {hi} {UNIT_MAP[unit]}'
+        return f'{_num_spoken(lo)} to {_num_spoken(hi)} {UNIT_MAP[unit]}'
 
-    text = re.sub(r'\b(\d+)-(\d+)(ms|min|s)\b', range_unit_to_speech, text)
+    text = re.sub(rf'\b({_NUM_PAT})-({_NUM_PAT})(ms|min|s)\b', range_unit_to_speech, text)
 
     def unit_to_speech(m):
         num, unit = m.group(1), m.group(2)
-        num_spoken = decimal_to_spoken(num) if '.' in num else num
-        return f'{num_spoken} {UNIT_MAP[unit]}'
+        return f'{_num_spoken(num)} {UNIT_MAP[unit]}'
 
-    text = re.sub(r'\b(\d+(?:\.\d+)?)(ms|min|s)\b', unit_to_speech, text)
+    text = re.sub(rf'\b({_NUM_PAT})(ms|min|s)\b', unit_to_speech, text)
     return text
 
 
 def normalize_storage_units(text):
-    """Storage/byte units: 1.4TB -> "1 point 4 terabytes", 313MB -> "313 megs"."""
+    """Storage/byte units: 1.4TB -> "1 point 4 terabytes", 50,023KB -> "fifty thousand and twenty three kilobytes"."""
     def storage_unit_to_speech(m):
         num, unit = m.group(1), m.group(2)
-        num_spoken = decimal_to_spoken(num) if '.' in num else num
-        return f'{num_spoken} {STORAGE_MAP[unit]}'
+        return f'{_num_spoken(num)} {STORAGE_MAP[unit]}'
 
     text = re.sub(
-        r'\b(\d+(?:\.\d+)?)(TB|GB|MB|KB|PB|tb|gb|mb|kb|pb)\b',
+        rf'\b({_NUM_PAT})(TB|GB|MB|KB|PB|tb|gb|mb|kb|pb)\b',
         storage_unit_to_speech, text
     )
     return text
@@ -69,10 +90,9 @@ def normalize_multipliers(text):
     """Multipliers: 1.0x -> "1 point oh times", 2x -> "2 times"."""
     def multiplier_to_speech(m):
         num = m.group(1)
-        num_spoken = decimal_to_spoken(num) if '.' in num else num
-        return f'{num_spoken} times'
+        return f'{_num_spoken(num)} times'
 
-    text = re.sub(r'\b(\d+(?:\.\d+)?)x\b', multiplier_to_speech, text)
+    text = re.sub(rf'\b({_NUM_PAT})x\b', multiplier_to_speech, text)
     return text
 
 

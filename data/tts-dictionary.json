@@ -7,6 +7,7 @@
     { "pattern": "[]",           "replacement": "empty array", "literal": true, "case_sensitive": true },
     { "pattern": "npm",          "pocket": "en pee em" },
     { "pattern": "npx",          "replacement": "en pee ex", "case_sensitive": false },
+    { "pattern": "PII",          "pocket": "pee eye eye" },
     { "pattern": "IPA",          "pocket": "eye pee Ae" },
     { "pattern": "API",          "pocket": "Ae pee eye" },
     { "pattern": "APIs",         "pocket": "Ae pee eyes" },

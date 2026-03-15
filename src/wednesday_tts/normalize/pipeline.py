@@ -6,6 +6,9 @@ from wednesday_tts.normalize.identifiers import (
     normalize_identifiers, normalize_escape_sequences, normalize_hashes,
     normalize_dotted_names,
 )
+from wednesday_tts.normalize.hex_codes import normalize_hex_codes
+from wednesday_tts.normalize.ip_addresses import normalize_ip_addresses
+from wednesday_tts.normalize.phone import normalize_phone_numbers
 from wednesday_tts.normalize.regex_speech import (
     normalize_regex, normalize_html_tags, normalize_hotkeys,
 )
@@ -25,6 +28,7 @@ from wednesday_tts.normalize.numbers import (
 )
 from wednesday_tts.normalize.dates import normalize_years, normalize_dates
 from wednesday_tts.normalize.versions import normalize_model_versions, normalize_semver
+from wednesday_tts.normalize.numbers_to_words import normalize_large_numbers
 from wednesday_tts.normalize.camelcase import normalize_all_caps, normalize_camelcase
 from wednesday_tts.normalize.markdown import clean_text_for_speech
 
@@ -49,6 +53,9 @@ def normalize_technical(text, dictionary=None, filenames_dict=None):
 
     # 0a-pre. Literal escape sequences
     text = normalize_escape_sequences(text)
+
+    # 0a-hex. Hex codes (0xFF, #FF00AA) — before hashes grab # prefixes
+    text = normalize_hex_codes(text)
 
     # 0a. Hash-number references and standalone hashes
     text = normalize_hashes(text)
@@ -80,6 +87,9 @@ def normalize_technical(text, dictionary=None, filenames_dict=None):
     # 1-homograph. Fix context-sensitive homographs
     text = fix_read_homograph(text)
 
+    # 1-phone. Phone numbers — consume before number-to-words
+    text = normalize_phone_numbers(text)
+
     # 1a. Tilde approximation, multiplication sign, percentages
     text = normalize_tilde_approx(text)
 
@@ -100,6 +110,9 @@ def normalize_technical(text, dictionary=None, filenames_dict=None):
 
     # 4b. Remaining slash-separated content
     text = normalize_slash_paths(text)
+
+    # 4b2. IPv4 addresses (before dotted names eat the dots)
+    text = normalize_ip_addresses(text)
 
     # 4c-pre. Dotted names: module.attr, os.path.join, example.com
     # Runs AFTER slash_paths so path dots inside segments (some.file) are also caught.
@@ -125,6 +138,9 @@ def normalize_technical(text, dictionary=None, filenames_dict=None):
 
     # 6b. 3-digit HTTP-like codes
     text = normalize_http_codes(text)
+
+    # 6c. Large numbers (3+ digits) to spoken words
+    text = normalize_large_numbers(text)
 
     # 7. Repeated punctuation
     text = normalize_repeated_punctuation(text)
