@@ -63,7 +63,32 @@ def _get_last_assistant_message(transcript_path: str | None) -> str:
     return ""
 
 
-def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
+def _get_repo_voice(cwd: str) -> str | None:
+    """Deterministic voice from repo/cwd path hash. Returns None = use default."""
+    import hashlib
+    import subprocess
+    try:
+        repo = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+    except Exception:
+        repo = ""
+    key = repo or cwd
+    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    try:
+        with open(cfg_path) as f:
+            pool = json.load(f).get("voice_pool", [])
+    except Exception:
+        pool = []
+    if not pool:
+        return None
+    h = hashlib.sha256(key.encode()).hexdigest()[:8]
+    return pool[int(h, 16) % len(pool)]
+
+
+def _fire_and_forget(text: str, session_id: str, wall_time: float,
+                     cwd: str = "") -> None:
     """Send text to the TTS server.
 
     On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
@@ -72,6 +97,10 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float) -> None:
     Uses colon-delimited fields: SEQ:0:N:markdown:<wall_time>:<text>
     """
     body_str = text
+    if cwd:
+        voice = _get_repo_voice(cwd)
+        if voice:
+            body_str = f"__v:{voice}__{body_str}"
 
     if _IS_WINDOWS:
         body = body_str.encode("utf-8")
@@ -160,6 +189,7 @@ def main() -> None:
         sys.exit(0)
 
     session_id = payload.get("session_id", "unknown")
+    cwd = payload.get("cwd", "")
 
     # Prefer the message Claude inlines in the hook payload — transcript can lag
     text = payload.get("last_assistant_message") or \
@@ -170,7 +200,7 @@ def main() -> None:
 
     # Send to server — silent fail if server is not running
     try:
-        _fire_and_forget(text, session_id, wall_time)
+        _fire_and_forget(text, session_id, wall_time, cwd=cwd)
     except (ConnectionRefusedError, OSError, TimeoutError):
         # Server not running — skip silently
         pass

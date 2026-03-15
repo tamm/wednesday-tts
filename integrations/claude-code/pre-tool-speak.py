@@ -78,12 +78,40 @@ def _get_unsent_assistant_texts(transcript_path: str | None) -> list[str]:
 # Server communication
 # ---------------------------------------------------------------------------
 
-def _post_to_server(text: str, session_id: str) -> bool:
+def _get_repo_voice(cwd: str) -> str | None:
+    """Deterministic voice from repo/cwd path hash. Returns None = use default."""
+    import hashlib
+    import subprocess
+    try:
+        repo = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+    except Exception:
+        repo = ""
+    key = repo or cwd
+    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    try:
+        with open(cfg_path) as f:
+            pool = json.load(f).get("voice_pool", [])
+    except Exception:
+        pool = []
+    if not pool:
+        return None
+    h = hashlib.sha256(key.encode()).hexdigest()[:8]
+    return pool[int(h, 16) % len(pool)]
+
+
+def _post_to_server(text: str, session_id: str, cwd: str = "") -> bool:
     """Send text to the wednesday-tts server. Returns True on success.
 
     On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
     On Windows: HTTP POST to localhost:5678.
     """
+    if cwd:
+        voice = _get_repo_voice(cwd)
+        if voice:
+            text = f"__v:{voice}__{text}"
     if _IS_WINDOWS:
         body = text.encode("utf-8")
         req = urllib.request.Request(
@@ -143,6 +171,7 @@ def main() -> None:
         input_data = json.load(sys.stdin)
 
         session_id = input_data.get("session_id", "unknown")
+        cwd = input_data.get("cwd", "")
         transcript_path = input_data.get("transcript_path")
 
         texts = _get_unsent_assistant_texts(transcript_path)
@@ -166,7 +195,7 @@ def main() -> None:
                 last_space = trunc.rfind(" ")
                 combined = combined[:last_space] if last_space > 0 else trunc
 
-        _post_to_server(combined, session_id)
+        _post_to_server(combined, session_id, cwd=cwd)
 
     except Exception as e:
         print(json.dumps({
