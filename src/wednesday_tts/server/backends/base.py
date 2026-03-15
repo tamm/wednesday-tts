@@ -101,13 +101,13 @@ class TTSBackend:
         """Load the model into memory. Called once at startup."""
         raise NotImplementedError
 
-    def generate(self, text: str, speed: float = DEFAULT_SPEED) -> "np.ndarray | None":
+    def generate(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> "np.ndarray | None":
         """Render text to a float32 audio array. Return None on failure."""
         raise NotImplementedError
 
     # Streaming extension — only required when supports_streaming = True.
 
-    def play_streaming(self, text: str, speed: float = DEFAULT_SPEED) -> None:
+    def play_streaming(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> None:
         """Stream audio directly to the output device (lowest latency)."""
         raise NotImplementedError
 

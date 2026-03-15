@@ -50,34 +50,49 @@ class PocketTTSBackend(TTSBackend):
 
         self._model = None
         self._voice_state = None
+        self._voice_states: dict[str, any] = {}
         self._lock = threading.Lock()  # generate_audio is not thread-safe
 
     def load(self) -> None:
         from pocket_tts import TTSModel  # type: ignore[import]
-        from pocket_tts.utils.utils import PREDEFINED_VOICES  # type: ignore[import]
-
         self._model = TTSModel.load_model(
             lsd_decode_steps=self._lsd_decode_steps,
             noise_clamp=self._noise_clamp,
             eos_threshold=self._eos_threshold,
         )
         self.sample_rate = self._model.sample_rate
+        self._voice_state = self._get_voice_state(self._voice_name)
 
-        voice_ref = PREDEFINED_VOICES.get(self._voice_name, self._voice_name)
+    def _get_voice_state(self, voice_name: str) -> any:
+        """Load or return cached voice state for a given voice name.
+
+        Predefined names (alba, marius, etc.) are handled natively by
+        get_state_for_audio_prompt — no need to resolve via PREDEFINED_VOICES.
+        Custom paths/URLs are also passed through directly.
+        """
+        if voice_name in self._voice_states:
+            return self._voice_states[voice_name]
+
         try:
-            self._voice_state = self._model.get_state_for_audio_prompt(voice_ref)
+            state = self._model.get_state_for_audio_prompt(voice_name)
         except Exception as exc:
-            fallback_ref = PREDEFINED_VOICES.get(self._fallback_voice, self._fallback_voice)
-            print(f"[pocket] Voice '{self._voice_name}' failed ({exc}), falling back to '{self._fallback_voice}'")
-            self._voice_state = self._model.get_state_for_audio_prompt(fallback_ref)
+            if voice_name == self._fallback_voice:
+                raise exc
+            print(f"[pocket] Voice '{voice_name}' failed ({exc}), falling back to '{self._fallback_voice}'")
+            state = self._model.get_state_for_audio_prompt(self._fallback_voice)
 
-    def generate(self, text: str, speed: float | None = None) -> "np.ndarray | None":
+        self._voice_states[voice_name] = state
+        return state
+
+    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> "np.ndarray | None":
         if self._model is None:
             raise RuntimeError("PocketTTSBackend not loaded — call load() first")
 
         use_speed = speed if speed is not None else self._speed
+        voice_state = self._get_voice_state(voice) if voice else self._voice_state
+
         with self._lock:
-            audio = self._model.generate_audio(self._voice_state, text)
+            audio = self._model.generate_audio(voice_state, text)
 
         if audio is None:
             return None
@@ -90,7 +105,7 @@ class PocketTTSBackend(TTSBackend):
         return arr
 
     def generate_streaming(self, text: str, speed: float | None = None,
-                           playback_queue=None, stop_check=None) -> "np.ndarray | None":
+                           playback_queue=None, stop_check=None, voice: str | None = None) -> "np.ndarray | None":
         """Generate audio via streaming inference, pipe through soundstretch, queue chunks.
 
         If playback_queue is provided and speed != 1.0:
@@ -111,16 +126,17 @@ class PocketTTSBackend(TTSBackend):
         use_speed = speed if speed is not None else self._speed
         needs_speed = abs(use_speed - 1.0) > 0.01
         _FIRST_CHUNK_TIMEOUT = 8.0  # bail if no audio within 8s (model wedged)
+        voice_state = self._get_voice_state(voice) if voice else self._voice_state
 
         # If we have a queue, stream directly into it
         if playback_queue is not None:
             if needs_speed:
                 return self._generate_streaming_pipe(
-                    text, use_speed, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT
+                    text, use_speed, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT, voice_state=voice_state
                 )
             # speed ~= 1.0: queue raw chunks directly, no soundstretch
             return self._generate_streaming_direct(
-                text, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT
+                text, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT, voice_state=voice_state
             )
 
         # No queue: collect all chunks, concatenate, return
@@ -130,7 +146,7 @@ class PocketTTSBackend(TTSBackend):
 
         with self._lock:
             for audio_chunk in self._model.generate_audio_stream(
-                self._voice_state,
+                voice_state,
                 text,
                 frames_after_eos=self._frames_after_eos,
             ):
@@ -159,15 +175,16 @@ class PocketTTSBackend(TTSBackend):
         return result
 
     def _generate_streaming_direct(self, text: str, playback_queue,
-                                    stop_check, first_chunk_timeout: float) -> None:
+                                    stop_check, first_chunk_timeout: float, voice_state=None) -> None:
         """Stream model chunks directly into playback_queue (no soundstretch)."""
         gen_start = time.monotonic()
         total_samples = 0
         n_chunks = 0
+        vs = voice_state or self._voice_state
 
         with self._lock:
             for audio_chunk in self._model.generate_audio_stream(
-                self._voice_state,
+                vs,
                 text,
                 frames_after_eos=self._frames_after_eos,
             ):
@@ -190,7 +207,7 @@ class PocketTTSBackend(TTSBackend):
 
     def _generate_streaming_pipe(self, text: str, speed: float,
                                   playback_queue, stop_check,
-                                  first_chunk_timeout: float) -> None:
+                                  first_chunk_timeout: float, voice_state=None) -> None:
         """Stream model output through soundstretch pipe, queue stretched chunks.
 
         Pipeline:
@@ -203,7 +220,7 @@ class PocketTTSBackend(TTSBackend):
         ss = shutil.which("soundstretch")
         if not ss:
             print("[stream-pipe] soundstretch not found, falling back to batch", flush=True)
-            return self.generate_streaming(text, speed, playback_queue=None, stop_check=stop_check)
+            return self.generate_streaming(text, speed, playback_queue=None, stop_check=stop_check, voice_state=voice_state)
 
         tempo_pct = (speed - 1.0) * 100
         proc = subprocess.Popen(
@@ -214,6 +231,7 @@ class PocketTTSBackend(TTSBackend):
         )
 
         sr = self.sample_rate
+        vs = voice_state or self._voice_state
 
         # Write WAV header with large data size (stream mode)
         def _wav_header(sample_rate: int, num_channels: int = 1, bits: int = 16) -> bytes:
@@ -269,7 +287,7 @@ class PocketTTSBackend(TTSBackend):
 
             with self._lock:
                 for audio_chunk in self._model.generate_audio_stream(
-                    self._voice_state,
+                    vs,
                     text,
                     frames_after_eos=self._frames_after_eos,
                 ):
@@ -315,3 +333,4 @@ class PocketTTSBackend(TTSBackend):
             proc.kill()
 
         return None
+

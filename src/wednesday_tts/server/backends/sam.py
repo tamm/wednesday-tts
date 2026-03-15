@@ -93,7 +93,7 @@ class SAMBackend(TTSBackend):
         )
         print("[sam] Ready.", flush=True)
 
-    def generate(self, text: str, speed: float = DEFAULT_SPEED) -> np.ndarray | None:
+    def generate(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> np.ndarray | None:
         if self._sam is None:
             raise RuntimeError("SAMBackend not loaded — call load() first")
 
@@ -101,6 +101,8 @@ class SAMBackend(TTSBackend):
             return None
 
         try:
+            # SAM doesn't support multiple voices in this version,
+            # so we ignore the voice parameter but accept it for API compatibility.
             raw = self._sam.get_audio_data(text)
             if not raw:
                 return None

@@ -36,3 +36,9 @@ uv pip install -e ".[dev]"
 ## Normalization rule docs
 
 `docs/normalization/rule-*.md` — each has an Examples table. Use these as test case sources.
+
+## Pocket TTS (primary backend)
+
+GitHub: https://github.com/kyutai-labs/pocket-tts
+
+**Read the README before making changes to the pocket backend.** Predefined voice names (alba, marius, fantine, etc.) are passed directly to `get_state_for_audio_prompt("name")` — do NOT resolve them through `PREDEFINED_VOICES` or construct `hf://` URIs manually.

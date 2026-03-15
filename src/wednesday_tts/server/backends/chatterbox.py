@@ -50,6 +50,7 @@ class ChatterboxBackend(TTSBackend):
         text: str,
         speed: float | None = None,
         chars_preceding: int = 0,
+        voice: str | None = None,
     ) -> "np.ndarray | None":
         """Render text to audio.
 
@@ -58,17 +59,19 @@ class ChatterboxBackend(TTSBackend):
             speed: Tempo multiplier (soundstretch applied when != 1.0).
             chars_preceding: Cumulative characters already synthesised in this
                 utterance. Selects fast vs normal generation settings.
+            voice: Optional voice ID or reference path.
         """
         if self._model is None:
             raise RuntimeError("ChatterboxBackend not loaded — call load() first")
 
         use_speed = speed if speed is not None else DEFAULT_SPEED
         use_fast = chars_preceding < self._FAST_ZONE_CHARS
+        use_voice = voice or self._voice_clone
 
         try:
             kwargs: dict = {}
-            if self._voice_clone and os.path.exists(self._voice_clone):
-                kwargs["audio_prompt_path"] = self._voice_clone
+            if use_voice and os.path.exists(use_voice):
+                kwargs["audio_prompt_path"] = use_voice
             if use_fast:
                 kwargs["exaggeration"] = self._exaggeration
                 kwargs["cfg_weight"] = self._cfg_weight

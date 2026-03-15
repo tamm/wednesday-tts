@@ -212,6 +212,7 @@ def _render_segments(
     primary_backend: TTSBackend,
     speed: float,
     gen_snap: int,
+    default_voice: str | None = None,
 ) -> "np.ndarray | None":
     """Render a list of voice segments and concatenate into one audio array.
 
@@ -229,10 +230,17 @@ def _render_segments(
             render_backend = _get_override_backend(voice_name)
             if render_backend is None:
                 render_backend = primary_backend
+            render_voice = None
         else:
             render_backend = primary_backend
+            render_voice = default_voice
 
-        audio = render_backend.generate(segment_text, speed=speed)
+        # Use backend-specific generate if it supports voice, or base generate
+        try:
+            audio = render_backend.generate(segment_text, speed=speed, voice=render_voice)
+        except TypeError:
+            audio = render_backend.generate(segment_text, speed=speed)
+
         if audio is not None:
             if render_backend.sample_rate != target_rate:
                 audio = _upsample(audio, render_backend.sample_rate, target_rate)
@@ -900,6 +908,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         speed = DEFAULT_SPEED
         text = message
         content_type = "normalized"  # backward compat
+        voice: str | None = None
 
         if message.startswith("SEQ:"):
             # New format: SEQ:N:speed:content_type:timestamp:text
@@ -924,7 +933,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 except ValueError:
                     pass
                 # Legacy __ct: prefix embedded in text
-                _ct = re.match(r"^__ct:([a-zA-Z]+)__", text)
+                _ct = re.match(r"^__ct:([a-zA-Z0-9_-]+)__", text)
                 if _ct:
                     content_type = _ct.group(1)
                     text = text[_ct.end():]
@@ -940,6 +949,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     text = parts[2]
                 except ValueError:
                     pass
+
+        # ── Parse voice prefix ──────────────────────────────────────────
+        _v = re.match(r"^__v:([a-zA-Z0-9_-]+)__", text)
+        if _v:
+            voice = _v.group(1)
+            text = text[_v.end():]
 
         # ── Normalize if requested ────────────────────────────────────────
         if content_type != "normalized":
@@ -967,13 +982,19 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             and _stop_gen == gen_snap
         )
         if use_streaming:
-            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}", flush=True)
+            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={voice}", flush=True)
             _gs = gen_snap  # capture for closure
-            audio = backend.generate_streaming(
-                text, speed=speed,
-                playback_queue=playback_queue,
-                stop_check=lambda: _stop_gen != _gs,
-            )
+            # Use backend-specific generate_streaming if it supports voice
+            gs_kwargs = {
+                "speed": speed,
+                "playback_queue": playback_queue,
+                "stop_check": lambda: _stop_gen != _gs,
+            }
+            try:
+                audio = backend.generate_streaming(text, voice=voice, **gs_kwargs)
+            except TypeError:
+                audio = backend.generate_streaming(text, **gs_kwargs)
+
             # If audio is None, generate_streaming already queued chunks directly
             if audio is None:
                 with _order_cond:
@@ -983,8 +1004,8 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 conn.send(b"ok")
                 return
         else:
-            print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}", flush=True)
-            audio = _render_segments(segments, backend, speed, gen_snap)
+            print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}, voice={voice}", flush=True)
+            audio = _render_segments(segments, backend, speed, gen_snap, default_voice=voice)
 
         # ── Enqueue in order ──────────────────────────────────────────────
         if seq is not None:

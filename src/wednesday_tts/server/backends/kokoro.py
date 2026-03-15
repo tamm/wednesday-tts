@@ -31,13 +31,14 @@ class KokoroBackend(TTSBackend):
         from kokoro import KPipeline  # type: ignore[import]
         self._pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
 
-    def generate(self, text: str, speed: float | None = None) -> "np.ndarray | None":
+    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> "np.ndarray | None":
         if self._pipeline is None:
             raise RuntimeError("KokoroBackend not loaded — call load() first")
 
         use_speed = speed if speed is not None else self._speed
+        use_voice = voice or self._voice
         chunks: list[np.ndarray] = []
-        for result in self._pipeline(text, voice=self._voice, speed=use_speed):
+        for result in self._pipeline(text, voice=use_voice, speed=use_speed):
             if result.audio is not None:
                 chunks.append(result.audio.numpy())
         return np.concatenate(chunks) if chunks else None
