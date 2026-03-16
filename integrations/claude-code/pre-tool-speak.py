@@ -111,7 +111,7 @@ def _post_to_server(text: str, session_id: str, cwd: str = "") -> bool:
     if cwd:
         voice = _get_repo_voice(cwd)
         if voice:
-            text = f"__v:{voice}__{text}"
+            text = f"\u00ab\u00ab{voice}\u00bb{text}\u00bb\u00bb"
     if _IS_WINDOWS:
         body = text.encode("utf-8")
         req = urllib.request.Request(

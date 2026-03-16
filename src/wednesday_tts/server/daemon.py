@@ -174,16 +174,23 @@ def _get_override_backend(name: str) -> TTSBackend | None:
 
 
 def _split_voice_segments(
-    text: str, pattern: "re.Pattern[str]"
+    text: str,
 ) -> list[tuple[str | None, str]]:
     """Split text into segments of (voice_name, text).
 
     Plain text segments have voice_name=None (use primary backend).
-    Tagged segments like ««words»» have voice_name="sam".
+    Tagged segments use guillemet syntax:
+      - ««text»»           → voice_name="sam" (backward compatible)
+      - ««alba»text»»      → voice_name="alba" (named voice)
+      - ««2»text»»         → voice_pool index 2 (resolved from config)
+      - ««/path/v.safetensors»text»» → custom voice file path
 
     Returns a list of (voice, text) tuples preserving original order.
     Empty segments are skipped.
     """
+    # Match everything between double guillemets
+    pattern = re.compile(r"\u00ab\u00ab(.+?)\u00bb\u00bb", re.DOTALL)
+
     segments: list[tuple[str | None, str]] = []
     last_end = 0
     for m in pattern.finditer(text):
@@ -191,12 +198,27 @@ def _split_voice_segments(
         before = text[last_end:m.start()].strip()
         if before:
             segments.append((None, before))
-        # Tagged segment — ««»» always means SAM voice
-        voice_name = "sam"
-        tagged_text = m.group(1).strip()
+
+        content = m.group(1)
+        # Check if content contains a single » that splits voice_id from text.
+        # The double »» is already consumed by the outer regex, so any » inside
+        # is a voice/text separator.
+        if "\u00bb" in content:
+            voice_id, tagged_text = content.split("\u00bb", 1)
+            voice_id = voice_id.strip()
+            tagged_text = tagged_text.strip()
+            # Resolve pool index (pure digits) to voice name from config
+            if voice_id.isdigit():
+                voice_id = _resolve_pool_index(int(voice_id))
+        else:
+            # No separator — SAM voice, whole content is text
+            voice_id = "sam"
+            tagged_text = content.strip()
+
         if tagged_text:
-            segments.append((voice_name, tagged_text))
+            segments.append((voice_id, tagged_text))
         last_end = m.end()
+
     # Trailing plain text after last tag
     after = text[last_end:].strip()
     if after:
@@ -205,6 +227,23 @@ def _split_voice_segments(
     if not segments and text.strip():
         segments.append((None, text.strip()))
     return segments
+
+
+def _resolve_pool_index(index: int) -> str:
+    """Resolve a voice_pool index to a voice name from tts-config.json.
+
+    Falls back to "sam" if the config is missing or the index is out of range.
+    """
+    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    try:
+        with open(cfg_path) as f:
+            pool = json.load(f).get("voice_pool", [])
+        if 0 <= index < len(pool):
+            return pool[index]
+    except Exception:
+        pass
+    print(f"[voice-tag] Pool index {index} out of range or config missing, falling back to sam", flush=True)
+    return "sam"
 
 
 def _render_segments(
@@ -226,11 +265,16 @@ def _render_segments(
         if _stop_gen != gen_snap:
             break
 
-        if voice_name and voice_name != _active_backend_name:
-            render_backend = _get_override_backend(voice_name)
+        if voice_name == "sam":
+            # SAM = switch to the SAM backend entirely
+            render_backend = _get_override_backend("sam")
             if render_backend is None:
                 render_backend = primary_backend
             render_voice = None
+        elif voice_name:
+            # Named voice / path — use primary backend with this voice
+            render_backend = primary_backend
+            render_voice = voice_name
         else:
             render_backend = primary_backend
             render_voice = default_voice
@@ -950,15 +994,19 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 except ValueError:
                     pass
 
-        # ── Parse voice prefix ──────────────────────────────────────────
-        _v = re.match(r"^__v:([a-zA-Z0-9_-]+)__", text)
-        if _v:
-            voice = _v.group(1)
-            text = text[_v.end():]
+        # ── Parse voice segments BEFORE normalisation ──────────────────
+        # Voice IDs may contain paths that normalisation would mangle.
+        segments = _split_voice_segments(text)
 
-        # ── Normalize if requested ────────────────────────────────────────
+        # ── Normalize text segments (not voice IDs) ──────────────────────
         if content_type != "normalized":
-            text = run_normalize(text, content_type=content_type)
+            segments = [
+                (v, run_normalize(t, content_type=content_type))
+                for v, t in segments
+            ]
+
+        # Reassemble text for dedup check
+        text = " ".join(t for _, t in segments)
 
         # ── Dedup: skip if this text was recently spoken ─────────────────
         if _dedup_check(text):
@@ -967,24 +1015,32 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             conn.send(b"ok")
             return
 
-        # ── Parse voice segments: split on ««...»» tags (SAM voice) ─────
-        _VOICE_TAG_RE = re.compile(r"\u00ab\u00ab(.*?)\u00bb\u00bb", re.DOTALL)
-        segments = _split_voice_segments(text, _VOICE_TAG_RE)
-        has_mixed_voices = any(v is not None for v, _ in segments)
+        # Determine if we need backend switching (SAM segments mixed with pocket).
+        # A single pocket voice for the whole message is NOT mixed — we can stream.
+        needs_backend_switch = any(
+            v == "sam" for v, _ in segments
+        ) and any(v != "sam" for v, _ in segments)
+
+        # Extract voice for single-segment or uniform-voice messages
+        if len(segments) == 1 and segments[0][0] and segments[0][0] != "sam":
+            voice = segments[0][0]
+            text = segments[0][1]
+        elif not any(v is not None for v, _ in segments):
+            voice = None  # no tags at all
 
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
 
-        # Render: use streaming inference if single-voice, else batch
+        # Streaming: single voice on primary backend, no backend switching needed
         use_streaming = (
-            not has_mixed_voices
+            not needs_backend_switch
+            and not any(v == "sam" for v, _ in segments)
             and hasattr(backend, "generate_streaming")
             and _stop_gen == gen_snap
         )
         if use_streaming:
             print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={voice}", flush=True)
             _gs = gen_snap  # capture for closure
-            # Use backend-specific generate_streaming if it supports voice
             gs_kwargs = {
                 "speed": speed,
                 "playback_queue": playback_queue,

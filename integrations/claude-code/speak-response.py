@@ -100,7 +100,7 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float,
     if cwd:
         voice = _get_repo_voice(cwd)
         if voice:
-            body_str = f"__v:{voice}__{body_str}"
+            body_str = f"\u00ab\u00ab{voice}\u00bb{body_str}\u00bb\u00bb"
 
     if _IS_WINDOWS:
         body = body_str.encode("utf-8")

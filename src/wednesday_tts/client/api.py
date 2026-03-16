@@ -33,7 +33,7 @@ def speak(
 
     # Wrap text with voice tags if a per-request override is requested
     if voice:
-        text = f"\u00ab\u00ab{text}\u00bb\u00bb"
+        text = voice_tag(text, voice)
 
     url = f"{server}/speak?content_type={content_type}"
     data = text.encode("utf-8")
@@ -74,15 +74,19 @@ def normalize(
         return ""
 
 
-def voice_tag(text: str, voice: str) -> str:
+def voice_tag(text: str, voice: str = "sam") -> str:
     """Wrap text with voice override tags for the daemon.
 
     Example::
 
         tagged = voice_tag("Exterminate", "sam")
         # "««Exterminate»»"
+        tagged = voice_tag("Hello", "neural")
+        # "««neural»Hello»»"
     """
-    return f"\u00ab\u00ab{text}\u00bb\u00bb"
+    if not voice or voice == "sam":
+        return f"\u00ab\u00ab{text}\u00bb\u00bb"
+    return f"\u00ab\u00ab{voice}\u00bb{text}\u00bb\u00bb"
 
 
 def is_server_running(server: str = "http://localhost:5678") -> bool:
