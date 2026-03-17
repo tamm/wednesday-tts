@@ -916,14 +916,15 @@ def playback_worker(backend: TTSBackend) -> None:
                     _kill_spatial_stream()
                 elif not old_spatial and use_spatial:
                     print("[playback] switching from PortAudio to spatial", flush=True)
-                    if out_stream is not None:
-                        try:
-                            out_stream.close()
-                        except Exception:
-                            pass
-                        with _playback_stream_lock:
-                            _playback_stream_ref = None
-                        out_stream = None
+                # Always reopen PortAudio stream on device change
+                if out_stream is not None:
+                    try:
+                        out_stream.close()
+                    except Exception:
+                        pass
+                    with _playback_stream_lock:
+                        _playback_stream_ref = None
+                    out_stream = None
 
             audio = item.astype(np.float32)
             pan = _current_pan
