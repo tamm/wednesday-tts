@@ -37,6 +37,12 @@ SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
 
+# Path to the SpatialStream binary for head-tracked playback on BT headphones
+_SPATIAL_STREAM_BIN = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "integrations", "spatial-audio", "SpatialStream",
+)
+
 def _check_competing_instances() -> list[str]:
     """Log warnings if other processes or launchd services could conflict.
 
@@ -450,6 +456,8 @@ def _stop_playback() -> None:
         _stop_gen += 1
         _next_seq = 0
         _order_cond.notify_all()
+    # Kill spatial stream so head-tracked audio stops immediately
+    _kill_spatial_stream()
 
 
 def _sigusr1_handler(sig: int, frame) -> None:
@@ -503,6 +511,104 @@ def _upsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
     except ImportError:
         ratio = to_rate // from_rate
         return np.repeat(audio, ratio).astype(np.float32)
+
+
+def _query_bt_headphone_uid() -> str | None:
+    """Check if default output is BT headphones. Returns device UID or None.
+
+    Uses the device settings plist to find a Bluetooth MAC-based UID.
+    The default output device name is checked against known non-BT names
+    to avoid false positives (built-in speakers, DisplayPort, virtual).
+    """
+    try:
+        result = subprocess.run(
+            [
+                os.sys.executable, "-c",
+                "import sounddevice as sd, subprocess, re, plistlib\n"
+                "dev = sd.query_devices(kind='output')\n"
+                "name = dev['name']\n"
+                "# Skip known non-BT devices\n"
+                "skip = ['MacBook', 'Built-in', 'DELL', 'BlackHole', 'Multi-Output',\n"
+                "        'Microsoft Teams', 'DisplayPort']\n"
+                "if any(s.lower() in name.lower() for s in skip):\n"
+                "    exit(0)\n"
+                "# Look for BT MAC UID in device settings plist\n"
+                "sp = subprocess.run(['/usr/bin/plutil', '-convert', 'xml1', '-o', '-',\n"
+                "    '/Library/Preferences/Audio/com.apple.audio.DeviceSettings.plist'],\n"
+                "    capture_output=True, timeout=5)\n"
+                "if sp.returncode != 0:\n"
+                "    exit(1)\n"
+                "plist = plistlib.loads(sp.stdout)\n"
+                "for key in plist:\n"
+                "    if key.endswith(':output') and re.match(\n"
+                "            r'[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}:output', key):\n"
+                "        print(key)\n"
+                "        break\n",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        uid = result.stdout.strip()
+        if uid and ':output' in uid:
+            return uid
+    except Exception:
+        pass
+    return None
+
+
+# Spatial stream subprocess management
+_spatial_proc: subprocess.Popen | None = None
+_spatial_lock = threading.Lock()
+
+
+def _get_spatial_stream(sample_rate: int, pan: float, device_uid: str) -> subprocess.Popen | None:
+    """Get or create a SpatialStream subprocess for head-tracked playback."""
+    global _spatial_proc
+    with _spatial_lock:
+        if _spatial_proc is not None and _spatial_proc.poll() is None:
+            return _spatial_proc
+        # Kill any stale process
+        if _spatial_proc is not None:
+            try:
+                _spatial_proc.stdin.close()
+                _spatial_proc.wait(timeout=2)
+            except Exception:
+                _spatial_proc.kill()
+            _spatial_proc = None
+        if not os.path.isfile(_SPATIAL_STREAM_BIN):
+            print(f"[spatial] SpatialStream binary not found at {_SPATIAL_STREAM_BIN}", flush=True)
+            return None
+        try:
+            proc = subprocess.Popen(
+                [_SPATIAL_STREAM_BIN, str(int(sample_rate)), device_uid, str(pan)],
+                stdin=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _spatial_proc = proc
+            # Read the ready message
+            import select
+            if select.select([proc.stderr], [], [], 3.0)[0]:
+                line = proc.stderr.readline().decode("utf-8", errors="replace")
+                print(f"[spatial] {line.strip()}", flush=True)
+            return proc
+        except Exception as exc:
+            print(f"[spatial] failed to start SpatialStream: {exc}", flush=True)
+            return None
+
+
+def _kill_spatial_stream() -> None:
+    """Terminate any running SpatialStream subprocess."""
+    global _spatial_proc
+    with _spatial_lock:
+        if _spatial_proc is not None:
+            try:
+                _spatial_proc.stdin.close()
+                _spatial_proc.wait(timeout=2)
+            except Exception:
+                try:
+                    _spatial_proc.kill()
+                except Exception:
+                    pass
+            _spatial_proc = None
 
 
 def _try_play(item: np.ndarray, sample_rate: int) -> bool:
@@ -691,28 +797,62 @@ def _audio_health_worker() -> None:
 # Playback worker
 # ---------------------------------------------------------------------------
 
+def _anti_click(audio: np.ndarray, rate: int) -> np.ndarray:
+    """Trim artefacts and apply fade-in/out to prevent clicks between chunks."""
+    TRIM_START = int(rate * 0.005)
+    TRIM_END = int(rate * 0.005)
+    PAD_START = int(rate * 0.050)
+    PAD_END = int(rate * 0.050)
+    FADE_IN = int(rate * 0.015)
+    FADE_OUT = int(rate * 0.015)
+    if len(audio) > TRIM_START + TRIM_END + FADE_IN + FADE_OUT:
+        audio = audio[TRIM_START:]
+        audio = audio[:-TRIM_END].copy()
+        audio[:FADE_IN] *= np.linspace(0.0, 1.0, FADE_IN, dtype=np.float32)
+        audio[-FADE_OUT:] *= np.linspace(1.0, 0.0, FADE_OUT, dtype=np.float32)
+        audio = np.concatenate([
+            np.zeros(PAD_START, dtype=np.float32),
+            audio,
+            np.zeros(PAD_END, dtype=np.float32),
+        ])
+    else:
+        n = len(audio)
+        fade = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        audio = audio.copy() * fade * fade[::-1]
+    return audio
+
+
 def playback_worker(backend: TTSBackend) -> None:
-    """Dedicated thread: plays audio from the queue through a persistent OutputStream.
+    """Dedicated thread: plays audio from the queue.
 
-    This is the ONLY code that touches the audio device. Queue items are
-    np.ndarray chunks (any size). They're written to one long-lived
-    OutputStream — no gaps between clips, no start/stop overhead.
+    Two playback modes:
+    - PortAudio (sounddevice): speakers — stereo pan via equal-power law
+    - SpatialStream subprocess: BT headphones — head-tracked spatial audio
 
-    If the OutputStream dies (device switch, PortAudio error), it's
-    reopened on the next item.
+    Mode is selected on device change. SpatialStream is only used when
+    a Bluetooth headphone is the default output device.
     """
     global _playback_heartbeat
     out_stream: sd.OutputStream | None = None
     device_rate = _get_device_samplerate(backend.sample_rate)
+    use_spatial = False
+    bt_uid: str | None = None
+
+    def _detect_spatial_mode() -> tuple[bool, str | None]:
+        """Check if we should use spatial playback. Returns (use_spatial, bt_uid)."""
+        uid = _query_bt_headphone_uid()
+        has_bin = os.path.isfile(_SPATIAL_STREAM_BIN)
+        if uid and has_bin:
+            print(f"[playback] BT headphones detected, uid={uid} — using spatial stream", flush=True)
+            return True, uid
+        print(f"[playback] spatial mode off (uid={uid}, binary={has_bin})", flush=True)
+        return False, None
 
     def _open_stream() -> sd.OutputStream | None:
         nonlocal device_rate
         global _playback_stream_ref
         for _attempt in range(3):
             try:
-                # Cycle PortAudio under the lock so the health worker
-                # doesn't also cycle it at the same time (double-terminate
-                # can corrupt PA state).
                 with _portaudio_lock:
                     sd._terminate()
                     sd._initialize()
@@ -736,50 +876,73 @@ def playback_worker(backend: TTSBackend) -> None:
             _playback_stream_ref = None
         return None
 
+    # Initial mode detection
+    use_spatial, bt_uid = _detect_spatial_mode()
+
     while True:
         item = playback_queue.get()
         if item is None:
             break
         _playback_heartbeat = time.monotonic()
         try:
-            # Upsample to device rate
-            audio = _upsample(item.astype(np.float32), backend.sample_rate, device_rate)
+            # Re-detect mode on device change
+            if _device_changed.is_set():
+                _device_changed.clear()
+                old_spatial = use_spatial
+                use_spatial, bt_uid = _detect_spatial_mode()
+                if old_spatial and not use_spatial:
+                    print("[playback] switching from spatial to PortAudio", flush=True)
+                    _kill_spatial_stream()
+                elif not old_spatial and use_spatial:
+                    print("[playback] switching from PortAudio to spatial", flush=True)
+                    if out_stream is not None:
+                        try:
+                            out_stream.close()
+                        except Exception:
+                            pass
+                        with _playback_stream_lock:
+                            _playback_stream_ref = None
+                        out_stream = None
 
-            # Anti-click: trim tail artefacts, fade edges, pad with silence.
-            # Soundstretch can leave junk in the last few ms — chop it,
-            # then apply a clean fade so the signal reaches zero smoothly.
-            TRIM_START = int(device_rate * 0.005)  # chop first 5ms
-            TRIM_END = int(device_rate * 0.005)    # chop last 5ms
-            PAD_START = int(device_rate * 0.050)
-            PAD_END = int(device_rate * 0.050)
-            FADE_IN = int(device_rate * 0.015)
-            FADE_OUT = int(device_rate * 0.015)
-            if len(audio) > TRIM_START + TRIM_END + FADE_IN + FADE_OUT:
-                audio = audio[TRIM_START:]           # trim start artefacts
-                audio = audio[:-TRIM_END].copy()     # trim end artefacts (copy to ensure contiguous)
-                audio[:FADE_IN] *= np.linspace(0.0, 1.0, FADE_IN, dtype=np.float32)
-                audio[-FADE_OUT:] *= np.linspace(1.0, 0.0, FADE_OUT, dtype=np.float32)
-                audio = np.concatenate([
-                    np.zeros(PAD_START, dtype=np.float32),
-                    audio,
-                    np.zeros(PAD_END, dtype=np.float32),
-                ])
-            else:
-                # Chunk too small for full treatment — just fade the whole thing
-                n = len(audio)
-                fade = np.linspace(0.0, 1.0, n, dtype=np.float32)
-                audio = audio.copy() * fade * fade[::-1]  # fade in AND out
+            audio = item.astype(np.float32)
+            pan = _current_pan
 
-            # Reopen stream if device changed, stream died, or not yet opened
+            if use_spatial and bt_uid:
+                # --- Spatial stream path (BT headphones) ---
+                proc = _get_spatial_stream(backend.sample_rate, pan, bt_uid)
+                if proc is None or proc.poll() is not None:
+                    # Fallback: spatial stream failed, try PortAudio
+                    print("[playback] spatial stream unavailable, falling back to PortAudio", flush=True)
+                    use_spatial = False
+                    bt_uid = None
+                else:
+                    audio = _anti_click(audio, backend.sample_rate)
+                    write_gen = _stop_gen
+                    # Write in chunks so STOP can interrupt
+                    CHUNK = int(backend.sample_rate * 0.1)
+                    offset = 0
+                    try:
+                        while offset < len(audio) and _stop_gen == write_gen:
+                            end = min(offset + CHUNK, len(audio))
+                            chunk_bytes = audio[offset:end].tobytes()
+                            proc.stdin.write(chunk_bytes)
+                            proc.stdin.flush()
+                            _playback_heartbeat = time.monotonic()
+                            offset = end
+                    except (BrokenPipeError, OSError) as exc:
+                        print(f"[playback] spatial stream write failed: {exc}", flush=True)
+                        _kill_spatial_stream()
+                    continue
+
+            # --- PortAudio path (speakers) ---
+            audio = _upsample(audio, backend.sample_rate, device_rate)
+            audio = _anti_click(audio, device_rate)
+
             need_reopen = (
                 out_stream is None
                 or not out_stream.active
-                or _device_changed.is_set()
             )
             if need_reopen:
-                if _device_changed.is_set():
-                    print("[playback] device change detected, reopening stream", flush=True)
-                    _device_changed.clear()
                 if out_stream is not None:
                     try:
                         out_stream.close()
@@ -793,18 +956,12 @@ def playback_worker(backend: TTSBackend) -> None:
                     _try_play(item, backend.sample_rate)
                     continue
 
-            # Write in small chunks so STOP can interrupt mid-playback.
-            # Each chunk is ~100ms — short enough for responsive stop,
-            # long enough to avoid write() call overhead.
             WRITE_CHUNK = int(device_rate * 0.1)
             write_gen = _stop_gen
             flat = audio.reshape(-1)
             offset = 0
             is_last = playback_queue.empty()
 
-            # Stereo panning — equal-power (constant power) pan law.
-            # pan: 0.0 = full left, 0.5 = centre, 1.0 = full right.
-            pan = _current_pan
             pan_angle = pan * (np.pi / 2.0)
             gain_l = np.float32(np.cos(pan_angle))
             gain_r = np.float32(np.sin(pan_angle))
@@ -817,8 +974,6 @@ def playback_worker(backend: TTSBackend) -> None:
                     out_stream.write(stereo)
                     _playback_heartbeat = time.monotonic()
                     offset = end
-                # If nothing else queued, write 100ms of silence through the
-                # stream so the DAC settles to zero before we stop writing.
                 if is_last and _stop_gen == write_gen:
                     silence = np.zeros((int(device_rate * 0.1), 2), dtype=np.float32)
                     out_stream.write(silence)
@@ -837,6 +992,7 @@ def playback_worker(backend: TTSBackend) -> None:
             playback_queue.task_done()
 
     # Shutdown
+    _kill_spatial_stream()
     if out_stream is not None:
         try:
             out_stream.stop()
