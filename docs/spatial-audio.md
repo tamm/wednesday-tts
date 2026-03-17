@@ -44,8 +44,11 @@ No volume dip at centre, no clipping at extremes.
 
 - Screen bounds from JXA: `ObjC.import("AppKit"); $.NSScreen.screens` gives origin+size per display
 - Window bounds from AppleScript: `tell application "iTerm2" to get bounds of window` matched by session UUID
-- Pan = (window_centre_x - global_left) / (global_right - global_left)
-- Clamped to [0.0, 1.0]
+- Physical width estimated from logical points: `logical_w * 0.22 mm/pt`
+- Viewing angle: `atan2(dx_mm, viewing_distance_mm)`
+- Pan mapped from angle: `0.5 + (angle / max_angle) * 0.5`
+
+See [spatial-audio-formula.md](spatial-audio-formula.md) for the full formula spec, reference tables, and config options.
 
 ## v2 — HRTF binaural (future, not yet)
 
