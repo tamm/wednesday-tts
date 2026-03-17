@@ -102,7 +102,8 @@ def _get_repo_voice(cwd: str) -> str | None:
     return pool[int(h, 16) % len(pool)]
 
 
-def _post_to_server(text: str, session_id: str, cwd: str = "") -> bool:
+def _post_to_server(text: str, session_id: str, cwd: str = "",
+                    pan: float = 0.5) -> bool:
     """Send text to the wednesday-tts server. Returns True on success.
 
     On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
@@ -112,6 +113,7 @@ def _post_to_server(text: str, session_id: str, cwd: str = "") -> bool:
         voice = _get_repo_voice(cwd)
         if voice:
             text = f"\u00ab\u00ab{voice}\u00bb{text}\u00bb\u00bb"
+    pan_str = f"{pan:.3f}" if pan != 0.5 else ""
     if _IS_WINDOWS:
         body = text.encode("utf-8")
         req = urllib.request.Request(
@@ -131,9 +133,9 @@ def _post_to_server(text: str, session_id: str, cwd: str = "") -> bool:
         except Exception:
             return False
     else:
-        # Unix socket — daemon protocol: SEQ:0:speed:ct:ts:text
+        # Unix socket — daemon protocol: SEQ:0:speed:ct:ts:pan:text
         try:
-            cmd = f"SEQ:0:N:markdown::{text}\n".encode("utf-8")
+            cmd = f"SEQ:0:N:markdown::{pan_str}:{text}\n".encode("utf-8")
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(CONNECT_TIMEOUT)
             s.connect(UNIX_SOCKET_PATH)
@@ -195,7 +197,16 @@ def main() -> None:
                 last_space = trunc.rfind(" ")
                 combined = combined[:last_space] if last_space > 0 else trunc
 
-        _post_to_server(combined, session_id, cwd=cwd)
+        # Compute stereo pan from terminal window position
+        pan = 0.5
+        if not _IS_WINDOWS:
+            try:
+                from window_position import compute_pan
+                pan = compute_pan()
+            except Exception:
+                pass
+
+        _post_to_server(combined, session_id, cwd=cwd, pan=pan)
 
     except Exception as e:
         print(json.dumps({

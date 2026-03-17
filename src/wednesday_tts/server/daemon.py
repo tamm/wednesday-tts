@@ -419,6 +419,7 @@ _next_seq = 0       # sequence number the playback queue expects next
 _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
 
 playback_queue: queue.Queue = queue.Queue()
+_current_pan: float = 0.5  # stereo pan: 0.0=left, 0.5=centre, 1.0=right
 _device_changed = threading.Event()  # set by health worker when default output device changes
 _portaudio_lock = threading.Lock()   # guards sd._terminate()/_initialize() vs active stream writes
 _active_backend: TTSBackend | None = None
@@ -720,7 +721,7 @@ def playback_worker(backend: TTSBackend) -> None:
                     s = sd.OutputStream(
                         samplerate=device_rate,
                         device=device,
-                        channels=1,
+                        channels=2,
                         dtype="float32",
                     )
                     s.start()
@@ -800,16 +801,26 @@ def playback_worker(backend: TTSBackend) -> None:
             flat = audio.reshape(-1)
             offset = 0
             is_last = playback_queue.empty()
+
+            # Stereo panning — equal-power (constant power) pan law.
+            # pan: 0.0 = full left, 0.5 = centre, 1.0 = full right.
+            pan = _current_pan
+            pan_angle = pan * (np.pi / 2.0)
+            gain_l = np.float32(np.cos(pan_angle))
+            gain_r = np.float32(np.sin(pan_angle))
+
             try:
                 while offset < len(flat) and _stop_gen == write_gen:
                     end = min(offset + WRITE_CHUNK, len(flat))
-                    out_stream.write(flat[offset:end].reshape(-1, 1))
+                    mono = flat[offset:end]
+                    stereo = np.column_stack((mono * gain_l, mono * gain_r))
+                    out_stream.write(stereo)
                     _playback_heartbeat = time.monotonic()
                     offset = end
                 # If nothing else queued, write 100ms of silence through the
                 # stream so the DAC settles to zero before we stop writing.
                 if is_last and _stop_gen == write_gen:
-                    silence = np.zeros((int(device_rate * 0.1), 1), dtype=np.float32)
+                    silence = np.zeros((int(device_rate * 0.1), 2), dtype=np.float32)
                     out_stream.write(silence)
             except Exception as exc:
                 print(f"[playback] write failed: {exc}, reopening stream", flush=True)
@@ -842,8 +853,10 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
     """Handle one client connection.
 
     Protocols (wire format, newline-terminated or fixed recv):
-        SEQ:N:speed:ct:ts:text  render text with sequence N, play in order
-                                ct=content_type (markdown|normalized), ts=epoch float or empty
+        SEQ:N:speed:ct:ts:pan:text  render text with sequence N, play in order
+                                    ct=content_type (markdown|normalized), ts=epoch float or empty
+                                    pan=stereo position 0.0-1.0 (empty = 0.5 centre)
+        SEQ:N:speed:ct:ts:text      (legacy 6-field form, pan defaults to 0.5)
         SPEED:speed:text        legacy unsequenced render (backward compat, deprecated)
         PCM:speed:text          render and return raw PCM (4-byte LE sample_rate + float32)
         NORMALIZE:ct:text       normalize text and return it as UTF-8 (no audio)
@@ -948,41 +961,64 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         _stat_inc("requests_total")
 
         # ── Parse message ─────────────────────────────────────────────────
+        global _current_pan
         seq: int | None = None
         speed = DEFAULT_SPEED
         text = message
         content_type = "normalized"  # backward compat
         voice: str | None = None
+        pan: float = 0.5  # default centre
 
         if message.startswith("SEQ:"):
-            # New format: SEQ:N:speed:content_type:timestamp:text
-            # Old format: SEQ:N:speed:text (with __ct:/__t: prefixes in text)
-            parts = message.split(":", 5)
-            if len(parts) >= 6:
-                # New format — proper colon-delimited fields
+            # 7-field: SEQ:N:speed:ct:ts:pan:text  (pan = float or empty)
+            # 6-field: SEQ:N:speed:ct:ts:text       (legacy, no pan)
+            # 4-field: SEQ:N:speed:text              (oldest, __ct:/__t: prefixes)
+            #
+            # Detect 7-field vs 6-field: try splitting at 6 colons first.
+            # If parts[5] is empty or a valid float, treat as 7-field (pan field).
+            # Otherwise fall back to 6-field parse.
+            parts7 = message.split(":", 6)
+            if len(parts7) >= 7 and (not parts7[5] or re.match(r"^[01]?\.\d+$", parts7[5])):
+                # 7-field format with pan
                 try:
-                    seq = int(parts[1])
-                    speed = DEFAULT_SPEED if parts[2] == "N" else float(parts[2])
-                    content_type = parts[3] if parts[3] else "markdown"
-                    # parts[4] is timestamp — logged but not used for logic
-                    text = parts[5]
+                    seq = int(parts7[1])
+                    speed = DEFAULT_SPEED if parts7[2] == "N" else float(parts7[2])
+                    content_type = parts7[3] if parts7[3] else "markdown"
+                    # parts7[4] is timestamp
+                    if parts7[5]:
+                        pan = max(0.0, min(1.0, float(parts7[5])))
+                    text = parts7[6]
                 except ValueError:
                     pass
-            elif len(parts) >= 4:
-                # Old format — backward compat
-                try:
-                    seq = int(parts[1])
-                    speed = DEFAULT_SPEED if parts[2] == "N" else float(parts[2])
-                    text = parts[3]
-                except ValueError:
-                    pass
-                # Legacy __ct: prefix embedded in text
-                _ct = re.match(r"^__ct:([a-zA-Z0-9_-]+)__", text)
-                if _ct:
-                    content_type = _ct.group(1)
-                    text = text[_ct.end():]
-                # Legacy __t: timestamp prefix
-                text = re.sub(r"^__t:[\d.]+__", "", text)
+            else:
+                parts = message.split(":", 5)
+                if len(parts) >= 6:
+                    # 6-field format (no pan)
+                    try:
+                        seq = int(parts[1])
+                        speed = DEFAULT_SPEED if parts[2] == "N" else float(parts[2])
+                        content_type = parts[3] if parts[3] else "markdown"
+                        # parts[4] is timestamp
+                        text = parts[5]
+                    except ValueError:
+                        pass
+            if seq is None:
+                # Old 4-field format — backward compat
+                parts4 = message.split(":", 3)
+                if len(parts4) >= 4:
+                    try:
+                        seq = int(parts4[1])
+                        speed = DEFAULT_SPEED if parts4[2] == "N" else float(parts4[2])
+                        text = parts4[3]
+                    except ValueError:
+                        pass
+                    # Legacy __ct: prefix embedded in text
+                    _ct = re.match(r"^__ct:([a-zA-Z0-9_-]+)__", text)
+                    if _ct:
+                        content_type = _ct.group(1)
+                        text = text[_ct.end():]
+                    # Legacy __t: timestamp prefix
+                    text = re.sub(r"^__t:[\d.]+__", "", text)
 
         elif message.startswith("SPEED:"):
             # DEPRECATED: use SEQ:0 instead. Will be removed in a future version.
@@ -1028,6 +1064,9 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         elif not any(v is not None for v, _ in segments):
             voice = None  # no tags at all
 
+        # ── Set stereo pan for this request ──────────────────────────────
+        _current_pan = pan
+
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
 
@@ -1039,7 +1078,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             and _stop_gen == gen_snap
         )
         if use_streaming:
-            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={voice}", flush=True)
+            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={voice}, pan={pan:.2f}", flush=True)
             _gs = gen_snap  # capture for closure
             gs_kwargs = {
                 "speed": speed,
@@ -1060,7 +1099,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 conn.send(b"ok")
                 return
         else:
-            print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}, voice={voice}", flush=True)
+            print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}, voice={voice}, pan={pan:.2f}", flush=True)
             audio = _render_segments(segments, backend, speed, gen_snap, default_voice=voice)
 
         # ── Enqueue in order ──────────────────────────────────────────────

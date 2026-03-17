@@ -88,19 +88,21 @@ def _get_repo_voice(cwd: str) -> str | None:
 
 
 def _fire_and_forget(text: str, session_id: str, wall_time: float,
-                     cwd: str = "") -> None:
+                     cwd: str = "", pan: float = 0.5) -> None:
     """Send text to the TTS server.
 
     On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
     On Windows: raw HTTP POST to localhost:5678.
 
-    Uses colon-delimited fields: SEQ:0:N:markdown:<wall_time>:<text>
+    Uses colon-delimited fields: SEQ:0:N:markdown:<wall_time>:<pan>:<text>
     """
     body_str = text
     if cwd:
         voice = _get_repo_voice(cwd)
         if voice:
             body_str = f"\u00ab\u00ab{voice}\u00bb{body_str}\u00bb\u00bb"
+
+    pan_str = f"{pan:.3f}" if pan != 0.5 else ""
 
     if _IS_WINDOWS:
         body = body_str.encode("utf-8")
@@ -129,7 +131,7 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float,
         # If no response in 10s, ping to diagnose and optionally restart.
         import subprocess
 
-        cmd = f"SEQ:0:N:markdown:{wall_time}:{body_str}\n".encode("utf-8")
+        cmd = f"SEQ:0:N:markdown:{wall_time}:{pan_str}:{body_str}\n".encode("utf-8")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10)
         s.connect(UNIX_SOCKET_PATH)
@@ -198,9 +200,18 @@ def main() -> None:
     if not text or len(text.strip()) < 5:
         sys.exit(0)
 
+    # Compute stereo pan from terminal window position (macOS only, silent fallback)
+    pan = 0.5
+    if not _IS_WINDOWS:
+        try:
+            from window_position import compute_pan
+            pan = compute_pan()
+        except Exception:
+            pass
+
     # Send to server — silent fail if server is not running
     try:
-        _fire_and_forget(text, session_id, wall_time, cwd=cwd)
+        _fire_and_forget(text, session_id, wall_time, cwd=cwd, pan=pan)
     except (ConnectionRefusedError, OSError, TimeoutError):
         # Server not running — skip silently
         pass

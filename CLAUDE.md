@@ -37,6 +37,20 @@ uv pip install -e ".[dev]"
 
 `docs/normalization/rule-*.md` — each has an Examples table. Use these as test case sources.
 
+## Spatial audio
+
+`docs/spatial-audio.md` — feature plan for positional stereo panning based on terminal window location.
+
+## TTS daemon restart
+
+You can restart the TTS daemon freely whenever needed (after code changes, config changes, debugging) using:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.tamm.wednesday-tts
+```
+
+No need to ask first. This command is always allowed.
+
 ## Pocket TTS (primary backend)
 
 GitHub: https://github.com/kyutai-labs/pocket-tts
