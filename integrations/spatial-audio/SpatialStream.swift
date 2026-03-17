@@ -4,8 +4,12 @@
 // Usage: SpatialStream <sample_rate> [device_uid] [pan]
 //   pan: 0.0 = full left, 0.5 = centre, 1.0 = full right (default 0.5)
 //
-// Feed raw float32 mono PCM on stdin. Send EOF when done.
-// Designed to be a long-running subprocess that the daemon pipes audio into.
+// Stdin protocol:
+//   Audio data: raw float32 mono PCM samples
+//   Pan update: 4-byte magic "PAN!" followed by 4-byte float32 (new pan 0..1)
+//   EOF: stop playback
+//
+// The player position updates in real time — no need to restart.
 
 import AVFoundation
 import Foundation
@@ -17,11 +21,7 @@ guard CommandLine.arguments.count >= 2 else {
 
 let sampleRate = Double(CommandLine.arguments[1])!
 let deviceUID  = CommandLine.arguments.count >= 3 ? CommandLine.arguments[2] : nil
-let pan        = CommandLine.arguments.count >= 4 ? Float(CommandLine.arguments[3]) ?? 0.5 : 0.5
-
-// Map pan (0..1) to x position (-1..1) for 3D space
-// 0.0 = full left (-1), 0.5 = centre (0), 1.0 = full right (1)
-let xPos = (pan - 0.5) * 2.0
+var pan        = CommandLine.arguments.count >= 4 ? Float(CommandLine.arguments[3]) ?? 0.5 : 0.5
 
 let engine = AVAudioEngine()
 let environment = AVAudioEnvironmentNode()
@@ -30,7 +30,6 @@ let player = AVAudioPlayerNode()
 engine.attach(environment)
 engine.attach(player)
 
-// Mono input format with proper channel layout
 let monoLayout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Mono)!
 let inputFormat = AVAudioFormat(
     commonFormat: .pcmFormatFloat32,
@@ -39,7 +38,6 @@ let inputFormat = AVAudioFormat(
     channelLayout: monoLayout
 )
 
-// Stereo output format
 let stereoLayout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Stereo)!
 let outputFormat = AVAudioFormat(
     commonFormat: .pcmFormatFloat32,
@@ -48,19 +46,19 @@ let outputFormat = AVAudioFormat(
     channelLayout: stereoLayout
 )
 
-// Connect: player -> environment -> mainMixer -> output
 engine.connect(player, to: environment, format: inputFormat)
 engine.connect(environment, to: engine.mainMixerNode, format: outputFormat)
 
-// Spatial positioning
-environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
-player.position = AVAudio3DPoint(x: xPos, y: 0, z: -1.0)  // negative z = in front
+func updatePosition(_ p: Float) {
+    let x = (p - 0.5) * 2.0
+    player.position = AVAudio3DPoint(x: x, y: 0, z: -1.0)
+}
 
-// Enable head tracking
+environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
+updatePosition(pan)
+
 environment.isListenerHeadTrackingEnabled = true
 environment.outputType = .headphones
-
-// Set rendering algorithm
 player.renderingAlgorithm = .auto
 player.sourceMode = .spatializeIfMono
 
@@ -71,42 +69,80 @@ do {
     exit(1)
 }
 
-fputs("[SpatialStream] ready rate=\(sampleRate) pan=\(pan) x=\(xPos) device=\(deviceUID ?? "default")\n", stderr)
+fputs("[SpatialStream] ready rate=\(sampleRate) pan=\(pan) device=\(deviceUID ?? "default")\n", stderr)
 
-// Read stdin in chunks and schedule buffers
 let CHUNK_SAMPLES = 4096
-let CHUNK_BYTES = CHUNK_SAMPLES * 4  // float32
-let stdin = FileHandle.standardInput
+let CHUNK_BYTES = CHUNK_SAMPLES * 4
+let PAN_MAGIC = Data("PAN!".utf8)  // 4 bytes
+let stdinHandle = FileHandle.standardInput
 var totalFrames: Int64 = 0
+var leftover = Data()
 
 while true {
-    let data = stdin.readData(ofLength: CHUNK_BYTES)
-    if data.isEmpty { break }
+    let raw = stdinHandle.readData(ofLength: CHUNK_BYTES)
+    if raw.isEmpty && leftover.isEmpty { break }
 
-    let sampleCount = data.count / 4
-    let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(sampleCount))!
-    buffer.frameLength = AVAudioFrameCount(sampleCount)
+    var data = leftover + raw
+    leftover = Data()
 
-    data.withUnsafeBytes { rawPtr in
-        let src = rawPtr.bindMemory(to: Float.self)
-        let dst = buffer.floatChannelData![0]
-        for i in 0..<sampleCount {
-            dst[i] = src[i]
+    // Process pan commands and audio data
+    while !data.isEmpty {
+        // Check for PAN! magic (8 bytes: 4 magic + 4 float)
+        if data.count >= 8 && data.prefix(4) == PAN_MAGIC {
+            let panBytes = data[data.startIndex+4 ..< data.startIndex+8]
+            pan = panBytes.withUnsafeBytes { $0.load(as: Float.self) }
+            updatePosition(pan)
+            data = Data(data.dropFirst(8))
+            continue
         }
-    }
 
-    player.scheduleBuffer(buffer)
-    if totalFrames == 0 {
-        player.play()
+        // If we have less than 4 bytes, could be a partial PAN! — save as leftover
+        if data.count < 4 {
+            leftover = data
+            break
+        }
+
+        // Check if PAN! starts partway through — split there
+        var audioEnd = data.count
+        for i in 1..<data.count {
+            let remaining = data.count - i
+            if remaining >= 4 && data[data.startIndex+i ..< data.startIndex+i+4] == PAN_MAGIC {
+                audioEnd = i
+                break
+            }
+        }
+
+        // Align to float32 boundary
+        let alignedEnd = (audioEnd / 4) * 4
+        if alignedEnd == 0 {
+            leftover = data
+            break
+        }
+
+        let audioData = data.prefix(alignedEnd)
+        data = Data(data.dropFirst(alignedEnd))
+
+        let sampleCount = audioData.count / 4
+        let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(sampleCount))!
+        buffer.frameLength = AVAudioFrameCount(sampleCount)
+
+        audioData.withUnsafeBytes { rawPtr in
+            let src = rawPtr.bindMemory(to: Float.self)
+            let dst = buffer.floatChannelData![0]
+            for i in 0..<sampleCount {
+                dst[i] = src[i]
+            }
+        }
+
+        player.scheduleBuffer(buffer)
+        if totalFrames == 0 {
+            player.play()
+        }
+        totalFrames += Int64(sampleCount)
     }
-    totalFrames += Int64(sampleCount)
 }
 
 // Wait for playback to drain
-let remainingDuration = Double(totalFrames) / sampleRate
-fputs("[SpatialStream] EOF, waiting for \(String(format: "%.1f", remainingDuration))s of audio to finish\n", stderr)
-
-// Schedule an empty buffer with a completion handler
 let silentBuf = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: 1)!
 silentBuf.frameLength = 1
 silentBuf.floatChannelData![0][0] = 0
@@ -115,7 +151,6 @@ player.scheduleBuffer(silentBuf) {
     done.signal()
 }
 
-// Run loop while waiting so audio continues playing
 while done.wait(timeout: .now() + 0.1) == .timedOut {
     RunLoop.current.run(until: Date().addingTimeInterval(0.05))
 }

@@ -557,14 +557,34 @@ def _query_bt_headphone_uid() -> str | None:
 
 # Spatial stream subprocess management
 _spatial_proc: subprocess.Popen | None = None
+_spatial_pan: float = 0.5
 _spatial_lock = threading.Lock()
+
+# Magic bytes for pan update command sent to SpatialStream stdin
+_PAN_MAGIC = b"PAN!"
+
+
+def _send_pan_update(proc: subprocess.Popen, pan: float) -> None:
+    """Send a pan position update to a running SpatialStream subprocess."""
+    global _spatial_pan
+    try:
+        proc.stdin.write(_PAN_MAGIC + struct.pack("f", pan))
+        proc.stdin.flush()
+        _spatial_pan = pan
+    except (BrokenPipeError, OSError):
+        pass
 
 
 def _get_spatial_stream(sample_rate: int, pan: float, device_uid: str) -> subprocess.Popen | None:
-    """Get or create a SpatialStream subprocess for head-tracked playback."""
-    global _spatial_proc
+    """Get or create a SpatialStream subprocess for head-tracked playback.
+
+    Sends inline pan updates if the position has changed.
+    """
+    global _spatial_proc, _spatial_pan
     with _spatial_lock:
         if _spatial_proc is not None and _spatial_proc.poll() is None:
+            if abs(pan - _spatial_pan) >= 0.01:
+                _send_pan_update(_spatial_proc, pan)
             return _spatial_proc
         # Kill any stale process
         if _spatial_proc is not None:
@@ -584,6 +604,7 @@ def _get_spatial_stream(sample_rate: int, pan: float, device_uid: str) -> subpro
                 stderr=subprocess.PIPE,
             )
             _spatial_proc = proc
+            _spatial_pan = pan
             # Read the ready message
             import select
             if select.select([proc.stderr], [], [], 3.0)[0]:
