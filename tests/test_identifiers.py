@@ -2,7 +2,7 @@
 
 from wednesday_tts.normalize.identifiers import (
     normalize_identifiers, normalize_escape_sequences, normalize_hashes,
-    normalize_dotted_names, pattern_descriptor_to_speech,
+    normalize_dotted_names, normalize_uuids, pattern_descriptor_to_speech,
 )
 
 
@@ -103,6 +103,35 @@ def test_heading_hash_preserved():
     # Heading hashes (followed by space at line start) should be preserved
     result = normalize_hashes("# Title")
     assert result == "# Title"
+
+
+# --- normalize_uuids ---
+
+def test_uuid_standard():
+    result = normalize_uuids("c3dec37b-1b8d-4471-84e3-009d5f227794")
+    assert "UUID ending in" in result
+    assert "seven nine four" in result
+
+
+def test_uuid_in_log_line():
+    result = normalize_uuids("GET /preview/c3dec37b-1b8d-4471-84e3-009d5f227794 200 OK")
+    assert "UUID ending in" in result
+    assert result.startswith("GET /preview/")
+    assert result.endswith("200 OK")
+
+
+def test_uuid_in_backticks_survives_pipeline():
+    # normalize_uuids runs before normalize_identifiers; backtick gets stripped after
+    from wednesday_tts.normalize.identifiers import normalize_identifiers
+    text = normalize_uuids("`c3dec37b-1b8d-4471-84e3-009d5f227794`")
+    result = normalize_identifiers(text)
+    assert "UUID ending in" in result
+
+
+def test_non_uuid_hex_not_caught():
+    # Plain hex without the 8-4-4-4-12 dash pattern should not be replaced
+    result = normalize_uuids("abcdef12")
+    assert result == "abcdef12"
 
 
 # --- normalize_dotted_names ---

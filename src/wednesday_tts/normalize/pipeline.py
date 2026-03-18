@@ -4,7 +4,7 @@ from wednesday_tts.normalize.code_blocks import normalize_code_blocks
 from wednesday_tts.normalize.urls import normalize_urls
 from wednesday_tts.normalize.identifiers import (
     normalize_identifiers, normalize_escape_sequences, normalize_hashes,
-    normalize_dotted_names,
+    normalize_dotted_names, normalize_uuids,
 )
 from wednesday_tts.normalize.hex_codes import normalize_hex_codes
 from wednesday_tts.normalize.ip_addresses import normalize_ip_addresses
@@ -47,6 +47,9 @@ def normalize_technical(text, dictionary=None, filenames_dict=None):
 
     # 0-pre. URLs first — consume whole before any other rule mangles their internals
     text = normalize_urls(text)
+
+    # 0-uuid. UUIDs/GUIDs — consume before hex/hash rules mangle them
+    text = normalize_uuids(text)
 
     # 0. Process inline backtick content as code identifiers
     text = normalize_identifiers(text)

@@ -134,3 +134,24 @@ def test_caps_with_apostrophe():
     result = normalize_all_caps("WON'T")
     # Should be title-cased to "Won't"
     assert result == "Won't"
+
+
+# ---------------------------------------------------------------------------
+# HTTP method verb normalisation (3-letter verbs via CAPS_EXCLAMATIONS)
+# ---------------------------------------------------------------------------
+
+def test_http_get():
+    assert normalize_all_caps("GET /api/users") == "Get /api/users"
+
+
+def test_http_put():
+    assert normalize_all_caps("PUT /api/users/1") == "Put /api/users/1"
+
+
+def test_http_set():
+    assert normalize_all_caps("SET key value") == "Set key value"
+
+
+def test_http_delete_four_plus():
+    # DELETE is 6 letters — already handled by the 4+ letter caps rule
+    assert normalize_all_caps("DELETE /api/users/1") == "Delete /api/users/1"

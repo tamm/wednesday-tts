@@ -16,6 +16,7 @@ Run:
 from __future__ import annotations
 
 import collections
+import fcntl
 import hashlib
 import json
 import os
@@ -968,12 +969,26 @@ def playback_worker(backend: TTSBackend) -> None:
                     write_gen = _stop_gen
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
+                    # Use non-blocking IO to avoid indefinite stalls on BT buffer pressure
+                    fd = proc.stdin.fileno()
+                    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
                     try:
                         while offset < len(spatial_audio) and _stop_gen == write_gen:
                             end = min(offset + CHUNK, len(spatial_audio))
                             chunk_bytes = spatial_audio[offset:end].tobytes()
-                            proc.stdin.write(chunk_bytes)
-                            proc.stdin.flush()
+                            written = 0
+                            deadline = time.monotonic() + 10.0
+                            while written < len(chunk_bytes):
+                                if time.monotonic() > deadline:
+                                    raise OSError("spatial write timed out (10s)")
+                                if _stop_gen != write_gen:
+                                    break
+                                try:
+                                    n = os.write(fd, chunk_bytes[written:])
+                                    written += n
+                                except BlockingIOError:
+                                    time.sleep(0.01)
                             _playback_heartbeat = time.monotonic()
                             offset = end
                         spatial_ok = True

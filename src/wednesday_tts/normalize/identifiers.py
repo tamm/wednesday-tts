@@ -100,6 +100,25 @@ def identifier_to_speech(m):
     return content
 
 
+_UUID_RE = re.compile(
+    r'(?<![0-9a-fA-F-])'
+    r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    r'(?![0-9a-fA-F-])'
+)
+
+
+def normalize_uuids(text):
+    """Replace UUIDs/GUIDs with 'UUID ending in X Y Z' (last 3 chars spelled out).
+
+    Must run before hex/hash rules, which would mangle the hex segments.
+    """
+    def _uuid_to_speech(m):
+        tail = spell_chars(m.group(0)[-3:])
+        return f'UUID ending in {tail}'
+
+    return _UUID_RE.sub(_uuid_to_speech, text)
+
+
 def normalize_identifiers(text):
     """Process inline backtick content as code identifiers, then strip ticks.
 

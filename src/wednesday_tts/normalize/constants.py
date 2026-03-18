@@ -51,6 +51,8 @@ CAPS_EXCLAMATIONS = {
     'UM': 'Um', 'AH': 'Ah', 'UH': 'Uh', 'WOW': 'Wow',
     'HEY': 'Hey', 'BYE': 'Bye', 'AWW': 'Aww', 'GOD': 'God',
     'OMG': 'oh my god',
+    # HTTP method verbs — 3 letters, slip under the 4+ letter caps rule
+    'GET': 'Get', 'PUT': 'Put', 'SET': 'Set',
 }
 
 MODIFIER_NAMES = {
