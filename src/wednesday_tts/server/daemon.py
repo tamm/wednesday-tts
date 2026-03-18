@@ -513,60 +513,62 @@ def _upsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
         return np.repeat(audio, ratio).astype(np.float32)
 
 
-_BT_SKIP_NAMES = [
-    "MacBook", "Built-in", "DELL", "BlackHole", "Multi-Output",
-    "Microsoft Teams", "DisplayPort",
-]
-
-
-def _is_bt_output() -> bool:
-    """Check if the default output device looks like Bluetooth headphones.
-
-    Returns True if the device name doesn't match any known non-BT device.
-    This is a heuristic — any unknown external device is treated as potential BT.
-    """
-    try:
-        dev = sd.query_devices(kind="output")
-        name = dev["name"]
-        return not any(s.lower() in name.lower() for s in _BT_SKIP_NAMES)
-    except Exception:
-        return False
-
-
-def _query_bt_device_uid() -> str | None:
-    """Get the CoreAudio UID of the default output device via subprocess.
-
-    Runs in a subprocess to avoid PortAudio terminate/initialize disrupting
-    the parent's active streams. Returns the UID string or None.
-    """
-    try:
-        result = subprocess.run(
-            [
-                os.sys.executable, "-c",
-                "import sounddevice as sd\n"
-                "dev = sd.query_devices(kind='output')\n"
-                "# sounddevice doesn't expose UID directly;\n"
-                "# use the device name as a stable identifier\n"
-                "print(dev['name'])\n",
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
-        uid = result.stdout.strip()
-        return uid if uid else None
-    except Exception:
-        return None
-
-
 def _query_bt_headphone_uid() -> str | None:
-    """Check if default output is BT headphones. Returns device UID or None.
+    """Check if default output is a Bluetooth device. Returns device name or None.
 
-    First checks the device name against known non-BT names to skip speakers,
-    DisplayPort audio, virtual devices etc. If the device looks like BT,
-    queries its UID for the SpatialStream subprocess.
+    Queries CoreAudio transport type directly via ctypes — no subprocess,
+    no system_profiler, no timing issues. Returns the device name from
+    sounddevice if the transport type is Bluetooth or Bluetooth LE.
     """
-    if not _is_bt_output():
+    try:
+        import ctypes
+
+        ca = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
+        )
+
+        class _PropAddr(ctypes.Structure):
+            _fields_ = [
+                ("mSelector", ctypes.c_uint32),
+                ("mScope", ctypes.c_uint32),
+                ("mElement", ctypes.c_uint32),
+            ]
+
+        def _fourcc(s: str) -> int:
+            return (ord(s[0]) << 24 | ord(s[1]) << 16 | ord(s[2]) << 8 | ord(s[3]))
+
+        scope_global = _fourcc("glob")
+
+        # Get default output device ID
+        addr = _PropAddr(_fourcc("dOut"), scope_global, 0)
+        device_id = ctypes.c_uint32(0)
+        size = ctypes.c_uint32(4)
+        err = ca.AudioObjectGetPropertyData(
+            1, ctypes.byref(addr), 0, None, ctypes.byref(size), ctypes.byref(device_id)
+        )
+        if err != 0:
+            return None
+
+        # Get transport type
+        addr2 = _PropAddr(_fourcc("tran"), scope_global, 0)
+        transport = ctypes.c_uint32(0)
+        size2 = ctypes.c_uint32(4)
+        err2 = ca.AudioObjectGetPropertyData(
+            device_id.value, ctypes.byref(addr2), 0, None,
+            ctypes.byref(size2), ctypes.byref(transport),
+        )
+        if err2 != 0:
+            return None
+
+        is_bt = transport.value in (_fourcc("blue"), _fourcc("blea"))
+        if not is_bt:
+            return None
+
+        # Return device name for logging/SpatialStream args
+        dev = sd.query_devices(kind="output")
+        return dev["name"]
+    except Exception:
         return None
-    return _query_bt_device_uid()
 
 
 # Spatial stream subprocess management
