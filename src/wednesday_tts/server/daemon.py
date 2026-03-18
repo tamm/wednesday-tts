@@ -513,46 +513,60 @@ def _upsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
         return np.repeat(audio, ratio).astype(np.float32)
 
 
-def _query_bt_headphone_uid() -> str | None:
-    """Check if default output is BT headphones. Returns device UID or None.
+_BT_SKIP_NAMES = [
+    "MacBook", "Built-in", "DELL", "BlackHole", "Multi-Output",
+    "Microsoft Teams", "DisplayPort",
+]
 
-    Uses the device settings plist to find a Bluetooth MAC-based UID.
-    The default output device name is checked against known non-BT names
-    to avoid false positives (built-in speakers, DisplayPort, virtual).
+
+def _is_bt_output() -> bool:
+    """Check if the default output device looks like Bluetooth headphones.
+
+    Returns True if the device name doesn't match any known non-BT device.
+    This is a heuristic — any unknown external device is treated as potential BT.
+    """
+    try:
+        dev = sd.query_devices(kind="output")
+        name = dev["name"]
+        return not any(s.lower() in name.lower() for s in _BT_SKIP_NAMES)
+    except Exception:
+        return False
+
+
+def _query_bt_device_uid() -> str | None:
+    """Get the CoreAudio UID of the default output device via subprocess.
+
+    Runs in a subprocess to avoid PortAudio terminate/initialize disrupting
+    the parent's active streams. Returns the UID string or None.
     """
     try:
         result = subprocess.run(
             [
                 os.sys.executable, "-c",
-                "import sounddevice as sd, subprocess, re, plistlib\n"
+                "import sounddevice as sd\n"
                 "dev = sd.query_devices(kind='output')\n"
-                "name = dev['name']\n"
-                "# Skip known non-BT devices\n"
-                "skip = ['MacBook', 'Built-in', 'DELL', 'BlackHole', 'Multi-Output',\n"
-                "        'Microsoft Teams', 'DisplayPort']\n"
-                "if any(s.lower() in name.lower() for s in skip):\n"
-                "    exit(0)\n"
-                "# Look for BT MAC UID in device settings plist\n"
-                "sp = subprocess.run(['/usr/bin/plutil', '-convert', 'xml1', '-o', '-',\n"
-                "    '/Library/Preferences/Audio/com.apple.audio.DeviceSettings.plist'],\n"
-                "    capture_output=True, timeout=5)\n"
-                "if sp.returncode != 0:\n"
-                "    exit(1)\n"
-                "plist = plistlib.loads(sp.stdout)\n"
-                "for key in plist:\n"
-                "    if key.endswith(':output') and re.match(\n"
-                "            r'[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}:output', key):\n"
-                "        print(key)\n"
-                "        break\n",
+                "# sounddevice doesn't expose UID directly;\n"
+                "# use the device name as a stable identifier\n"
+                "print(dev['name'])\n",
             ],
             capture_output=True, text=True, timeout=10,
         )
         uid = result.stdout.strip()
-        if uid and ':output' in uid:
-            return uid
+        return uid if uid else None
     except Exception:
-        pass
-    return None
+        return None
+
+
+def _query_bt_headphone_uid() -> str | None:
+    """Check if default output is BT headphones. Returns device UID or None.
+
+    First checks the device name against known non-BT names to skip speakers,
+    DisplayPort audio, virtual devices etc. If the device looks like BT,
+    queries its UID for the SpatialStream subprocess.
+    """
+    if not _is_bt_output():
+        return None
+    return _query_bt_device_uid()
 
 
 # Spatial stream subprocess management
@@ -866,7 +880,10 @@ def playback_worker(backend: TTSBackend) -> None:
         if uid and has_bin:
             print(f"[playback] BT headphones detected, uid={uid} — using spatial stream", flush=True)
             return True, uid
-        print(f"[playback] spatial mode off (uid={uid}, binary={has_bin})", flush=True)
+        if uid and not has_bin:
+            print(f"[playback] BT detected but no SpatialStream binary — PortAudio fallback", flush=True)
+        else:
+            print("[playback] non-BT output — using PortAudio stereo pan", flush=True)
         return False, None
 
     def _open_stream() -> sd.OutputStream | None:
@@ -879,6 +896,12 @@ def playback_worker(backend: TTSBackend) -> None:
                     sd._initialize()
                     device = get_default_output_device()
                     device_rate = _get_device_samplerate(backend.sample_rate)
+                    dev_name = "unknown"
+                    try:
+                        dev_name = sd.query_devices(device)["name"]
+                    except Exception:
+                        pass
+                    print(f"[playback] _open_stream: device={device} ({dev_name}) rate={device_rate}", flush=True)
                     s = sd.OutputStream(
                         samplerate=device_rate,
                         device=device,
@@ -918,6 +941,7 @@ def playback_worker(backend: TTSBackend) -> None:
                     print("[playback] switching from PortAudio to spatial", flush=True)
                 # Always reopen PortAudio stream on device change
                 if out_stream is not None:
+                    print("[playback] closing old stream for device change", flush=True)
                     try:
                         out_stream.close()
                     except Exception:
@@ -929,34 +953,38 @@ def playback_worker(backend: TTSBackend) -> None:
             audio = item.astype(np.float32)
             pan = _current_pan
 
+            spatial_ok = False
             if use_spatial and bt_uid:
                 # --- Spatial stream path (BT headphones) ---
                 proc = _get_spatial_stream(backend.sample_rate, pan, bt_uid)
                 if proc is None or proc.poll() is not None:
-                    # Fallback: spatial stream failed, try PortAudio
                     print("[playback] spatial stream unavailable, falling back to PortAudio", flush=True)
                     use_spatial = False
                     bt_uid = None
                 else:
-                    audio = _anti_click(audio, backend.sample_rate)
+                    spatial_audio = _anti_click(audio.copy(), backend.sample_rate)
                     write_gen = _stop_gen
-                    # Write in chunks so STOP can interrupt
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
                     try:
-                        while offset < len(audio) and _stop_gen == write_gen:
-                            end = min(offset + CHUNK, len(audio))
-                            chunk_bytes = audio[offset:end].tobytes()
+                        while offset < len(spatial_audio) and _stop_gen == write_gen:
+                            end = min(offset + CHUNK, len(spatial_audio))
+                            chunk_bytes = spatial_audio[offset:end].tobytes()
                             proc.stdin.write(chunk_bytes)
                             proc.stdin.flush()
                             _playback_heartbeat = time.monotonic()
                             offset = end
+                        spatial_ok = True
                     except (BrokenPipeError, OSError) as exc:
-                        print(f"[playback] spatial stream write failed: {exc}", flush=True)
+                        print(f"[playback] spatial stream write failed: {exc}, falling back to PortAudio", flush=True)
                         _kill_spatial_stream()
-                    continue
+                        use_spatial = False
+                        bt_uid = None
 
-            # --- PortAudio path (speakers) ---
+            if spatial_ok:
+                continue
+
+            # --- PortAudio path (speakers or BT fallback) ---
             audio = _upsample(audio, backend.sample_rate, device_rate)
             audio = _anti_click(audio, device_rate)
 
@@ -972,11 +1000,13 @@ def playback_worker(backend: TTSBackend) -> None:
                         pass
                     with _playback_stream_lock:
                         _playback_stream_ref = None
+                print("[playback] opening PortAudio stream", flush=True)
                 out_stream = _open_stream()
                 if out_stream is None:
                     print("[playback] no stream, falling back to sd.play()", flush=True)
                     _try_play(item, backend.sample_rate)
                     continue
+                print(f"[playback] PortAudio stream opened, rate={device_rate}", flush=True)
 
             WRITE_CHUNK = int(device_rate * 0.1)
             write_gen = _stop_gen

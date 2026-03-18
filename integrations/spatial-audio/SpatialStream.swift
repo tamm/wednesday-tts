@@ -10,6 +10,9 @@
 //   EOF: stop playback
 //
 // The player position updates in real time — no need to restart.
+//
+// NOTE: stdin reads happen on a background thread so the main thread can
+// run its RunLoop — required for AVAudioEngine to deliver audio buffers.
 
 import AVFoundation
 import Foundation
@@ -77,69 +80,81 @@ let PAN_MAGIC = Data("PAN!".utf8)  // 4 bytes
 let stdinHandle = FileHandle.standardInput
 var totalFrames: Int64 = 0
 var leftover = Data()
+var stdinDone = false
 
-while true {
-    let raw = stdinHandle.readData(ofLength: CHUNK_BYTES)
-    if raw.isEmpty && leftover.isEmpty { break }
-
-    var data = leftover + raw
-    leftover = Data()
-
-    // Process pan commands and audio data
-    while !data.isEmpty {
-        // Check for PAN! magic (8 bytes: 4 magic + 4 float)
-        if data.count >= 8 && data.prefix(4) == PAN_MAGIC {
-            let panBytes = data[data.startIndex+4 ..< data.startIndex+8]
-            pan = panBytes.withUnsafeBytes { $0.load(as: Float.self) }
-            updatePosition(pan)
-            data = Data(data.dropFirst(8))
-            continue
-        }
-
-        // If we have less than 4 bytes, could be a partial PAN! — save as leftover
-        if data.count < 4 {
-            leftover = data
+// Read stdin on a background thread so the main RunLoop can process audio
+DispatchQueue.global(qos: .userInteractive).async {
+    while true {
+        let raw = stdinHandle.readData(ofLength: CHUNK_BYTES)
+        if raw.isEmpty && leftover.isEmpty {
+            stdinDone = true
             break
         }
 
-        // Check if PAN! starts partway through — split there
-        var audioEnd = data.count
-        for i in 1..<data.count {
-            let remaining = data.count - i
-            if remaining >= 4 && data[data.startIndex+i ..< data.startIndex+i+4] == PAN_MAGIC {
-                audioEnd = i
+        var data = leftover + raw
+        leftover = Data()
+
+        // Process pan commands and audio data
+        while !data.isEmpty {
+            // Check for PAN! magic (8 bytes: 4 magic + 4 float)
+            if data.count >= 8 && data.prefix(4) == PAN_MAGIC {
+                let panBytes = data[data.startIndex+4 ..< data.startIndex+8]
+                pan = panBytes.withUnsafeBytes { $0.load(as: Float.self) }
+                updatePosition(pan)
+                data = Data(data.dropFirst(8))
+                continue
+            }
+
+            // If we have less than 4 bytes, could be a partial PAN! — save as leftover
+            if data.count < 4 {
+                leftover = data
                 break
             }
-        }
 
-        // Align to float32 boundary
-        let alignedEnd = (audioEnd / 4) * 4
-        if alignedEnd == 0 {
-            leftover = data
-            break
-        }
-
-        let audioData = data.prefix(alignedEnd)
-        data = Data(data.dropFirst(alignedEnd))
-
-        let sampleCount = audioData.count / 4
-        let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(sampleCount))!
-        buffer.frameLength = AVAudioFrameCount(sampleCount)
-
-        audioData.withUnsafeBytes { rawPtr in
-            let src = rawPtr.bindMemory(to: Float.self)
-            let dst = buffer.floatChannelData![0]
-            for i in 0..<sampleCount {
-                dst[i] = src[i]
+            // Check if PAN! starts partway through — split there
+            var audioEnd = data.count
+            for i in 1..<data.count {
+                let remaining = data.count - i
+                if remaining >= 4 && data[data.startIndex+i ..< data.startIndex+i+4] == PAN_MAGIC {
+                    audioEnd = i
+                    break
+                }
             }
-        }
 
-        player.scheduleBuffer(buffer)
-        if totalFrames == 0 {
-            player.play()
+            // Align to float32 boundary
+            let alignedEnd = (audioEnd / 4) * 4
+            if alignedEnd == 0 {
+                leftover = data
+                break
+            }
+
+            let audioData = data.prefix(alignedEnd)
+            data = Data(data.dropFirst(alignedEnd))
+
+            let sampleCount = audioData.count / 4
+            let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(sampleCount))!
+            buffer.frameLength = AVAudioFrameCount(sampleCount)
+
+            audioData.withUnsafeBytes { rawPtr in
+                let src = rawPtr.bindMemory(to: Float.self)
+                let dst = buffer.floatChannelData![0]
+                for i in 0..<sampleCount {
+                    dst[i] = src[i]
+                }
+            }
+
+            player.scheduleBuffer(buffer)
+            if totalFrames == 0 {
+                player.play()
+            }
+            totalFrames += Int64(sampleCount)
         }
-        totalFrames += Int64(sampleCount)
     }
+}
+
+// Main thread: run the RunLoop so AVAudioEngine delivers audio
+while !stdinDone {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
 }
 
 // Wait for playback to drain

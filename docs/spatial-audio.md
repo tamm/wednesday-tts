@@ -90,7 +90,35 @@ position = (x, 0, -1)  // negative z = in front of listener
 
 - macOS with Bluetooth headphones that support spatial audio (Beats, AirPods)
 - Head tracking requires the BT headphones to negotiate a motion data channel
-- Safari or another "spatial-aware" app may need to be playing to keep the BT motion channel pinned open (observed on Powerbeats Pro 2 — may not apply to all devices)
+
+### Setup steps
+
+1. **Connect BT headphones** and set them as the default output device (System Settings > Sound, or Control Centre).
+
+2. **Compile SpatialStream** (only needed after Swift source changes):
+   ```bash
+   swiftc -O -o integrations/spatial-audio/SpatialStream \
+     integrations/spatial-audio/SpatialStream.swift \
+     -framework AVFoundation -framework Foundation
+   ```
+
+3. **Restart the TTS daemon** so it detects the BT headphones:
+   ```bash
+   launchctl kickstart -k gui/$(id -u)/com.tamm.wednesday-tts
+   ```
+
+4. **Verify** — check the daemon log for spatial activation:
+   ```bash
+   tail -5 /tmp/wednesday-tts.log
+   # Should show: [playback] BT headphones detected, uid=<name> — using spatial stream
+   # And:         [spatial] [SpatialStream] ready rate=24000.0 pan=...
+   ```
+
+### Troubleshooting
+
+- **No sound on BT headphones**: the daemon falls back to PortAudio stereo panning automatically. If SpatialStream fails to start or write, the same audio chunk goes through PortAudio instead.
+- **Verifying head tracking works**: play a YouTube video in Safari, click the AirPlay / spatial audio icon in the menu bar, and select Head Tracked. If head tracking doesn't work with YouTube, it won't work with SpatialStream either. Some headphones (e.g. Powerbeats Pro 2) may need this to initially activate the motion data channel.
+- **Headphones disconnect mid-playback**: the daemon detects the device change within 5 seconds and switches to PortAudio on whatever device is now default.
 
 ### Files
 
