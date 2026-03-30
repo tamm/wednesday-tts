@@ -1382,27 +1382,32 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 def main() -> None:
     _stats["service_start_time"] = time.time()
 
-    backend_name = os.environ.get("TTS_BACKEND", "pocket").lower()
-    backend_cls = REGISTRY.get(backend_name)
-    if backend_cls is None:
-        print(f"Unknown TTS_BACKEND={backend_name!r}. Choose from: {', '.join(REGISTRY)}", flush=True)
-        raise SystemExit(1)
-
-    # Load config file — same path and shape as app.py uses on Windows.
-    # Env vars override config file values.
+    # Load config file first — active_model drives backend selection.
     _config_path = os.path.join(os.path.expanduser("~"), ".claude", "tts-config.json")
+    _cfg: dict = {}
     _model_config: dict = {}
     try:
         import json as _json
         with open(_config_path, encoding="utf-8") as _f:
             _cfg = _json.load(_f)
-        _active_model = os.environ.get("TTS_BACKEND") or _cfg.get("active_model", backend_name)
-        _model_config = _cfg.get("models", {}).get(_active_model, {})
-        print(f"Loaded config from {_config_path} (model: {_active_model})", flush=True)
     except FileNotFoundError:
         print(f"No config file at {_config_path} — using env vars only", flush=True)
     except Exception as exc:
         print(f"Warning: could not load config {_config_path}: {exc}", flush=True)
+
+    # Backend selection: env var > config active_model > "pocket"
+    backend_name = (
+        os.environ.get("TTS_BACKEND")
+        or _cfg.get("active_model")
+        or "pocket"
+    ).lower()
+    _model_config = _cfg.get("models", {}).get(backend_name, {})
+    print(f"Loaded config from {_config_path} (model: {backend_name})", flush=True)
+
+    backend_cls = REGISTRY.get(backend_name)
+    if backend_cls is None:
+        print(f"Unknown backend {backend_name!r}. Choose from: {', '.join(REGISTRY)}", flush=True)
+        raise SystemExit(1)
 
     # Build kwargs from config, then override with env vars
     _kwargs: dict = {}
@@ -1425,6 +1430,17 @@ def main() -> None:
         _env_voice = os.environ.get("POCKET_TTS_VOICE")
         if _env_voice:
             _kwargs["voice"] = _env_voice
+
+    elif backend_name == "qwen3":
+        for _key in ("model_id", "voice", "voice_text", "instruct"):
+            if _model_config.get(_key):
+                _kwargs[_key] = _model_config[_key]
+        if _model_config.get("speed") is not None:
+            _kwargs["speed"] = _model_config["speed"]
+        if _model_config.get("seed") is not None:
+            _kwargs["seed"] = _model_config["seed"]
+        if _model_config.get("seed_pool") is not None:
+            _kwargs["seed_pool"] = _model_config["seed_pool"]
 
     global _active_backend, _active_backend_name
     backend = backend_cls(**_kwargs)

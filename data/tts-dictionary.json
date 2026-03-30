@@ -1,177 +1,791 @@
 {
   "_description": "TTS pronunciation dictionary. Each entry: 'pattern' (whole word to match), plus backend-specific keys ('pocket', 'kokoro', etc.) or 'replacement' as universal fallback. 'ipa' is reference only. Backend-specific key wins over 'replacement'. Matching is whole-word, case-sensitive by default. Set 'case_sensitive': false for case-insensitive.",
   "_known_bugs": [
-    "pocket-tts ghost/whisper noise: confirmed triggers include 'awth' and 'oh auth'. May only occur in table context (short isolated cells) — same words in flowing sentences seem fine. Root cause unclear: could be 'awth', 'oh' before certain phonemes, table chunking, or a combo. The dictionary uses 'o-auth' (no h) which avoids it. Workaround: vary vowel spelling in replacements. Reproduced on Windows with pocket voice clone (both old voice and DWP). May be worth filing upstream."
+    "pocket-tts ghost/whisper noise: confirmed triggers include 'awth' and 'oh auth'. May only occur in table context (short isolated cells) \u2014 same words in flowing sentences seem fine. Root cause unclear: could be 'awth', 'oh' before certain phonemes, table chunking, or a combo. The dictionary uses 'o-auth' (no h) which avoids it. Workaround: vary vowel spelling in replacements. Reproduced on Windows with pocket voice clone (both old voice and DWP). May be worth filing upstream."
   ],
   "replacements": [
-    { "pattern": "[]",           "replacement": "empty array", "literal": true, "case_sensitive": true },
-    { "pattern": "npm",          "pocket": "en pee em" },
-    { "pattern": "npx",          "replacement": "en pee ex", "case_sensitive": false },
-    { "pattern": "PII",          "pocket": "pee eye eye" },
-    { "pattern": "IPA",          "pocket": "eye pee Ae" },
-    { "pattern": "API",          "pocket": "Ae pee eye" },
-    { "pattern": "APIs",         "pocket": "Ae pee eyes" },
-    { "pattern": "URL",          "pocket": "you ar el" },
-    { "pattern": "URLs",         "pocket": "you ar els" },
-    { "pattern": "URI",          "pocket": "you ar eye" },
-    { "pattern": "HTTP",         "pocket": "aitch tee tee pee" },
-    { "pattern": "HTTPS",        "pocket": "aitch tee tee pee ess" },
-    { "pattern": "I/O",          "replacement": "I O" },
-    { "pattern": "GH",           "replacement": "gee aitch", "case_sensitive": false },
-    { "pattern": "JSON",         "pocket": "jason" },
-    { "pattern": "JSONL",        "pocket": "jason ell" },
-    { "pattern": "YAML",         "pocket": "yamel" },
-    { "pattern": "YML",          "pocket": "yamel" },
-    { "pattern": "Qwen",         "pocket": "Kwen" },
-    { "pattern": "qwen",         "pocket": "kwen" },
-    { "pattern": "html",         "pocket": "aitch tee em el" },
-    { "pattern": "HTML",         "pocket": "aitch tee em el" },
-    { "pattern": "CSS",          "pocket": "see ess ess" },
-    { "pattern": "XML",          "pocket": "ex em el" },
-    { "pattern": "iframe",       "pocket": "eye frame", "case_sensitive": false },
-    { "pattern": "iframes",      "pocket": "eye frames", "case_sensitive": false },
-    { "pattern": "SQL",          "pocket": "ess cue el" },
-    { "pattern": "SQLite",       "pocket": "Ess cue lite", "case_sensitive": false },
-    { "pattern": "CLI",          "pocket": "see el eye" },
-    { "pattern": "UI",           "pocket": "you eye" },
-    { "pattern": "UX",           "pocket": "you ex" },
-    { "pattern": "LLM",          "pocket": "el el em" },
-    { "pattern": "LLMs",         "pocket": "el el ems" },
-    { "pattern": "TTS",          "pocket": "teetee ess", "case_sensitive": false },
-    { "pattern": "MCP",          "pocket": "em see pee", "case_sensitive": false },
-    { "pattern": "cwd",          "pocket": "see double-you dee" },
-    { "pattern": "stdin",        "pocket": "standard in" },
-    { "pattern": "stdout",       "pocket": "standard out" },
-    { "pattern": "stderr",       "pocket": "standard error" },
-    { "pattern": "localhost",    "pocket": "local host" },
-    { "pattern": "PR",           "replacement": "pee ar", "case_sensitive": false },
-    { "pattern": "PRs",          "pocket": "pull requests" },
-    { "pattern": "CI",           "pocket": "see eye" },
-    { "pattern": "CD",           "pocket": "see dee" },
-    { "pattern": "uv",           "pocket": "you vee" },
-    { "pattern": "hf",           "pocket": "Ae tch ef" },
-    { "pattern": "GPU",          "pocket": "jee pee you" },
-    { "pattern": "CPU",          "pocket": "see pee you" },
-    { "pattern": "RAM",          "pocket": "ram" },
-    { "pattern": "SSH",          "pocket": "ess ess aitch" },
-    { "pattern": "GitHub",       "pocket": "git hub" },
-    { "pattern": "PyPI",         "pocket": "pie pee eye" },
-    { "pattern": "pytest",       "pocket": "pie test" },
-    { "pattern": "venv",         "pocket": "vee env" },
-    { "pattern": "chmod",        "pocket": "ch mod" },
-    { "pattern": "chown",        "pocket": "ch own" },
-    { "pattern": "chgrp",        "pocket": "ch group" },
-    { "pattern": "sudo",         "pocket": "sue do" },
-    { "pattern": "fcntl",        "pocket": "eff control" },
-    { "pattern": "ffmpeg",       "pocket": "F F m-peg" },
-    { "pattern": "jq",           "pocket": "jay cue" },
-    { "pattern": "sd",           "pocket": "ess dee" },
-    { "pattern": "awk",          "pocket": "awk" },
-    { "pattern": "sed",          "pocket": "sed" },
-    { "pattern": "grep",         "pocket": "grep" },
-    { "pattern": "kwargs",       "pocket": "keyword args" },
-    { "pattern": "cron",         "pocket": "cron" },
-    { "pattern": "regex",        "pocket": "regex", "case_sensitive": false },
-    { "pattern": "TTL",          "pocket": "tee tee el" },
-    { "pattern": "AEC",          "pocket": "Ae ee see" },
-    { "pattern": "VAD",          "pocket": "vee Ae dee" },
-    { "pattern": "RMS",          "pocket": "ar em ess" },
-    { "pattern": "PCM",          "pocket": "pee see em" },
-    { "pattern": "FFT",          "pocket": "ef ef tee" },
-    { "pattern": "RTK",          "pocket": "ar tee kay" },
-    { "pattern": "AG",           "pocket": "Ae jee" },
-    { "pattern": "AGT",          "pocket": "Ae jee tee" },
-    { "pattern": "AGS",          "pocket": "Ae jee ess" },
-    { "pattern": "AGA",          "pocket": "Ae jee Ae" },
-    { "pattern": "2FA",          "pocket": "two factor", "case_sensitive": false },
-    { "pattern": "2fa",          "pocket": "two factor" },
-    { "pattern": "node_modules", "pocket": "node modules" },
-    { "pattern": "SvelteKit",    "pocket": "Svelte Kit" },
-    { "pattern": "TypeScript",   "pocket": "Type Script" },
-    { "pattern": "JavaScript",   "pocket": "Java Script" },
-    { "pattern": "macOS",        "pocket": "mac O S" },
-    { "pattern": "iOS",          "pocket": "eye O S" },
-    { "pattern": "ONNX",         "pocket": "ON X" },
-    { "pattern": "PreToolUse",   "pocket": "pre tool use" },
-    { "pattern": "PostToolUse",  "pocket": "post tool use" },
-    { "pattern": "Kokoro",       "pocket": "Kokoro" },
-    { "pattern": "Ollama",       "pocket": "Ollama" },
-    { "pattern": "G'day",        "pocket": "gidday", "case_sensitive": false },
-    { "pattern": "g'day",        "pocket": "gidday", "case_sensitive": false },
-    { "pattern": "irrational",   "pocket": "ih-rash-onal", "case_sensitive": false },
-    { "pattern": "IS",           "replacement": "is" },
-    { "pattern": "TODO",         "pocket": "to do" },
-    { "pattern": "TODOs",        "pocket": "to dooz" },
-    { "pattern": "md",           "pocket": "em dee" },
-    { "pattern": "KB",           "pocket": "kilobytes" },
-    { "pattern": "MB",           "pocket": "megs" },
-    { "pattern": "GB",           "pocket": "gigs" },
-    { "pattern": "TB",           "pocket": "terabytes" },
-    { "pattern": "sitrep",       "pocket": "sit rep", "case_sensitive": false },
-    { "pattern": "Cmd",          "pocket": "see em dee", "case_sensitive": false },
-    { "pattern": "Ctrl",         "pocket": "Control", "case_sensitive": false },
-    { "pattern": "README",       "pocket": "reed me", "case_sensitive": false },
-    { "pattern": "noop",         "pocket": "no op", "case_sensitive": false },
-    { "pattern": "daemon",       "pocket": "demon", "case_sensitive": false },
-    { "pattern": "SHA256",       "pocket": "sha 256", "case_sensitive": false },
-    { "pattern": "nginx",        "pocket": "engine X", "case_sensitive": false },
-    { "pattern": "kubectl",      "pocket": "Cube control" },
-    { "pattern": "OAuth",        "pocket": "o-auth", "case_sensitive": false },
-    { "pattern": "SMTP",         "pocket": "S M T P" },
-    { "pattern": "OIDC",         "pocket": "O I D C" },
-    { "pattern": "UUID",         "pocket": "you you eye dee" },
-    { "pattern": "UUIDs",        "pocket": "you you eye dees" },
-    { "pattern": "GUID",         "pocket": "gwidd" },
-    { "pattern": "GUIDs",        "pocket": "gwidds" },
-    { "pattern": "WASM",         "pocket": "waz-em" },
-    { "pattern": "pnpm",         "pocket": "pee en pee em" },
-    { "pattern": "REPL",         "pocket": "repple" },
-    { "pattern": "Supabase",     "pocket": "soup-a-base", "case_sensitive": false },
-    { "pattern": "PyTorch",      "pocket": "pie torch" },
-    { "pattern": "safetensors",  "pocket": "safe tensors", "case_sensitive": false },
-    { "pattern": "async",        "pocket": "Ae sync", "case_sensitive": false },
-    { "pattern": "Vite",         "pocket": "veet", "case_sensitive": false },
-    { "pattern": "Vitest",       "pocket": "vee-test", "case_sensitive": false },
-    { "pattern": "monorepo",     "pocket": "mono repo", "case_sensitive": false },
-    { "pattern": "ESLint",       "pocket": "E S lint", "case_sensitive": false },
-    { "pattern": "Nuxt",         "pocket": "nukst", "case_sensitive": false },
-    { "pattern": "i18n",         "pocket": "internationalisation" },
-    { "pattern": "a11y",         "pocket": "accessibility" },
-    { "pattern": "utf-8",        "pocket": "U T F 8", "case_sensitive": false },
-    { "pattern": "UTF-8",        "pocket": "U T F 8" },
-    { "pattern": "GIL",          "pocket": "G I L" },
-    { "pattern": "ps1",          "pocket": "P S 1", "case_sensitive": false },
-    { "pattern": "emlx",          "pocket": "ee em el ex", "case_sensitive": false },
-
-    { "pattern": "Sjödin",       "ipa": "ɧœˈdiːn",      "pocket": "Hwoo-deen",    "kokoro": "hwʉːdˈiːn" },
-    { "pattern": "Tamm",         "ipa": "tɑmm",          "pocket": "Tahm",         "kokoro": "tˈɑmm" },
-    { "pattern": "Vilde",        "ipa": "vɪldə",         "pocket": "Vill-duh",     "kokoro": "vˈɪldə" },
-    { "pattern": "Sinder",       "ipa": "sɪndɚ",         "pocket": "Sin-der",      "kokoro": "sˈɪndɚ" },
-    { "pattern": "Amir",         "ipa": "ɑmiːɹ",         "pocket": "Amir",         "kokoro": "ɑmˈiːːɹ" },
-    { "pattern": "Rönn",         "ipa": "rɜːn",           "pocket": "Rurn",         "kokoro": "ɹɜːn" },
-    { "pattern": "Rosenström",   "ipa": "roːzənstrœm",   "pocket": "Rozen-strum",  "kokoro": "ɹˈoʊzənstrœm" },
-    { "pattern": "Björn",        "ipa": "bjɜːɹn",        "pocket": "bjuhrn",       "kokoro": "bjˈɜːːɹn" },
-    { "pattern": "Hej",          "ipa": "heɪ",            "pocket": "Hey",          "kokoro": "hˈeɪ" },
-    { "pattern": "HEJ",          "ipa": "heɪ",            "pocket": "Hey",          "kokoro": "hˈeɪ" },
-    { "pattern": "Hejdå",        "ipa": "heɪdɔː",        "pocket": "Hey-daw",      "kokoro": "hˈeɪdɔː" },
-    { "pattern": "tack",         "ipa": "tɑkk",           "pocket": "Tahk",         "kokoro": "tˈɑkk" },
-    { "pattern": "Themily",      "ipa": "ðɛmɪli",        "pocket": "Them-ily",     "kokoro": "ðˈɛmɪli" },
-    { "pattern": "voicie",       "ipa": "vɔɪsi",          "pocket": "Voy-see",      "kokoro": "vˈɔɪsi" },
-    { "pattern": "voicies",      "ipa": "vɔɪsiz",         "pocket": "Voy-seez",     "kokoro": "vˈɔɪsiz" },
-    { "pattern": "Röyksopp",     "ipa": "rœʏksɔp",       "pocket": "Royk-sop",     "kokoro": "ɹˈœʏksɔp" },
-    { "pattern": "Aperol",       "ipa": "apəɹɒl",        "pocket": "App-errol",    "kokoro": "ˌɑpəɹˈOl" },
-    { "pattern": "Spotify",      "ipa": "spɑtɪfaɪ",      "pocket": "Spotify",      "kokoro": "spˈɑtɪfaɪ" },
-    { "pattern": "Vylan",        "ipa": "vɪlən",          "pocket": "Vylan",        "kokoro": "vˈɪlən" },
-    { "pattern": "photo",        "ipa": "foʊtoʊ",         "pocket": "photo",        "kokoro": "fˈoʊtoʊ" },
-    { "pattern": "bass",         "ipa": "beɪs",            "pocket": "bayss",        "kokoro": "bˈeɪs" },
-    { "pattern": "bourbon",      "ipa": "bɜːbən",         "pocket": "bourbon",      "kokoro": "bˈɜːbən" },
-    { "pattern": "Bondi",        "ipa": "bɑndaɪ",         "pocket": "Bon-dye",      "kokoro": "bˈɑndaɪ" },
-    { "pattern": "Annandale",    "ipa": "ænəndeɪl",       "pocket": "An-an-dale",   "kokoro": "ˈænəndeɪl" },
-    { "pattern": "Manly",        "ipa": "mænli",           "pocket": "Manly",        "kokoro": "mˈænli" },
-    { "pattern": "Redfern",      "ipa": "ɹɛdfən",         "pocket": "Red-fn",       "kokoro": "ɹˈɛdfən" },
-    { "pattern": "Newtown",      "ipa": "nuːtaʊn",        "pocket": "Noo-town",     "kokoro": "nˈuːtaʊn" },
-    { "pattern": "Surry",        "ipa": "sʌɹi",            "pocket": "Surry",        "kokoro": "sˈʌɹi" },
-    { "pattern": "Melbourne",    "ipa": "mɛlbən",          "pocket": "Mel-burn",     "kokoro": "mˈɛlbən" },
-    { "pattern": "Lilo",         "ipa": "liːloʊ",          "pocket": "Lee-loh",      "kokoro": "lˈiːloʊ" }
+    {
+      "pattern": "[]",
+      "replacement": "empty array",
+      "literal": true,
+      "case_sensitive": true
+    },
+    {
+      "pattern": "npm",
+      "pocket": "en pee em"
+    },
+    {
+      "pattern": "zshrc",
+      "pocket": "zee shell arr cee",
+      "case_sensitive": false
+    },
+    {
+      "pattern": ".zshrc",
+      "pocket": "dot zee shell arr cee",
+      "literal": true,
+      "case_sensitive": false
+    },
+    {
+      "pattern": "zsh",
+      "pocket": "zee shell",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "npx",
+      "replacement": "en pee ex",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "PII",
+      "pocket": "pee eye eye"
+    },
+    {
+      "pattern": "IPA",
+      "pocket": "eye pee Ae"
+    },
+    {
+      "pattern": "API",
+      "pocket": "Ae pee eye"
+    },
+    {
+      "pattern": "APIs",
+      "pocket": "Ae pee eyes"
+    },
+    {
+      "pattern": "URL",
+      "pocket": "you ar el"
+    },
+    {
+      "pattern": "URLs",
+      "pocket": "you ar els"
+    },
+    {
+      "pattern": "URI",
+      "pocket": "you ar eye"
+    },
+    {
+      "pattern": "HTTP",
+      "pocket": "aitch tee tee pee"
+    },
+    {
+      "pattern": "HTTPS",
+      "pocket": "aitch tee tee pee ess"
+    },
+    {
+      "pattern": "I/O",
+      "replacement": "I O"
+    },
+    {
+      "pattern": "GH",
+      "replacement": "gee aitch",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "JSON",
+      "pocket": "jason"
+    },
+    {
+      "pattern": "JSONL",
+      "pocket": "jason ell"
+    },
+    {
+      "pattern": "YAML",
+      "pocket": "yamel"
+    },
+    {
+      "pattern": "YML",
+      "pocket": "yamel"
+    },
+    {
+      "pattern": "Qwen",
+      "pocket": "Kwen"
+    },
+    {
+      "pattern": "qwen",
+      "pocket": "kwen"
+    },
+    {
+      "pattern": "html",
+      "pocket": "aitch tee em el"
+    },
+    {
+      "pattern": "HTML",
+      "pocket": "aitch tee em el"
+    },
+    {
+      "pattern": "CSS",
+      "pocket": "see ess ess"
+    },
+    {
+      "pattern": "XML",
+      "pocket": "ex em el"
+    },
+    {
+      "pattern": "iframe",
+      "pocket": "eye frame",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "iframes",
+      "pocket": "eye frames",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "SQL",
+      "pocket": "ess cue el"
+    },
+    {
+      "pattern": "SQLite",
+      "pocket": "Ess cue lite",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "CLI",
+      "pocket": "see el eye"
+    },
+    {
+      "pattern": "UI",
+      "pocket": "you eye"
+    },
+    {
+      "pattern": "UX",
+      "pocket": "you ex"
+    },
+    {
+      "pattern": "LLM",
+      "pocket": "el el em"
+    },
+    {
+      "pattern": "LLMs",
+      "pocket": "el el ems"
+    },
+    {
+      "pattern": "TTS",
+      "pocket": "teetee ess",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "MCP",
+      "pocket": "em see pee",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "cwd",
+      "pocket": "see double-you dee"
+    },
+    {
+      "pattern": "stdin",
+      "pocket": "standard in"
+    },
+    {
+      "pattern": "stdout",
+      "pocket": "standard out"
+    },
+    {
+      "pattern": "stderr",
+      "pocket": "standard error"
+    },
+    {
+      "pattern": "localhost",
+      "pocket": "local host"
+    },
+    {
+      "pattern": "PR",
+      "replacement": "pee ar",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "PRs",
+      "pocket": "pull requests"
+    },
+    {
+      "pattern": "CI",
+      "pocket": "see eye"
+    },
+    {
+      "pattern": "CD",
+      "pocket": "see dee"
+    },
+    {
+      "pattern": "uv",
+      "pocket": "you vee"
+    },
+    {
+      "pattern": "hf",
+      "pocket": "Ae tch ef"
+    },
+    {
+      "pattern": "GPU",
+      "pocket": "jee pee you"
+    },
+    {
+      "pattern": "CPU",
+      "pocket": "see pee you"
+    },
+    {
+      "pattern": "RAM",
+      "pocket": "ram"
+    },
+    {
+      "pattern": "SSH",
+      "pocket": "ess ess aitch"
+    },
+    {
+      "pattern": "GitHub",
+      "pocket": "git hub"
+    },
+    {
+      "pattern": "PyPI",
+      "pocket": "pie pee eye"
+    },
+    {
+      "pattern": "pytest",
+      "pocket": "pie test"
+    },
+    {
+      "pattern": "venv",
+      "pocket": "vee env"
+    },
+    {
+      "pattern": "chmod",
+      "pocket": "ch mod"
+    },
+    {
+      "pattern": "chown",
+      "pocket": "ch own"
+    },
+    {
+      "pattern": "chgrp",
+      "pocket": "ch group"
+    },
+    {
+      "pattern": "sudo",
+      "pocket": "sue do"
+    },
+    {
+      "pattern": "fcntl",
+      "pocket": "eff control"
+    },
+    {
+      "pattern": "ffmpeg",
+      "pocket": "F F m-peg"
+    },
+    {
+      "pattern": "jq",
+      "pocket": "jay cue"
+    },
+    {
+      "pattern": "sd",
+      "pocket": "ess dee"
+    },
+    {
+      "pattern": "awk",
+      "pocket": "awk"
+    },
+    {
+      "pattern": "sed",
+      "pocket": "sed"
+    },
+    {
+      "pattern": "grep",
+      "pocket": "grep"
+    },
+    {
+      "pattern": "kwargs",
+      "pocket": "keyword args"
+    },
+    {
+      "pattern": "cron",
+      "pocket": "cron"
+    },
+    {
+      "pattern": "regex",
+      "pocket": "regex",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "TTL",
+      "pocket": "tee tee el"
+    },
+    {
+      "pattern": "AEC",
+      "pocket": "Ae ee see"
+    },
+    {
+      "pattern": "VAD",
+      "pocket": "vee Ae dee"
+    },
+    {
+      "pattern": "RMS",
+      "pocket": "ar em ess"
+    },
+    {
+      "pattern": "PCM",
+      "pocket": "pee see em"
+    },
+    {
+      "pattern": "FFT",
+      "pocket": "ef ef tee"
+    },
+    {
+      "pattern": "RTK",
+      "pocket": "ar tee kay"
+    },
+    {
+      "pattern": "AG",
+      "pocket": "Ae jee"
+    },
+    {
+      "pattern": "AGT",
+      "pocket": "Ae jee tee"
+    },
+    {
+      "pattern": "AGS",
+      "pocket": "Ae jee ess"
+    },
+    {
+      "pattern": "AGA",
+      "pocket": "Ae jee Ae"
+    },
+    {
+      "pattern": "2FA",
+      "pocket": "two factor",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "2fa",
+      "pocket": "two factor"
+    },
+    {
+      "pattern": "node_modules",
+      "pocket": "node modules"
+    },
+    {
+      "pattern": "SvelteKit",
+      "pocket": "Svelte Kit"
+    },
+    {
+      "pattern": "TypeScript",
+      "pocket": "Type Script"
+    },
+    {
+      "pattern": "JavaScript",
+      "pocket": "Java Script"
+    },
+    {
+      "pattern": "macOS",
+      "pocket": "mac O S"
+    },
+    {
+      "pattern": "iOS",
+      "pocket": "eye O S"
+    },
+    {
+      "pattern": "ONNX",
+      "pocket": "ON X"
+    },
+    {
+      "pattern": "PreToolUse",
+      "pocket": "pre tool use"
+    },
+    {
+      "pattern": "PostToolUse",
+      "pocket": "post tool use"
+    },
+    {
+      "pattern": "Kokoro",
+      "pocket": "Kokoro"
+    },
+    {
+      "pattern": "Ollama",
+      "pocket": "Ollama"
+    },
+    {
+      "pattern": "G'day",
+      "pocket": "gidday",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "g'day",
+      "pocket": "gidday",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "irrational",
+      "pocket": "ih-rash-onal",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "IS",
+      "replacement": "is"
+    },
+    {
+      "pattern": "TODO",
+      "pocket": "to do"
+    },
+    {
+      "pattern": "TODOs",
+      "pocket": "to dooz"
+    },
+    {
+      "pattern": "md",
+      "pocket": "em dee"
+    },
+    {
+      "pattern": "KB",
+      "pocket": "kilobytes"
+    },
+    {
+      "pattern": "MB",
+      "pocket": "megs"
+    },
+    {
+      "pattern": "GB",
+      "pocket": "gigs"
+    },
+    {
+      "pattern": "TB",
+      "pocket": "terabytes"
+    },
+    {
+      "pattern": "sitrep",
+      "pocket": "sit rep",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "Cmd",
+      "pocket": "see em dee",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "Ctrl",
+      "pocket": "Control",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "README",
+      "pocket": "reed me",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "noop",
+      "pocket": "no op",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "daemon",
+      "pocket": "demon",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "SHA256",
+      "pocket": "sha 256",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "nginx",
+      "pocket": "engine X",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "kubectl",
+      "pocket": "Cube control"
+    },
+    {
+      "pattern": "OAuth",
+      "pocket": "o-auth",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "SMTP",
+      "pocket": "S M T P"
+    },
+    {
+      "pattern": "OIDC",
+      "pocket": "O I D C"
+    },
+    {
+      "pattern": "UUID",
+      "pocket": "you you eye dee"
+    },
+    {
+      "pattern": "UUIDs",
+      "pocket": "you you eye dees"
+    },
+    {
+      "pattern": "GUID",
+      "pocket": "gwidd"
+    },
+    {
+      "pattern": "GUIDs",
+      "pocket": "gwidds"
+    },
+    {
+      "pattern": "WASM",
+      "pocket": "waz-em"
+    },
+    {
+      "pattern": "pnpm",
+      "pocket": "pee en pee em"
+    },
+    {
+      "pattern": "REPL",
+      "pocket": "repple"
+    },
+    {
+      "pattern": "Supabase",
+      "pocket": "soup-a-base",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "PyTorch",
+      "pocket": "pie torch"
+    },
+    {
+      "pattern": "safetensors",
+      "pocket": "safe tensors",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "async",
+      "pocket": "Ae sync",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "Vite",
+      "pocket": "veet",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "Vitest",
+      "pocket": "vee-test",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "monorepo",
+      "pocket": "mono repo",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "ESLint",
+      "pocket": "E S lint",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "Nuxt",
+      "pocket": "nukst",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "i18n",
+      "pocket": "internationalisation"
+    },
+    {
+      "pattern": "a11y",
+      "pocket": "accessibility"
+    },
+    {
+      "pattern": "utf-8",
+      "pocket": "U T F 8",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "UTF-8",
+      "pocket": "U T F 8"
+    },
+    {
+      "pattern": "GIL",
+      "pocket": "G I L"
+    },
+    {
+      "pattern": "ps1",
+      "pocket": "P S 1",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "emlx",
+      "pocket": "ee em el ex",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "Sj\u00f6din",
+      "ipa": "\u0267\u0153\u02c8di\u02d0n",
+      "pocket": "Hwoo-deen",
+      "kokoro": "hw\u0289\u02d0d\u02c8i\u02d0n"
+    },
+    {
+      "pattern": "Tamm",
+      "ipa": "t\u0251mm",
+      "pocket": "Tahm",
+      "kokoro": "t\u02c8\u0251mm"
+    },
+    {
+      "pattern": "Vilde",
+      "ipa": "v\u026ald\u0259",
+      "pocket": "Vill-duh",
+      "kokoro": "v\u02c8\u026ald\u0259"
+    },
+    {
+      "pattern": "Sinder",
+      "ipa": "s\u026and\u025a",
+      "pocket": "Sin-der",
+      "kokoro": "s\u02c8\u026and\u025a"
+    },
+    {
+      "pattern": "Amir",
+      "ipa": "\u0251mi\u02d0\u0279",
+      "pocket": "Amir",
+      "kokoro": "\u0251m\u02c8i\u02d0\u02d0\u0279"
+    },
+    {
+      "pattern": "R\u00f6nn",
+      "ipa": "r\u025c\u02d0n",
+      "pocket": "Rurn",
+      "kokoro": "\u0279\u025c\u02d0n"
+    },
+    {
+      "pattern": "Rosenstr\u00f6m",
+      "ipa": "ro\u02d0z\u0259nstr\u0153m",
+      "pocket": "Rozen-strum",
+      "kokoro": "\u0279\u02c8o\u028az\u0259nstr\u0153m"
+    },
+    {
+      "pattern": "Bj\u00f6rn",
+      "ipa": "bj\u025c\u02d0\u0279n",
+      "pocket": "bjuhrn",
+      "kokoro": "bj\u02c8\u025c\u02d0\u02d0\u0279n"
+    },
+    {
+      "pattern": "Hej",
+      "ipa": "he\u026a",
+      "pocket": "Hey",
+      "kokoro": "h\u02c8e\u026a"
+    },
+    {
+      "pattern": "HEJ",
+      "ipa": "he\u026a",
+      "pocket": "Hey",
+      "kokoro": "h\u02c8e\u026a"
+    },
+    {
+      "pattern": "Hejd\u00e5",
+      "ipa": "he\u026ad\u0254\u02d0",
+      "pocket": "Hey-daw",
+      "kokoro": "h\u02c8e\u026ad\u0254\u02d0"
+    },
+    {
+      "pattern": "tack",
+      "ipa": "t\u0251kk",
+      "pocket": "Tahk",
+      "kokoro": "t\u02c8\u0251kk"
+    },
+    {
+      "pattern": "Themily",
+      "ipa": "\u00f0\u025bm\u026ali",
+      "pocket": "Them-ily",
+      "kokoro": "\u00f0\u02c8\u025bm\u026ali"
+    },
+    {
+      "pattern": "voicie",
+      "ipa": "v\u0254\u026asi",
+      "pocket": "Voy-see",
+      "kokoro": "v\u02c8\u0254\u026asi"
+    },
+    {
+      "pattern": "voicies",
+      "ipa": "v\u0254\u026asiz",
+      "pocket": "Voy-seez",
+      "kokoro": "v\u02c8\u0254\u026asiz"
+    },
+    {
+      "pattern": "R\u00f6yksopp",
+      "ipa": "r\u0153\u028fks\u0254p",
+      "pocket": "Royk-sop",
+      "kokoro": "\u0279\u02c8\u0153\u028fks\u0254p"
+    },
+    {
+      "pattern": "Aperol",
+      "ipa": "ap\u0259\u0279\u0252l",
+      "pocket": "App-errol",
+      "kokoro": "\u02cc\u0251p\u0259\u0279\u02c8Ol"
+    },
+    {
+      "pattern": "Spotify",
+      "ipa": "sp\u0251t\u026afa\u026a",
+      "pocket": "Spotify",
+      "kokoro": "sp\u02c8\u0251t\u026afa\u026a"
+    },
+    {
+      "pattern": "Vylan",
+      "ipa": "v\u026al\u0259n",
+      "pocket": "Vylan",
+      "kokoro": "v\u02c8\u026al\u0259n"
+    },
+    {
+      "pattern": "photo",
+      "ipa": "fo\u028ato\u028a",
+      "pocket": "photo",
+      "kokoro": "f\u02c8o\u028ato\u028a"
+    },
+    {
+      "pattern": "bass",
+      "ipa": "be\u026as",
+      "pocket": "bayss",
+      "kokoro": "b\u02c8e\u026as"
+    },
+    {
+      "pattern": "bourbon",
+      "ipa": "b\u025c\u02d0b\u0259n",
+      "pocket": "bourbon",
+      "kokoro": "b\u02c8\u025c\u02d0b\u0259n"
+    },
+    {
+      "pattern": "Bondi",
+      "ipa": "b\u0251nda\u026a",
+      "pocket": "Bon-dye",
+      "kokoro": "b\u02c8\u0251nda\u026a"
+    },
+    {
+      "pattern": "Annandale",
+      "ipa": "\u00e6n\u0259nde\u026al",
+      "pocket": "An-an-dale",
+      "kokoro": "\u02c8\u00e6n\u0259nde\u026al"
+    },
+    {
+      "pattern": "Manly",
+      "ipa": "m\u00e6nli",
+      "pocket": "Manly",
+      "kokoro": "m\u02c8\u00e6nli"
+    },
+    {
+      "pattern": "Redfern",
+      "ipa": "\u0279\u025bdf\u0259n",
+      "pocket": "Red-fn",
+      "kokoro": "\u0279\u02c8\u025bdf\u0259n"
+    },
+    {
+      "pattern": "Newtown",
+      "ipa": "nu\u02d0ta\u028an",
+      "pocket": "Noo-town",
+      "kokoro": "n\u02c8u\u02d0ta\u028an"
+    },
+    {
+      "pattern": "Surry",
+      "ipa": "s\u028c\u0279i",
+      "pocket": "Surry",
+      "kokoro": "s\u02c8\u028c\u0279i"
+    },
+    {
+      "pattern": "Melbourne",
+      "ipa": "m\u025blb\u0259n",
+      "pocket": "Mel-burn",
+      "kokoro": "m\u02c8\u025blb\u0259n"
+    },
+    {
+      "pattern": "Lilo",
+      "ipa": "li\u02d0lo\u028a",
+      "pocket": "Lee-loh",
+      "kokoro": "l\u02c8i\u02d0lo\u028a"
+    }
   ]
 }

@@ -21,6 +21,7 @@ from .pocket import PocketTTSBackend
 from .sam import SAMBackend
 from .soprano import SopranoBackend
 from .chatterbox import ChatterboxBackend
+from .qwen3 import Qwen3TTSBackend
 
 REGISTRY: dict[str, type[TTSBackend]] = {
     "kokoro": KokoroBackend,
@@ -28,6 +29,7 @@ REGISTRY: dict[str, type[TTSBackend]] = {
     "sam": SAMBackend,
     "soprano": SopranoBackend,
     "chatterbox": ChatterboxBackend,
+    "qwen3": Qwen3TTSBackend,
 }
 
 __all__ = [
@@ -37,5 +39,6 @@ __all__ = [
     "SAMBackend",
     "SopranoBackend",
     "ChatterboxBackend",
+    "Qwen3TTSBackend",
     "REGISTRY",
 ]

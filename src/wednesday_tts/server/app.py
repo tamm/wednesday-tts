@@ -298,6 +298,21 @@ def get_model():
             backend.load()
             current_model = backend
 
+        elif model_name == "qwen3":
+            from .backends.qwen3 import Qwen3TTSBackend
+            backend = Qwen3TTSBackend(
+                model_id=model_config.get(
+                    "model_id",
+                    "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit",
+                ),
+                voice=model_config.get("voice"),
+                voice_text=model_config.get("voice_text"),
+                speed=model_config.get("speed", 1.0),
+                instruct=model_config.get("instruct", ""),
+            )
+            backend.load()
+            current_model = backend
+
         else:
             raise ValueError(f"Unknown model: {model_name!r}")
 
@@ -436,7 +451,7 @@ def process_speech(text: str) -> None:
                     sd.wait()
 
         # ── Kokoro / Soprano (chunk pipeline) ──────────────────────────────
-        elif model_name in ("kokoro", "soprano"):
+        elif model_name in ("kokoro", "soprano", "qwen3"):
             next_audio = None
             for i, chunk in enumerate(text_chunks):
                 if stop_playback:

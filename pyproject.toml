@@ -27,6 +27,12 @@ sam = [
     "samtts",
     "numpy",
 ]
+qwen3 = [
+    "mlx-audio",
+    "mlx",
+    "sounddevice",
+    "numpy",
+]
 test = [
     "pytest>=7",
     "pytest-cov",
