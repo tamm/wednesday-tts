@@ -881,6 +881,72 @@ def _anti_click(audio: np.ndarray, rate: int) -> np.ndarray:
     return audio
 
 
+_OVERLAY_SOCK = "/tmp/wednesday-yarn-overlay.sock"
+
+
+def _send_overlay(msg: dict) -> None:
+    """Fire-and-forget JSON message to the wednesday-yarn overlay HUD."""
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(_OVERLAY_SOCK)
+        s.sendall((json.dumps(msg) + "\n").encode())
+        s.close()
+    except Exception:
+        pass
+
+
+def _send_subtitle(text: str, hold_s: float = 0, audio_dur: float = 0) -> None:
+    """Send subtitle text to the overlay, waking it from idle first."""
+    _send_overlay({"type": "state", "state": "responding"})
+    msg = {"type": "transcription", "text": text, "role": "assistant"}
+    if hold_s > 0:
+        msg["hold_s"] = hold_s
+    if audio_dur > 0:
+        msg["audio_dur"] = audio_dur
+    _send_overlay(msg)
+
+
+def _send_overlay_idle() -> None:
+    """Tell the overlay we're done speaking."""
+    _send_overlay({"type": "state", "state": "idle"})
+
+
+def _limiter(audio: np.ndarray, ceiling: float = 0.85, window_ms: float = 30.0,
+             rate: int = 48000) -> np.ndarray:
+    """Simple lookahead peak limiter to prevent dangerously loud output.
+
+    1. Hard-clip anything above ceiling (safety net).
+    2. Compute per-window peak envelope and attenuate windows that exceed
+       ceiling, with smoothed gain to avoid clicks.
+    """
+    audio = audio.copy()
+    window = max(1, int(rate * window_ms / 1000))
+
+    # Compute peak envelope per window
+    n = len(audio)
+    gain = np.ones(n, dtype=np.float32)
+    for i in range(0, n, window):
+        chunk = audio[i:i + window]
+        peak = np.abs(chunk).max()
+        if peak > ceiling:
+            gain[i:i + window] = ceiling / peak
+
+    # Smooth the gain curve to avoid clicks (simple moving average)
+    smooth_len = min(window, n)
+    if smooth_len > 1:
+        kernel = np.ones(smooth_len, dtype=np.float32) / smooth_len
+        gain = np.convolve(gain, kernel, mode="same")
+        # After smoothing, ensure gain never exceeds 1.0
+        gain = np.minimum(gain, 1.0)
+
+    audio *= gain
+
+    # Hard clamp as final safety net
+    np.clip(audio, -ceiling, ceiling, out=audio)
+    return audio
+
+
 def playback_worker(backend: TTSBackend) -> None:
     """Dedicated thread: plays audio from the queue.
 
@@ -951,7 +1017,20 @@ def playback_worker(backend: TTSBackend) -> None:
         item = playback_queue.get()
         if item is None:
             break
+
+        # Unpack (audio, subtitle_text) tuple or bare array (from streaming backends)
+        if isinstance(item, tuple):
+            item, subtitle_text = item
+        else:
+            subtitle_text = None
+
         _playback_heartbeat = time.monotonic()
+
+        # Show subtitle and signal playback start
+        if subtitle_text:
+            audio_dur = len(item) / backend.sample_rate
+            _send_subtitle(subtitle_text, hold_s=audio_dur + 3.0, audio_dur=audio_dur)
+        _send_overlay({"type": "playback_started"})
         try:
             # Re-detect mode on device change
             if _device_changed.is_set():
@@ -986,7 +1065,8 @@ def playback_worker(backend: TTSBackend) -> None:
                     use_spatial = False
                     bt_uid = None
                 else:
-                    spatial_audio = _anti_click(audio.copy(), backend.sample_rate)
+                    spatial_audio = _limiter(audio.copy(), ceiling=0.85, rate=backend.sample_rate)
+                    spatial_audio = _anti_click(spatial_audio, backend.sample_rate)
                     write_gen = _stop_gen
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
@@ -1024,6 +1104,7 @@ def playback_worker(backend: TTSBackend) -> None:
 
             # --- PortAudio path (speakers or BT fallback) ---
             audio = _upsample(audio, backend.sample_rate, device_rate)
+            audio = _limiter(audio, ceiling=0.85, rate=device_rate)
             audio = _anti_click(audio, device_rate)
 
             need_reopen = (
@@ -1080,6 +1161,8 @@ def playback_worker(backend: TTSBackend) -> None:
             print(f"[playback] error: {exc}", flush=True)
         finally:
             playback_queue.task_done()
+            if playback_queue.empty():
+                _send_overlay_idle()
 
     # Shutdown
     _kill_spatial_stream()
@@ -1351,6 +1434,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 return
         else:
             print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}, voice={voice}, pan={pan:.2f}", flush=True)
+            print(f"[text] {text[:500]}", flush=True)
             audio = _render_segments(segments, backend, speed, gen_snap, default_voice=voice)
 
         # ── Enqueue in order ──────────────────────────────────────────────
@@ -1374,11 +1458,11 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     conn.send(b"ok")
                     return
                 if audio is not None:
-                    playback_queue.put(audio)
+                    playback_queue.put((audio, text))
                 _next_seq = 0
                 _order_cond.notify_all()
         elif audio is not None:
-            playback_queue.put(audio)
+            playback_queue.put((audio, text))
 
         if audio is not None:
             _stat_inc("audio_seconds_total", len(audio) / backend.sample_rate)
@@ -1502,7 +1586,7 @@ def main() -> None:
                 "Warning. Competing TTS services detected at startup. "
                 "Check the daemon log for details."
             )
-            playback_queue.put(audio)
+            playback_queue.put((audio, None))
         except Exception:
             pass  # logged already, don't block startup
 
