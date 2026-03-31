@@ -1434,7 +1434,6 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 return
         else:
             print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}, voice={voice}, pan={pan:.2f}", flush=True)
-            print(f"[text] {text[:500]}", flush=True)
             audio = _render_segments(segments, backend, speed, gen_snap, default_voice=voice)
 
         # ── Enqueue in order ──────────────────────────────────────────────
