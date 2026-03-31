@@ -797,7 +797,11 @@ def _audio_health_worker() -> None:
 
     time.sleep(GRACE)
     probe_fails = 0
-    last_device: int | None = get_default_output_device()
+    # Use subprocess query for initial device so the index space matches all
+    # subsequent polls. The parent PA context may assign different indices than
+    # a freshly-spawned subprocess, causing spurious "no change" results.
+    _init_result = _query_default_device_subprocess()
+    last_device: int | None = _init_result[0] if _init_result else None
     print(f"[HEALTH] initial output device: {last_device}", flush=True)
 
     while True:
@@ -884,32 +888,50 @@ def _anti_click(audio: np.ndarray, rate: int) -> np.ndarray:
 _OVERLAY_SOCK = "/tmp/wednesday-yarn-overlay.sock"
 
 
-def _send_overlay(msg: dict) -> None:
-    """Fire-and-forget JSON message to the wednesday-yarn overlay HUD."""
+def _send_overlay(*msgs: dict) -> None:
+    """Fire-and-forget JSON messages to the wednesday-yarn overlay HUD.
+
+    All messages are sent on a SINGLE socket connection so the overlay
+    processes them in order on one thread.  This is critical for
+    sequences like (transcription → playback_started) where ordering
+    determines which history entry gets its timestamp reset.
+    """
+    if not msgs:
+        return
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(0.5)
         s.connect(_OVERLAY_SOCK)
-        s.sendall((json.dumps(msg) + "\n").encode())
+        payload = "".join(json.dumps(m) + "\n" for m in msgs)
+        s.sendall(payload.encode())
         s.close()
     except Exception:
         pass
 
 
-def _send_subtitle(text: str, hold_s: float = 0, audio_dur: float = 0) -> None:
-    """Send subtitle text to the overlay, waking it from idle first."""
-    _send_overlay({"type": "state", "state": "responding"})
-    msg = {"type": "transcription", "text": text, "role": "assistant"}
-    if hold_s > 0:
-        msg["hold_s"] = hold_s
+def _send_subtitle(text: str, audio_dur: float = 0) -> None:
+    """Send subtitle + playback_started as an atomic batch.
+
+    audio_dur drives karaoke word-by-word highlighting.
+    hold_s is set high as a safety ceiling — playback_stopped trims it
+    when audio actually ends (natural finish or interrupt).
+    """
+    msg: dict = {"type": "transcription", "text": text, "role": "assistant", "hold_s": 120.0}
     if audio_dur > 0:
         msg["audio_dur"] = audio_dur
-    _send_overlay(msg)
+    _send_overlay(
+        {"type": "state", "state": "responding"},
+        msg,
+        {"type": "playback_started"},
+    )
 
 
 def _send_overlay_idle() -> None:
-    """Tell the overlay we're done speaking."""
-    _send_overlay({"type": "state", "state": "idle"})
+    """Tell the overlay we're done speaking — atomic batch."""
+    _send_overlay(
+        {"type": "playback_stopped"},
+        {"type": "state", "state": "idle"},
+    )
 
 
 def _limiter(audio: np.ndarray, ceiling: float = 0.85, window_ms: float = 30.0,
@@ -963,17 +985,20 @@ def playback_worker(backend: TTSBackend) -> None:
     use_spatial = False
     bt_uid: str | None = None
 
-    def _detect_spatial_mode() -> tuple[bool, str | None]:
+    def _detect_spatial_mode(log: bool = True) -> tuple[bool, str | None]:
         """Check if we should use spatial playback. Returns (use_spatial, bt_uid)."""
         uid = _query_bt_headphone_uid()
         has_bin = os.path.isfile(_SPATIAL_STREAM_BIN)
         if uid and has_bin:
-            print(f"[playback] BT headphones detected, uid={uid} — using spatial stream", flush=True)
+            if log:
+                print(f"[playback] BT headphones detected, uid={uid} — using spatial stream", flush=True)
             return True, uid
         if uid and not has_bin:
-            print(f"[playback] BT detected but no SpatialStream binary — PortAudio fallback", flush=True)
+            if log:
+                print(f"[playback] BT detected but no SpatialStream binary — PortAudio fallback", flush=True)
         else:
-            print("[playback] non-BT output — using PortAudio stereo pan", flush=True)
+            if log:
+                print("[playback] non-BT output — using PortAudio stereo pan", flush=True)
         return False, None
 
     def _open_stream() -> sd.OutputStream | None:
@@ -1024,19 +1049,18 @@ def playback_worker(backend: TTSBackend) -> None:
         else:
             subtitle_text = None
 
+        _chunk_t0 = time.monotonic()
         _playback_heartbeat = time.monotonic()
-
-        # Show subtitle and signal playback start
-        if subtitle_text:
-            audio_dur = len(item) / backend.sample_rate
-            _send_subtitle(subtitle_text, hold_s=audio_dur + 3.0, audio_dur=audio_dur)
-        _send_overlay({"type": "playback_started"})
         try:
-            # Re-detect mode on device change
-            if _device_changed.is_set():
-                _device_changed.clear()
-                old_spatial = use_spatial
-                use_spatial, bt_uid = _detect_spatial_mode()
+            # Re-detect mode every chunk — CoreAudio query is fast (no subprocess,
+            # no PA reinit) so there's no reason to gate this on an event.
+            # This guarantees we're always on the right device regardless of
+            # whether the health worker fired or not.
+            old_spatial = use_spatial
+            old_bt_uid = bt_uid
+            use_spatial, bt_uid = _detect_spatial_mode(log=False)
+            switched = use_spatial != old_spatial or bt_uid != old_bt_uid
+            if switched:
                 if old_spatial and not use_spatial:
                     print("[playback] switching from spatial to PortAudio", flush=True)
                     _kill_spatial_stream()
@@ -1052,6 +1076,7 @@ def playback_worker(backend: TTSBackend) -> None:
                     with _playback_stream_lock:
                         _playback_stream_ref = None
                     out_stream = None
+            _device_changed.clear()  # consume any pending event — detection already done
 
             audio = item.astype(np.float32)
             pan = _current_pan
@@ -1067,6 +1092,12 @@ def playback_worker(backend: TTSBackend) -> None:
                 else:
                     spatial_audio = _limiter(audio.copy(), ceiling=0.85, rate=backend.sample_rate)
                     spatial_audio = _anti_click(spatial_audio, backend.sample_rate)
+                    if subtitle_text:
+                        dur = len(audio) / backend.sample_rate
+                        _send_subtitle(subtitle_text, audio_dur=dur)
+                        subtitle_text = None
+                    else:
+                        _send_overlay({"type": "playback_started"})
                     write_gen = _stop_gen
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
@@ -1075,6 +1106,7 @@ def playback_worker(backend: TTSBackend) -> None:
                     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
                     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
                     try:
+                        _spatial_write_t0 = time.monotonic()
                         while offset < len(spatial_audio) and _stop_gen == write_gen:
                             end = min(offset + CHUNK, len(spatial_audio))
                             chunk_bytes = spatial_audio[offset:end].tobytes()
@@ -1092,6 +1124,17 @@ def playback_worker(backend: TTSBackend) -> None:
                                     time.sleep(0.01)
                             _playback_heartbeat = time.monotonic()
                             offset = end
+                        # Wait for actual playback to finish — the pipe
+                        # write completes much faster than real-time.
+                        _write_elapsed = time.monotonic() - _spatial_write_t0
+                        _play_dur = len(spatial_audio) / backend.sample_rate
+                        _wait = _play_dur - _write_elapsed
+                        if _wait > 0 and _stop_gen == write_gen:
+                            print(f"[playback] spatial: waiting {_wait:.1f}s for playback to finish", flush=True)
+                            _wait_end = time.monotonic() + _wait
+                            while time.monotonic() < _wait_end and _stop_gen == write_gen:
+                                time.sleep(min(0.2, _wait_end - time.monotonic()))
+                                _playback_heartbeat = time.monotonic()
                         spatial_ok = True
                     except (BrokenPipeError, OSError) as exc:
                         print(f"[playback] spatial stream write failed: {exc}, falling back to PortAudio", flush=True)
@@ -1127,6 +1170,12 @@ def playback_worker(backend: TTSBackend) -> None:
                     continue
                 print(f"[playback] PortAudio stream opened, rate={device_rate}", flush=True)
 
+            if subtitle_text:
+                dur = len(item) / backend.sample_rate
+                _send_subtitle(subtitle_text, audio_dur=dur)
+                subtitle_text = None
+            else:
+                _send_overlay({"type": "playback_started"})
             WRITE_CHUNK = int(device_rate * 0.1)
             write_gen = _stop_gen
             flat = audio.reshape(-1)
