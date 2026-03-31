@@ -120,6 +120,7 @@ class Qwen3TTSBackend(TTSBackend):
 
         use_speed = speed if speed is not None else self._speed
         ref_audio, ref_text, seed = self._resolve_voice(voice)
+        print(f"[qwen3] resolve: voice={voice!r} → ref_audio={ref_audio!r}, seed={seed}", flush=True)
         use_instruct = instruct or self._instruct or None
 
         t0 = time.time()

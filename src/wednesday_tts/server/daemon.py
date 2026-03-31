@@ -4,14 +4,10 @@
 Keeps the model loaded in memory for fast responses.
 Supports overlapping chunk processing: renders chunk N+1 while N plays.
 
-Backend selection (env var, default pocket):
-    TTS_BACKEND=kokoro       Kokoro 82M (configurable via KOKORO_VOICE)
-    TTS_BACKEND=pocket       Pocket TTS (configurable via POCKET_TTS_VOICE)
-    TTS_BACKEND=chatterbox   Chatterbox TTS (configurable via CHATTERBOX_DEVICE)
+Backend selection via active_model in ~/.claude/tts-config.json (default: pocket).
 
 Run:
     python -m wednesday_tts.server.daemon
-    TTS_BACKEND=kokoro python -m wednesday_tts.server.daemon
 """
 from __future__ import annotations
 
@@ -256,7 +252,7 @@ def _resolve_pool_index(index: int) -> str:
     try:
         with open(cfg_path) as f:
             cfg = json.load(f)
-        active = os.environ.get("TTS_BACKEND") or cfg.get("active_model", "pocket")
+        active = cfg.get("active_model", "pocket")
         model_cfg = cfg.get("models", {}).get(active, {})
         pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
         if 0 <= index < len(pool):
@@ -1282,7 +1278,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     if s["soundstretch_calls"]
                     else 0,
                 },
-                "backend": os.environ.get("TTS_BACKEND", "pocket"),
+                "backend": _active_backend_name or "unknown",
             }
             conn.sendall(json.dumps(result).encode("utf-8"))
             return
@@ -1537,7 +1533,34 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+class _TimestampWriter:
+    """Wrapper that prepends HH:MM:SS to each printed line."""
+    def __init__(self, stream):
+        self._stream = stream
+        self._at_line_start = True
+    def write(self, s):
+        if not s:
+            return
+        from datetime import datetime
+        parts = s.split("\n")
+        for i, part in enumerate(parts):
+            if i > 0:
+                self._stream.write("\n")
+                self._at_line_start = True
+            if part:
+                if self._at_line_start:
+                    self._stream.write(datetime.now().strftime("%H:%M:%S "))
+                    self._at_line_start = False
+                self._stream.write(part)
+    def flush(self):
+        self._stream.flush()
+
+
 def main() -> None:
+    import sys
+    sys.stdout = _TimestampWriter(sys.stdout)
+    sys.stderr = _TimestampWriter(sys.stderr)
+
     _stats["service_start_time"] = time.time()
 
     # Load config file first — active_model drives backend selection.
@@ -1553,12 +1576,8 @@ def main() -> None:
     except Exception as exc:
         print(f"Warning: could not load config {_config_path}: {exc}", flush=True)
 
-    # Backend selection: env var > config active_model > "pocket"
-    backend_name = (
-        os.environ.get("TTS_BACKEND")
-        or _cfg.get("active_model")
-        or "pocket"
-    ).lower()
+    # Backend selection: active_model from config > "pocket"
+    backend_name = (_cfg.get("active_model") or "pocket").lower()
     _model_config = _cfg.get("models", {}).get(backend_name, {})
     print(f"Loaded config from {_config_path} (model: {backend_name})", flush=True)
 

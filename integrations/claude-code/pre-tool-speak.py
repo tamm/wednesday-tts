@@ -94,7 +94,7 @@ def _get_repo_voice(cwd: str) -> str | None:
     try:
         with open(cfg_path) as f:
             cfg = json.load(f)
-        active = os.environ.get("TTS_BACKEND") or cfg.get("active_model", "pocket")
+        active = cfg.get("active_model", "pocket")
         model_cfg = cfg.get("models", {}).get(active, {})
         pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
     except Exception:
