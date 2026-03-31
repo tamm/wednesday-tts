@@ -216,7 +216,7 @@ class TestDaemonStreamingToQueue:
             # generate_streaming returns None = audio was queued directly
             mock_backend.generate_streaming.return_value = None
 
-            with patch.object(daemon, "_split_voice_segments", return_value=[(None, "hello")]), \
+            with patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]), \
                  patch.object(daemon, "run_normalize", return_value="hello"), \
                  patch.object(daemon, "_dedup_check", return_value=False):
                 daemon.handle_client(mock_conn, mock_backend)
@@ -254,7 +254,7 @@ class TestDaemonStreamingToQueue:
             mock_audio = np.zeros(100, dtype=np.float32)
             mock_backend.generate_streaming.return_value = mock_audio
 
-            with patch.object(daemon, "_split_voice_segments", return_value=[(None, "hello")]), \
+            with patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]), \
                  patch.object(daemon, "run_normalize", return_value="hello"), \
                  patch.object(daemon, "_dedup_check", return_value=False), \
                  patch.object(daemon, "playback_queue") as mock_pq:

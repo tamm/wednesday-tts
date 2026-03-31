@@ -78,7 +78,10 @@ def _get_repo_voice(cwd: str) -> str | None:
     cfg_path = os.path.expanduser("~/.claude/tts-config.json")
     try:
         with open(cfg_path) as f:
-            pool = json.load(f).get("voice_pool", [])
+            cfg = json.load(f)
+        active = os.environ.get("TTS_BACKEND") or cfg.get("active_model", "pocket")
+        model_cfg = cfg.get("models", {}).get(active, {})
+        pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
     except Exception:
         pool = []
     if not pool:

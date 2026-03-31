@@ -10,6 +10,23 @@ import numpy as np
 
 from .base import TTSBackend, DEFAULT_SPEED
 
+_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
+
+
+def _is_audio_file(path: str) -> bool:
+    """Check if path points to an existing audio file with a supported extension."""
+    return os.path.isfile(path) and os.path.splitext(path)[1].lower() in _AUDIO_EXTS
+
+
+def _parse_seed_tag(voice: str) -> int | None:
+    """Parse a 'seed:N' voice identifier. Returns the seed int or None."""
+    if voice.startswith("seed:"):
+        try:
+            return int(voice[5:])
+        except ValueError:
+            pass
+    return None
+
 
 class Qwen3TTSBackend(TTSBackend):
     """Qwen3-TTS via mlx-audio (MLX-native, Apple Silicon optimised).
@@ -20,13 +37,16 @@ class Qwen3TTSBackend(TTSBackend):
         voice       — path to reference audio WAV for voice cloning (optional)
         voice_text  — transcription of the reference audio (optional, improves quality)
         speed       — native speed multiplier (handled by the model, not soundstretch)
-        seed        — fixed random seed for consistent voice (int, optional)
-        seed_pool   — list of seeds to rotate through as a voice pool (optional)
+        seed        — fixed random seed for reproducible output (int, optional)
         instruct    — style/emotion instruction string (optional)
+
+    Voice pool entries (in tts-config.json models.qwen3.voice_pool) can be:
+        - Audio file paths: "/path/to/voice.wav" — used as ref_audio for ICL cloning
+        - Seed tags: "seed:42" — deterministic seed-based voice generation
     """
 
     sample_rate = 24000
-    supports_streaming = True
+    supports_streaming = False  # disabled: per-chunk volume inconsistency
 
     def __init__(
         self,
@@ -35,29 +55,54 @@ class Qwen3TTSBackend(TTSBackend):
         voice_text: str | None = None,
         speed: float = DEFAULT_SPEED,
         seed: int | None = None,
-        seed_pool: list[int] | None = None,
         instruct: str = "",
     ) -> None:
         self._model_id = model_id or os.environ.get(
             "QWEN3_TTS_MODEL", "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
         )
-        self._voice = voice  # path to reference audio WAV
-        self._voice_text = voice_text  # transcription of reference audio
+        self._voice = voice  # path to default reference audio WAV
+        self._voice_text = voice_text  # transcription of default reference audio
         self._speed = speed
         self._seed = seed
-        self._seed_pool = seed_pool or []
-        self._seed_index = 0
         self._instruct = instruct
         self._model = None
         self._lock = threading.Lock()
 
-    def _pick_seed(self) -> int | None:
-        """Pick the next seed from the pool, or use the fixed seed."""
-        if self._seed_pool:
-            seed = self._seed_pool[self._seed_index % len(self._seed_pool)]
-            self._seed_index += 1
-            return seed
-        return self._seed
+    def _resolve_voice(self, voice: str | None) -> tuple[str | None, str | None, int | None]:
+        """Resolve a voice parameter into (ref_audio, ref_text, seed).
+
+        Voice resolution order:
+        1. voice is a seed tag ("seed:42") → use that seed, no ref_audio
+        2. voice is a supported audio file → use as ref_audio with fixed seed
+        3. voice is something unrecognised (pocket safetensors, predefined name, etc.)
+           → log warning, fall back to configured default voice
+        4. voice is None → use configured default voice with fixed seed
+
+        Returns:
+            (ref_audio_path | None, ref_text | None, seed | None)
+        """
+        if voice is not None:
+            # Seed tag: "seed:42"
+            tag_seed = _parse_seed_tag(voice)
+            if tag_seed is not None:
+                return None, None, tag_seed
+
+            # Supported audio file
+            if _is_audio_file(voice):
+                ref_text = self._voice_text if voice == self._voice else None
+                return voice, ref_text, self._seed
+
+            # Unrecognised — fall back to default
+            print(
+                f"[qwen3] voice {voice!r} not recognised (not audio, not seed:N), "
+                f"using default",
+                flush=True,
+            )
+
+        # Default: configured voice with fixed seed
+        if self._voice and _is_audio_file(self._voice):
+            return self._voice, self._voice_text, self._seed
+        return None, None, self._seed
 
     def load(self) -> None:
         from mlx_audio.tts import load  # type: ignore[import]
@@ -67,18 +112,16 @@ class Qwen3TTSBackend(TTSBackend):
             self.sample_rate = self._model.sample_rate
 
     def generate(
-        self, text: str, speed: float | None = None, voice: str | None = None
+        self, text: str, speed: float | None = None, voice: str | None = None,
+        instruct: str | None = None,
     ) -> np.ndarray | None:
         if self._model is None:
             raise RuntimeError("Qwen3TTSBackend not loaded — call load() first")
 
         use_speed = speed if speed is not None else self._speed
+        ref_audio, ref_text, seed = self._resolve_voice(voice)
+        use_instruct = instruct or self._instruct or None
 
-        # ref_audio must be a file path — ignore pocket-style voice names,
-        # fall back to configured default voice
-        use_voice = voice if (voice and os.path.isfile(voice)) else self._voice
-
-        seed = self._pick_seed()
         t0 = time.time()
 
         try:
@@ -90,9 +133,9 @@ class Qwen3TTSBackend(TTSBackend):
                 chunks = list(self._model.generate(
                     text=text,
                     speed=use_speed,
-                    ref_audio=use_voice,
-                    ref_text=self._voice_text if use_voice == self._voice else None,
-                    instruct=self._instruct or None,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    instruct=use_instruct,
                 ))
 
             if not chunks:
@@ -114,9 +157,10 @@ class Qwen3TTSBackend(TTSBackend):
             combined = np.concatenate(arrays) if len(arrays) > 1 else arrays[0]
             elapsed = time.time() - t0
             duration = len(combined) / self.sample_rate
+            voice_desc = f"ref={ref_audio}" if ref_audio else f"seed={seed}"
             print(
                 f"[qwen3] generated {duration:.1f}s audio in {elapsed:.1f}s "
-                f"(RTF {elapsed / duration:.2f}, seed={seed})",
+                f"(RTF {elapsed / duration:.2f}, {voice_desc})",
                 flush=True,
             )
             return combined
@@ -124,3 +168,83 @@ class Qwen3TTSBackend(TTSBackend):
         except Exception as exc:
             print(f"[qwen3] generate error: {exc}", flush=True)
             return None
+
+    def generate_streaming(
+        self, text: str, speed: float | None = None, voice: str | None = None,
+        instruct: str | None = None, playback_queue=None, stop_check=None,
+    ) -> "np.ndarray | None":
+        """Generate audio with streaming — yield chunks to playback_queue as they arrive.
+
+        If playback_queue is provided, chunks are queued directly and None is returned.
+        If playback_queue is None, collects all chunks and returns concatenated array.
+        """
+        if self._model is None:
+            raise RuntimeError("Qwen3TTSBackend not loaded — call load() first")
+
+        ref_audio, ref_text, seed = self._resolve_voice(voice)
+        use_instruct = instruct or self._instruct or None
+        _FIRST_CHUNK_TIMEOUT = 15.0  # qwen3 ICL prefill can be slow
+
+        t0 = time.time()
+        total_samples = 0
+        n_chunks = 0
+        collected: list[np.ndarray] = []
+
+        try:
+            with self._lock:
+                if seed is not None:
+                    import mlx.core as mx  # type: ignore[import]
+                    mx.random.seed(seed)
+
+                for result in self._model.generate(
+                    text=text,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    instruct=use_instruct,
+                    stream=True,
+                    streaming_interval=1.5,
+                ):
+                    if stop_check and stop_check():
+                        break
+                    if n_chunks == 0 and time.time() - t0 > _FIRST_CHUNK_TIMEOUT:
+                        print(f"[qwen3-stream] first-chunk timeout ({_FIRST_CHUNK_TIMEOUT}s)", flush=True)
+                        break
+
+                    arr = np.array(result.audio, dtype=np.float32)
+                    if arr.ndim > 1:
+                        arr = arr.squeeze()
+                    if arr.size == 0:
+                        continue
+
+                    if result.sample_rate and result.sample_rate != self.sample_rate:
+                        self.sample_rate = result.sample_rate
+
+                    n_chunks += 1
+                    total_samples += arr.size
+
+                    if playback_queue is not None:
+                        playback_queue.put(arr)
+                    else:
+                        collected.append(arr)
+
+        except Exception as exc:
+            print(f"[qwen3-stream] error: {exc}", flush=True)
+            if playback_queue is None and not collected:
+                return None
+
+        elapsed = time.time() - t0
+        duration = total_samples / self.sample_rate if total_samples > 0 else 0
+        voice_desc = f"ref={ref_audio}" if ref_audio else f"seed={seed}"
+        rtf = f"{elapsed / duration:.2f}" if duration > 0 else "n/a"
+        print(
+            f"[qwen3-stream] {n_chunks} chunks, {duration:.1f}s audio in {elapsed:.1f}s "
+            f"(RTF {rtf}, {voice_desc})",
+            flush=True,
+        )
+
+        if playback_queue is not None:
+            return None
+
+        if not collected:
+            return None
+        return np.concatenate(collected) if len(collected) > 1 else collected[0]

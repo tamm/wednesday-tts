@@ -182,31 +182,34 @@ def _get_override_backend(name: str) -> TTSBackend | None:
 
 def _split_voice_segments(
     text: str,
-) -> list[tuple[str | None, str]]:
-    """Split text into segments of (voice_name, text).
+) -> list[tuple[str | None, str | None, str]]:
+    """Split text into segments of (voice_name, instruct, text).
 
-    Plain text segments have voice_name=None (use primary backend).
+    Plain text segments have voice_name=None, instruct=None (use primary backend).
     Tagged segments use guillemet syntax:
-      - ««text»»           → voice_name="sam" (backward compatible)
-      - ««alba»text»»      → voice_name="alba" (named voice)
-      - ««2»text»»         → voice_pool index 2 (resolved from config)
-      - ««/path/v.safetensors»text»» → custom voice file path
+      - ««text»»                        → voice_name="sam" (backward compatible)
+      - ««alba»text»»                   → voice_name="alba" (named voice)
+      - ««2»text»»                      → voice_pool index 2 (resolved from config)
+      - ««/path/v.safetensors»text»»    → custom voice file path
+      - ««seed:42|cheerful»text»»       → voice + instruct (pipe-separated)
+      - ««|calm and warm»text»»         → instruct only, default voice
 
-    Returns a list of (voice, text) tuples preserving original order.
+    Returns a list of (voice, instruct, text) tuples preserving original order.
     Empty segments are skipped.
     """
     # Match everything between double guillemets
     pattern = re.compile(r"\u00ab\u00ab(.+?)\u00bb\u00bb", re.DOTALL)
 
-    segments: list[tuple[str | None, str]] = []
+    segments: list[tuple[str | None, str | None, str]] = []
     last_end = 0
     for m in pattern.finditer(text):
         # Plain text before this tag
         before = text[last_end:m.start()].strip()
         if before:
-            segments.append((None, before))
+            segments.append((None, None, before))
 
         content = m.group(1)
+        instruct = None
         # Check if content contains a single » that splits voice_id from text.
         # The double »» is already consumed by the outer regex, so any » inside
         # is a voice/text separator.
@@ -214,8 +217,16 @@ def _split_voice_segments(
             voice_id, tagged_text = content.split("\u00bb", 1)
             voice_id = voice_id.strip()
             tagged_text = tagged_text.strip()
+            # Parse voice|instruct if pipe is present
+            if "|" in voice_id:
+                voice_part, instruct = voice_id.split("|", 1)
+                voice_id = voice_part.strip()
+                instruct = instruct.strip() or None
+            # Empty voice (e.g. ««|calm»text»») means default voice
+            if not voice_id:
+                voice_id = None
             # Resolve pool index (pure digits) to voice name from config
-            if voice_id.isdigit():
+            elif voice_id.isdigit():
                 voice_id = _resolve_pool_index(int(voice_id))
         else:
             # No separator — SAM voice, whole content is text
@@ -223,16 +234,16 @@ def _split_voice_segments(
             tagged_text = content.strip()
 
         if tagged_text:
-            segments.append((voice_id, tagged_text))
+            segments.append((voice_id, instruct, tagged_text))
         last_end = m.end()
 
     # Trailing plain text after last tag
     after = text[last_end:].strip()
     if after:
-        segments.append((None, after))
+        segments.append((None, None, after))
     # If no tags found at all, return the whole text as one segment
     if not segments and text.strip():
-        segments.append((None, text.strip()))
+        segments.append((None, None, text.strip()))
     return segments
 
 
@@ -244,7 +255,10 @@ def _resolve_pool_index(index: int) -> str:
     cfg_path = os.path.expanduser("~/.claude/tts-config.json")
     try:
         with open(cfg_path) as f:
-            pool = json.load(f).get("voice_pool", [])
+            cfg = json.load(f)
+        active = os.environ.get("TTS_BACKEND") or cfg.get("active_model", "pocket")
+        model_cfg = cfg.get("models", {}).get(active, {})
+        pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
         if 0 <= index < len(pool):
             return pool[index]
     except Exception:
@@ -254,11 +268,12 @@ def _resolve_pool_index(index: int) -> str:
 
 
 def _render_segments(
-    segments: list[tuple[str | None, str]],
+    segments: list[tuple[str | None, str | None, str]],
     primary_backend: TTSBackend,
     speed: float,
     gen_snap: int,
     default_voice: str | None = None,
+    default_instruct: str | None = None,
 ) -> "np.ndarray | None":
     """Render a list of voice segments and concatenate into one audio array.
 
@@ -268,7 +283,7 @@ def _render_segments(
     chunks: list[np.ndarray] = []
     target_rate = primary_backend.sample_rate
 
-    for voice_name, segment_text in segments:
+    for voice_name, instruct, segment_text in segments:
         if _stop_gen != gen_snap:
             break
 
@@ -286,9 +301,15 @@ def _render_segments(
             render_backend = primary_backend
             render_voice = default_voice
 
-        # Use backend-specific generate if it supports voice, or base generate
+        # Build kwargs — add instruct if the backend supports it
+        gen_kwargs: dict = {"speed": speed, "voice": render_voice}
+        use_instruct = instruct or default_instruct
+        if use_instruct:
+            gen_kwargs["instruct"] = use_instruct
+
+        # Use backend-specific generate if it supports voice/instruct, or base generate
         try:
-            audio = render_backend.generate(segment_text, speed=speed, voice=render_voice)
+            audio = render_backend.generate(segment_text, **gen_kwargs)
         except TypeError:
             audio = render_backend.generate(segment_text, speed=speed)
 
@@ -1262,12 +1283,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # ── Normalize text segments (not voice IDs) ──────────────────────
         if content_type != "normalized":
             segments = [
-                (v, run_normalize(t, content_type=content_type))
-                for v, t in segments
+                (v, i, run_normalize(t, content_type=content_type))
+                for v, i, t in segments
             ]
 
         # Reassemble text for dedup check
-        text = " ".join(t for _, t in segments)
+        text = " ".join(t for _, _, t in segments)
 
         # ── Dedup: skip if this text was recently spoken ─────────────────
         if _dedup_check(text):
@@ -1279,14 +1300,16 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # Determine if we need backend switching (SAM segments mixed with pocket).
         # A single pocket voice for the whole message is NOT mixed — we can stream.
         needs_backend_switch = any(
-            v == "sam" for v, _ in segments
-        ) and any(v != "sam" for v, _ in segments)
+            v == "sam" for v, _, _ in segments
+        ) and any(v != "sam" for v, _, _ in segments)
 
-        # Extract voice for single-segment or uniform-voice messages
+        # Extract voice and instruct for single-segment or uniform-voice messages
+        instruct = None
         if len(segments) == 1 and segments[0][0] and segments[0][0] != "sam":
             voice = segments[0][0]
-            text = segments[0][1]
-        elif not any(v is not None for v, _ in segments):
+            instruct = segments[0][1]
+            text = segments[0][2]
+        elif not any(v is not None for v, _, _ in segments):
             voice = None  # no tags at all
 
         # ── Set stereo pan for this request ──────────────────────────────
@@ -1298,7 +1321,8 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # Streaming: single voice on primary backend, no backend switching needed
         use_streaming = (
             not needs_backend_switch
-            and not any(v == "sam" for v, _ in segments)
+            and not any(v == "sam" for v, _, _ in segments)
+            and getattr(backend, "supports_streaming", False)
             and hasattr(backend, "generate_streaming")
             and _stop_gen == gen_snap
         )
@@ -1310,6 +1334,8 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 "playback_queue": playback_queue,
                 "stop_check": lambda: _stop_gen != _gs,
             }
+            if instruct:
+                gs_kwargs["instruct"] = instruct
             try:
                 audio = backend.generate_streaming(text, voice=voice, **gs_kwargs)
             except TypeError:
@@ -1439,8 +1465,6 @@ def main() -> None:
             _kwargs["speed"] = _model_config["speed"]
         if _model_config.get("seed") is not None:
             _kwargs["seed"] = _model_config["seed"]
-        if _model_config.get("seed_pool") is not None:
-            _kwargs["seed_pool"] = _model_config["seed_pool"]
 
     global _active_backend, _active_backend_name
     backend = backend_cls(**_kwargs)
