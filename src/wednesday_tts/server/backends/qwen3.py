@@ -56,6 +56,7 @@ class Qwen3TTSBackend(TTSBackend):
         speed: float = DEFAULT_SPEED,
         seed: int | None = None,
         instruct: str = "",
+        temperature: float = 0.75,
     ) -> None:
         self._model_id = model_id or os.environ.get(
             "QWEN3_TTS_MODEL", "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
@@ -65,6 +66,7 @@ class Qwen3TTSBackend(TTSBackend):
         self._speed = speed
         self._seed = seed
         self._instruct = instruct
+        self._temperature = temperature
         self._model = None
         self._lock = threading.Lock()
 
@@ -137,6 +139,7 @@ class Qwen3TTSBackend(TTSBackend):
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     instruct=use_instruct,
+                    temperature=self._temperature,
                 ))
 
             if not chunks:
@@ -202,6 +205,7 @@ class Qwen3TTSBackend(TTSBackend):
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     instruct=use_instruct,
+                    temperature=self._temperature,
                     stream=True,
                     streaming_interval=1.5,
                 ):

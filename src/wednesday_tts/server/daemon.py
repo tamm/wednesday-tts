@@ -1616,6 +1616,8 @@ def main() -> None:
             _kwargs["speed"] = _model_config["speed"]
         if _model_config.get("seed") is not None:
             _kwargs["seed"] = _model_config["seed"]
+        if _model_config.get("temperature") is not None:
+            _kwargs["temperature"] = _model_config["temperature"]
 
     global _active_backend, _active_backend_name
     backend = backend_cls(**_kwargs)
