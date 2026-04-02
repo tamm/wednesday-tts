@@ -165,9 +165,11 @@ def _load_normalize_deps() -> tuple[list, dict]:
         if os.path.exists(dict_path):
             try:
                 from wednesday_tts.normalize.dictionary import load_dictionary
-                active_model = (config or {}).get("active_model", "pocket")
+                if config is None:
+                    load_config()
+                active_model = config.get("active_model", "pocket")
                 dictionary = load_dictionary(dict_path, backend=active_model)
-                _log(f"[normalize] Loaded dictionary from {dict_path}")
+                _log(f"[normalize] Loaded dictionary from {dict_path} (backend={active_model}, {len(dictionary)} entries)")
             except Exception as exc:
                 _log(f"[normalize] Failed to load dictionary: {exc}")
         if os.path.exists(filenames_path):
@@ -420,7 +422,7 @@ def process_speech(text: str) -> None:
         backend, model_name, model_config = get_model()
 
         from wednesday_tts.normalize.chunking import chunk_text_server as chunk_text
-        text_chunks = chunk_text(text)
+        text_chunks = chunk_text(text, backend_name=model_name)
 
         try:
             dev = sd.query_devices(kind="output")

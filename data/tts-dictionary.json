@@ -12,72 +12,88 @@
     },
     {
       "pattern": "npm",
-      "pocket": "en pee em"
+      "pocket": "en pee em",
+      "qwen3": "N P M"
     },
     {
       "pattern": "zshrc",
       "pocket": "zee shell arr cee",
+      "qwen3": "Z S H R C",
       "case_sensitive": false
     },
     {
       "pattern": ".zshrc",
       "pocket": "dot zee shell arr cee",
+      "qwen3": "dot Z S H R C",
       "literal": true,
       "case_sensitive": false
     },
     {
       "pattern": "zsh",
       "pocket": "zee shell",
+      "qwen3": "Z S H",
       "case_sensitive": false
     },
     {
       "pattern": "npx",
-      "replacement": "en pee ex",
+      "pocket": "en pee ex",
+      "qwen3": "N P X",
       "case_sensitive": false
     },
     {
       "pattern": "PII",
-      "pocket": "pee eye eye"
+      "pocket": "pee eye eye",
+      "qwen3": "P I I"
     },
     {
       "pattern": "IPA",
-      "pocket": "eye pee Ae"
+      "pocket": "eye pee Ae",
+      "qwen3": "I P A"
     },
     {
       "pattern": "API",
-      "pocket": "Ae pee eye"
+      "pocket": "Ae pee eye",
+      "qwen3": "A P I"
     },
     {
       "pattern": "APIs",
-      "pocket": "Ae pee eyes"
+      "pocket": "Ae pee eyes",
+      "qwen3": "A P Is"
     },
     {
       "pattern": "URL",
-      "pocket": "you ar el"
+      "pocket": "you ar el",
+      "qwen3": "U R L"
     },
     {
       "pattern": "URLs",
-      "pocket": "you ar els"
+      "pocket": "you ar els",
+      "qwen3": "U R Ls"
     },
     {
       "pattern": "URI",
-      "pocket": "you ar eye"
+      "pocket": "you ar eye",
+      "qwen3": "U R I"
     },
     {
       "pattern": "HTTP",
-      "pocket": "aitch tee tee pee"
+      "pocket": "aitch tee tee pee",
+      "qwen3": "H T T P"
     },
     {
       "pattern": "HTTPS",
-      "pocket": "aitch tee tee pee ess"
+      "pocket": "aitch tee tee pee ess",
+      "qwen3": "H T T P S"
     },
     {
       "pattern": "I/O",
-      "replacement": "I O"
+      "pocket": "I O",
+      "qwen3": "I O"
     },
     {
       "pattern": "GH",
-      "replacement": "gee aitch",
+      "pocket": "gee aitch",
+      "qwen3": "G H",
       "case_sensitive": false
     },
     {
@@ -86,7 +102,8 @@
     },
     {
       "pattern": "JSONL",
-      "pocket": "jason ell"
+      "pocket": "jason ell",
+      "qwen3": "JSON L"
     },
     {
       "pattern": "YAML",
@@ -95,6 +112,12 @@
     {
       "pattern": "YML",
       "pocket": "yamel"
+    },
+    {
+      "pattern": "qwen3",
+      "pocket": "kwen three",
+      "qwen3": "Qwen 3",
+      "case_sensitive": false
     },
     {
       "pattern": "Qwen",
@@ -106,19 +129,23 @@
     },
     {
       "pattern": "html",
-      "pocket": "aitch tee em el"
+      "pocket": "aitch tee em el",
+      "qwen3": "H T M L"
     },
     {
       "pattern": "HTML",
-      "pocket": "aitch tee em el"
+      "pocket": "aitch tee em el",
+      "qwen3": "H T M L"
     },
     {
       "pattern": "CSS",
-      "pocket": "see ess ess"
+      "pocket": "see ess ess",
+      "qwen3": "C S S"
     },
     {
       "pattern": "XML",
-      "pocket": "ex em el"
+      "pocket": "ex em el",
+      "qwen3": "X M L"
     },
     {
       "pattern": "iframe",
@@ -132,46 +159,56 @@
     },
     {
       "pattern": "SQL",
-      "pocket": "ess cue el"
+      "pocket": "ess cue el",
+      "qwen3": "S Q L"
     },
     {
       "pattern": "SQLite",
       "pocket": "Ess cue lite",
+      "qwen3": "S Q Lite",
       "case_sensitive": false
     },
     {
       "pattern": "CLI",
-      "pocket": "see el eye"
+      "pocket": "see el eye",
+      "qwen3": "C L I"
     },
     {
       "pattern": "UI",
-      "pocket": "you eye"
+      "pocket": "you eye",
+      "qwen3": "U I"
     },
     {
       "pattern": "UX",
-      "pocket": "you ex"
+      "pocket": "you ex",
+      "qwen3": "U X"
     },
     {
       "pattern": "LLM",
-      "pocket": "el el em"
+      "pocket": "el el em",
+      "qwen3": "L L M"
     },
     {
       "pattern": "LLMs",
-      "pocket": "el el ems"
+      "pocket": "el el ems",
+      "qwen3": "L L Ms"
     },
     {
       "pattern": "TTS",
       "pocket": "teetee ess",
+      "qwen3": "T T S",
       "case_sensitive": false
     },
     {
       "pattern": "MCP",
       "pocket": "em see pee",
+      "qwen3": "M C P",
       "case_sensitive": false
     },
     {
       "pattern": "cwd",
-      "pocket": "see double-you dee"
+      "pocket": "see double-you dee",
+      "qwen3": "C W D"
     },
     {
       "pattern": "stdin",
@@ -191,36 +228,44 @@
     },
     {
       "pattern": "PR",
-      "replacement": "pee ar",
+      "pocket": "pee ar",
+      "qwen3": "P R",
       "case_sensitive": false
     },
     {
       "pattern": "PRs",
-      "pocket": "pull requests"
+      "pocket": "pull requests",
+      "qwen3": "P Rs"
     },
     {
       "pattern": "CI",
-      "pocket": "see eye"
+      "pocket": "see eye",
+      "qwen3": "C I"
     },
     {
       "pattern": "CD",
-      "pocket": "see dee"
+      "pocket": "see dee",
+      "qwen3": "C D"
     },
     {
       "pattern": "uv",
-      "pocket": "you vee"
+      "pocket": "you vee",
+      "qwen3": "U V"
     },
     {
       "pattern": "hf",
-      "pocket": "Ae tch ef"
+      "pocket": "Ae tch ef",
+      "qwen3": "H F"
     },
     {
       "pattern": "GPU",
-      "pocket": "jee pee you"
+      "pocket": "jee pee you",
+      "qwen3": "G P U"
     },
     {
       "pattern": "CPU",
-      "pocket": "see pee you"
+      "pocket": "see pee you",
+      "qwen3": "C P U"
     },
     {
       "pattern": "RAM",
@@ -228,7 +273,8 @@
     },
     {
       "pattern": "SSH",
-      "pocket": "ess ess aitch"
+      "pocket": "ess ess aitch",
+      "qwen3": "S S H"
     },
     {
       "pattern": "GitHub",
@@ -236,7 +282,8 @@
     },
     {
       "pattern": "PyPI",
-      "pocket": "pie pee eye"
+      "pocket": "pie pee eye",
+      "qwen3": "Py P I"
     },
     {
       "pattern": "pytest",
@@ -268,15 +315,18 @@
     },
     {
       "pattern": "ffmpeg",
-      "pocket": "F F m-peg"
+      "pocket": "F F m-peg",
+      "qwen3": "F F mpeg"
     },
     {
       "pattern": "jq",
-      "pocket": "jay cue"
+      "pocket": "jay cue",
+      "qwen3": "J Q"
     },
     {
       "pattern": "sd",
-      "pocket": "ess dee"
+      "pocket": "ess dee",
+      "qwen3": "S D"
     },
     {
       "pattern": "awk",
@@ -305,47 +355,58 @@
     },
     {
       "pattern": "TTL",
-      "pocket": "tee tee el"
+      "pocket": "tee tee el",
+      "qwen3": "T T L"
     },
     {
       "pattern": "AEC",
-      "pocket": "Ae ee see"
+      "pocket": "Ae ee see",
+      "qwen3": "A E C"
     },
     {
       "pattern": "VAD",
-      "pocket": "vee Ae dee"
+      "pocket": "vee Ae dee",
+      "qwen3": "V A D"
     },
     {
       "pattern": "RMS",
-      "pocket": "ar em ess"
+      "pocket": "ar em ess",
+      "qwen3": "R M S"
     },
     {
       "pattern": "PCM",
-      "pocket": "pee see em"
+      "pocket": "pee see em",
+      "qwen3": "P C M"
     },
     {
       "pattern": "FFT",
-      "pocket": "ef ef tee"
+      "pocket": "ef ef tee",
+      "qwen3": "F F T"
     },
     {
       "pattern": "RTK",
-      "pocket": "ar tee kay"
+      "pocket": "ar tee kay",
+      "qwen3": "R T K"
     },
     {
       "pattern": "AG",
-      "pocket": "Ae jee"
+      "pocket": "Ae jee",
+      "qwen3": "A G"
     },
     {
       "pattern": "AGT",
-      "pocket": "Ae jee tee"
+      "pocket": "Ae jee tee",
+      "qwen3": "A G T"
     },
     {
       "pattern": "AGS",
-      "pocket": "Ae jee ess"
+      "pocket": "Ae jee ess",
+      "qwen3": "A G S"
     },
     {
       "pattern": "AGA",
-      "pocket": "Ae jee Ae"
+      "pocket": "Ae jee Ae",
+      "qwen3": "A G A"
     },
     {
       "pattern": "2FA",
@@ -417,7 +478,8 @@
     },
     {
       "pattern": "IS",
-      "replacement": "is"
+      "pocket": "is",
+      "qwen3": "is"
     },
     {
       "pattern": "TODO",
@@ -429,23 +491,28 @@
     },
     {
       "pattern": "md",
-      "pocket": "em dee"
+      "pocket": "em dee",
+      "qwen3": "M D"
     },
     {
       "pattern": "KB",
-      "pocket": "kilobytes"
+      "pocket": "kilobytes",
+      "qwen3": "K B"
     },
     {
       "pattern": "MB",
-      "pocket": "megs"
+      "pocket": "megs",
+      "qwen3": "M B"
     },
     {
       "pattern": "GB",
-      "pocket": "gigs"
+      "pocket": "gigs",
+      "qwen3": "G B"
     },
     {
       "pattern": "TB",
-      "pocket": "terabytes"
+      "pocket": "terabytes",
+      "qwen3": "T B"
     },
     {
       "pattern": "sitrep",
@@ -455,11 +522,13 @@
     {
       "pattern": "Cmd",
       "pocket": "see em dee",
+      "qwen3": "C M D",
       "case_sensitive": false
     },
     {
       "pattern": "Ctrl",
       "pocket": "Control",
+      "qwen3": "Control",
       "case_sensitive": false
     },
     {
@@ -480,6 +549,7 @@
     {
       "pattern": "SHA256",
       "pocket": "sha 256",
+      "qwen3": "SHA 256",
       "case_sensitive": false
     },
     {
@@ -498,39 +568,48 @@
     },
     {
       "pattern": "SMTP",
-      "pocket": "S M T P"
+      "pocket": "S M T P",
+      "qwen3": "S M T P"
     },
     {
       "pattern": "OIDC",
-      "pocket": "O I D C"
+      "pocket": "O I D C",
+      "qwen3": "O I D C"
     },
     {
       "pattern": "UUID",
-      "pocket": "you you eye dee"
+      "pocket": "you you eye dee",
+      "qwen3": "U U I D"
     },
     {
       "pattern": "UUIDs",
-      "pocket": "you you eye dees"
+      "pocket": "you you eye dees",
+      "qwen3": "U U I Ds"
     },
     {
       "pattern": "GUID",
-      "pocket": "gwidd"
+      "pocket": "gwidd",
+      "qwen3": "G U I D"
     },
     {
       "pattern": "GUIDs",
-      "pocket": "gwidds"
+      "pocket": "gwidds",
+      "qwen3": "G U I Ds"
     },
     {
       "pattern": "WASM",
-      "pocket": "waz-em"
+      "pocket": "waz-em",
+      "qwen3": "W A S M"
     },
     {
       "pattern": "pnpm",
-      "pocket": "pee en pee em"
+      "pocket": "pee en pee em",
+      "qwen3": "P N P M"
     },
     {
       "pattern": "REPL",
-      "pocket": "repple"
+      "pocket": "repple",
+      "qwen3": "R E P L"
     },
     {
       "pattern": "Supabase",
@@ -569,6 +648,7 @@
     {
       "pattern": "ESLint",
       "pocket": "E S lint",
+      "qwen3": "E S Lint",
       "case_sensitive": false
     },
     {
@@ -587,24 +667,29 @@
     {
       "pattern": "utf-8",
       "pocket": "U T F 8",
+      "qwen3": "U T F 8",
       "case_sensitive": false
     },
     {
       "pattern": "UTF-8",
-      "pocket": "U T F 8"
+      "pocket": "U T F 8",
+      "qwen3": "U T F 8"
     },
     {
       "pattern": "GIL",
-      "pocket": "G I L"
+      "pocket": "G I L",
+      "qwen3": "G I L"
     },
     {
       "pattern": "ps1",
       "pocket": "P S 1",
+      "qwen3": "P S 1",
       "case_sensitive": false
     },
     {
       "pattern": "emlx",
       "pocket": "ee em el ex",
+      "qwen3": "E M L X",
       "case_sensitive": false
     },
     {

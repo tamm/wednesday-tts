@@ -403,7 +403,7 @@ def _load_normalize_deps() -> tuple[list, dict]:
         dict_path = os.path.join(base, "tts-dictionary.json")
         filenames_path = os.path.join(base, "tts-filenames.json")
         if os.path.exists(dict_path):
-            dictionary = load_dictionary(dict_path, backend="pocket")
+            dictionary = load_dictionary(dict_path, backend=_active_backend_name or "pocket")
         if os.path.exists(filenames_path):
             filenames_dict = load_filenames_dict(filenames_path)
         if dictionary or filenames_dict:
