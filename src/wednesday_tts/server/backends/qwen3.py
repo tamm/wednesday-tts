@@ -57,6 +57,9 @@ class Qwen3TTSBackend(TTSBackend):
         seed: int | None = None,
         instruct: str = "",
         temperature: float = 0.75,
+        repetition_penalty: float = 1.2,
+        top_p: float = 0.85,
+        top_k: int = 30,
     ) -> None:
         self._model_id = model_id or os.environ.get(
             "QWEN3_TTS_MODEL", "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
@@ -66,6 +69,9 @@ class Qwen3TTSBackend(TTSBackend):
         self._speed = speed
         self._seed = seed if seed is not None else 7  # always pin voice
         self._temperature = temperature
+        self._repetition_penalty = repetition_penalty
+        self._top_p = top_p
+        self._top_k = top_k
         self._instruct = instruct
         self._model = None
         self._lock = threading.Lock()
@@ -138,9 +144,13 @@ class Qwen3TTSBackend(TTSBackend):
                     text=text,
                     speed=use_speed,
                     temperature=self._temperature,
+                    repetition_penalty=self._repetition_penalty,
+                    top_p=self._top_p,
+                    top_k=self._top_k,
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     instruct=use_instruct,
+                    split_pattern="",  # we handle chunking in the daemon
                 ))
 
             if not chunks:
@@ -203,9 +213,13 @@ class Qwen3TTSBackend(TTSBackend):
                 for result in self._model.generate(
                     text=text,
                     temperature=self._temperature,
+                    repetition_penalty=self._repetition_penalty,
+                    top_p=self._top_p,
+                    top_k=self._top_k,
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     instruct=use_instruct,
+                    split_pattern="",  # we handle chunking in the daemon
                     stream=True,
                     streaming_interval=1.5,
                 ):
