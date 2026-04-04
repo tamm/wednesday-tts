@@ -46,7 +46,7 @@ class Qwen3TTSBackend(TTSBackend):
     """
 
     sample_rate = 24000
-    supports_streaming = False  # disabled: per-chunk volume inconsistency
+    supports_streaming = False  # mid-word cuts at streaming_interval boundaries cause choppy audio
 
     def __init__(
         self,
@@ -242,7 +242,9 @@ class Qwen3TTSBackend(TTSBackend):
                     total_samples += arr.size
 
                     if playback_queue is not None:
-                        playback_queue.put(arr)
+                        # First chunk carries subtitle text; rest are None
+                        subtitle = text if n_chunks == 1 else None
+                        playback_queue.put((arr, subtitle))
                     else:
                         collected.append(arr)
 
