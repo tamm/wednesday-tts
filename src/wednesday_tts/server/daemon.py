@@ -29,6 +29,7 @@ import numpy as np
 import sounddevice as sd  # type: ignore[import]
 
 from .backends import REGISTRY, TTSBackend
+from ..normalize.chunking import chunk_text_server
 
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
@@ -441,6 +442,7 @@ _order_lock = threading.Lock()
 _order_cond = threading.Condition(_order_lock)
 _next_seq = 0       # sequence number the playback queue expects next
 _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
+_skip_gen = 0       # incremented on SKIP; playback write loop bails but queue/renders survive
 
 playback_queue: queue.Queue = queue.Queue()
 _current_pan: float = 0.5  # stereo pan: 0.0=left, 0.5=centre, 1.0=right
@@ -475,6 +477,18 @@ def _stop_playback() -> None:
         _next_seq = 0
         _order_cond.notify_all()
     # Kill spatial stream so head-tracked audio stops immediately
+    _kill_spatial_stream()
+
+
+def _skip_current() -> None:
+    """Skip the currently playing audio item. Queue and in-flight renders survive.
+
+    Increments _skip_gen so the playback write loop bails on the current chunk,
+    but does NOT drain the queue or touch _stop_gen. The next queued item
+    plays immediately.
+    """
+    global _skip_gen
+    _skip_gen += 1
     _kill_spatial_stream()
 
 
@@ -1095,15 +1109,20 @@ def playback_worker(backend: TTSBackend) -> None:
                     else:
                         _send_overlay({"type": "playback_started"})
                     write_gen = _stop_gen
+                    write_skip = _skip_gen
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
+
+                    def _should_bail() -> bool:
+                        return _stop_gen != write_gen or _skip_gen != write_skip
+
                     # Use non-blocking IO to avoid indefinite stalls on BT buffer pressure
                     fd = proc.stdin.fileno()
                     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
                     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
                     try:
                         _spatial_write_t0 = time.monotonic()
-                        while offset < len(spatial_audio) and _stop_gen == write_gen:
+                        while offset < len(spatial_audio) and not _should_bail():
                             end = min(offset + CHUNK, len(spatial_audio))
                             chunk_bytes = spatial_audio[offset:end].tobytes()
                             written = 0
@@ -1111,7 +1130,7 @@ def playback_worker(backend: TTSBackend) -> None:
                             while written < len(chunk_bytes):
                                 if time.monotonic() > deadline:
                                     raise OSError("spatial write timed out (10s)")
-                                if _stop_gen != write_gen:
+                                if _should_bail():
                                     break
                                 try:
                                     n = os.write(fd, chunk_bytes[written:])
@@ -1125,10 +1144,10 @@ def playback_worker(backend: TTSBackend) -> None:
                         _write_elapsed = time.monotonic() - _spatial_write_t0
                         _play_dur = len(spatial_audio) / backend.sample_rate
                         _wait = _play_dur - _write_elapsed
-                        if _wait > 0 and _stop_gen == write_gen:
+                        if _wait > 0 and not _should_bail():
                             print(f"[playback] spatial: waiting {_wait:.1f}s for playback to finish", flush=True)
                             _wait_end = time.monotonic() + _wait
-                            while time.monotonic() < _wait_end and _stop_gen == write_gen:
+                            while time.monotonic() < _wait_end and not _should_bail():
                                 time.sleep(min(0.2, _wait_end - time.monotonic()))
                                 _playback_heartbeat = time.monotonic()
                         spatial_ok = True
@@ -1174,23 +1193,27 @@ def playback_worker(backend: TTSBackend) -> None:
                 _send_overlay({"type": "playback_started"})
             WRITE_CHUNK = int(device_rate * 0.1)
             write_gen = _stop_gen
+            write_skip = _skip_gen
             flat = audio.reshape(-1)
             offset = 0
             is_last = playback_queue.empty()
+
+            def _should_bail_pa() -> bool:
+                return _stop_gen != write_gen or _skip_gen != write_skip
 
             pan_angle = pan * (np.pi / 2.0)
             gain_l = np.float32(np.cos(pan_angle))
             gain_r = np.float32(np.sin(pan_angle))
 
             try:
-                while offset < len(flat) and _stop_gen == write_gen:
+                while offset < len(flat) and not _should_bail_pa():
                     end = min(offset + WRITE_CHUNK, len(flat))
                     mono = flat[offset:end]
                     stereo = np.column_stack((mono * gain_l, mono * gain_r))
                     out_stream.write(stereo)
                     _playback_heartbeat = time.monotonic()
                     offset = end
-                if is_last and _stop_gen == write_gen:
+                if is_last and not _should_bail_pa():
                     silence = np.zeros((int(device_rate * 0.1), 2), dtype=np.float32)
                     out_stream.write(silence)
             except Exception as exc:
@@ -1255,6 +1278,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # ── STOP ──────────────────────────────────────────────────────────
         if message == "STOP":
             _stop_playback()
+            conn.send(b"ok")
+            return
+
+        # ── SKIP ──────────────────────────────────────────────────────────
+        if message == "SKIP":
+            _skip_current()
             conn.send(b"ok")
             return
 
@@ -1478,10 +1507,44 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 conn.send(b"ok")
                 return
         else:
-            print(f"[req] BATCH seq={seq}, {len(text)} chars, speed={speed}, voice={voice}, pan={pan:.2f}", flush=True)
-            audio = _render_segments(segments, backend, speed, gen_snap, default_voice=voice)
+            # ── Chunked BATCH: split long text, render & enqueue each chunk ──
+            # For short text (single chunk), this collapses to the old behaviour.
+            text_chunks = chunk_text_server(text, min_size=120, max_size=300)
+            print(
+                f"[req] BATCH seq={seq}, {len(text)} chars → {len(text_chunks)} chunk(s), "
+                f"speed={speed}, voice={voice}, pan={pan:.2f}",
+                flush=True,
+            )
 
-        # ── Enqueue in order ──────────────────────────────────────────────
+            total_audio_secs = 0.0
+            for ci, chunk_text in enumerate(text_chunks):
+                if _stop_gen != gen_snap:
+                    break
+                # Text is already normalised — just wrap in a segment tuple
+                chunk_segments = [(None, None, chunk_text)]
+                chunk_audio = _render_segments(
+                    chunk_segments, backend, speed, gen_snap, default_voice=voice,
+                )
+                if chunk_audio is not None and _stop_gen == gen_snap:
+                    playback_queue.put((chunk_audio, chunk_text))
+                    total_audio_secs += len(chunk_audio) / backend.sample_rate
+                    print(
+                        f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
+                        f"({len(chunk_audio) / backend.sample_rate:.1f}s)",
+                        flush=True,
+                    )
+
+            with _order_cond:
+                _next_seq = 0
+                _order_cond.notify_all()
+
+            if total_audio_secs > 0:
+                _stat_inc("audio_seconds_total", total_audio_secs)
+            _stat_inc("requests_completed")
+            conn.send(b"ok")
+            return
+
+        # ── Enqueue in order (streaming path) ─────────────────────────────
         if seq is not None:
             with _order_cond:
                 if _stop_gen != gen_snap:

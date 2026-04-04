@@ -64,13 +64,13 @@ class Qwen3TTSBackend(TTSBackend):
         self._voice = voice  # path to default reference audio WAV
         self._voice_text = voice_text  # transcription of default reference audio
         self._speed = speed
-        self._seed = seed
-        self._instruct = instruct
+        self._seed = seed if seed is not None else 7  # always pin voice
         self._temperature = temperature
+        self._instruct = instruct
         self._model = None
         self._lock = threading.Lock()
 
-    def _resolve_voice(self, voice: str | None) -> tuple[str | None, str | None, int | None]:
+    def _resolve_voice(self, voice: str | None) -> tuple[str | None, str | None, int]:
         """Resolve a voice parameter into (ref_audio, ref_text, seed).
 
         Voice resolution order:
@@ -80,8 +80,10 @@ class Qwen3TTSBackend(TTSBackend):
            → log warning, fall back to configured default voice
         4. voice is None → use configured default voice with fixed seed
 
+        Seed is NEVER None — always returns a valid int to prevent random voice.
+
         Returns:
-            (ref_audio_path | None, ref_text | None, seed | None)
+            (ref_audio_path | None, ref_text | None, seed)
         """
         if voice is not None:
             # Seed tag: "seed:42"
@@ -129,17 +131,16 @@ class Qwen3TTSBackend(TTSBackend):
 
         try:
             with self._lock:
-                if seed is not None:
-                    import mlx.core as mx  # type: ignore[import]
-                    mx.random.seed(seed)
+                import mlx.core as mx  # type: ignore[import]
+                mx.random.seed(seed)
 
                 chunks = list(self._model.generate(
                     text=text,
                     speed=use_speed,
+                    temperature=self._temperature,
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     instruct=use_instruct,
-                    temperature=self._temperature,
                 ))
 
             if not chunks:
@@ -196,16 +197,15 @@ class Qwen3TTSBackend(TTSBackend):
 
         try:
             with self._lock:
-                if seed is not None:
-                    import mlx.core as mx  # type: ignore[import]
-                    mx.random.seed(seed)
+                import mlx.core as mx  # type: ignore[import]
+                mx.random.seed(seed)
 
                 for result in self._model.generate(
                     text=text,
+                    temperature=self._temperature,
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     instruct=use_instruct,
-                    temperature=self._temperature,
                     stream=True,
                     streaming_interval=1.5,
                 ):

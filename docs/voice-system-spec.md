@@ -102,27 +102,37 @@ Default fallback voice: `fantine` (configurable via `fallback_voice`).
 
 **Class:** `Qwen3TTSBackend`
 **Sample rate:** 24000 Hz (updated from model after load)
-**Streaming:** declared `True` but generation is blocking (wrapped in `list()` call)
+**Streaming:** disabled (`supports_streaming = False`) due to per-chunk volume inconsistency
 
 Alibaba's Qwen3-TTS via mlx-audio. MLX-native, Apple Silicon only.
 
 **Voice types:**
 
-- Audio file paths (`.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`, `.aac`, `.opus`): used as `ref_audio` for in-context learning (ICL) voice cloning.
-- Seed tags (`seed:N`): set `mx.random.seed(N)` before generation, no ref_audio. Produces deterministic output.
+- Audio file paths (`.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`, `.aac`, `.opus`): used as `ref_audio` for in-context learning (ICL) voice cloning. **This is the only reliable way to get consistent voice.**
+- Seed tags (`seed:N`): set `mx.random.seed(N)` before generation. **Seeds do NOT pin voice identity** — they only make identical text reproducible. Different text with the same seed produces noticeably different voice character because the voice emerges from autoregressive token sampling (`categorical_sampling` with top_k/top_p) and drifts with text content and length.
+
+**Voice consistency — critical notes:**
+
+Seeds are NOT sufficient for voice consistency. The Base model's `categorical_sampling` function is JIT-compiled (`@mx.compile`) with its own random state management. Even with `mx.random.seed(N)` called before every generate, the resulting voice varies significantly across different text inputs. Tested: same seed across 5 different sentences showed RMS variation of 0.025–0.062 (2.5x range). With ref_audio, the same test showed 0.058–0.078 (1.3x range).
+
+The correct approach for consistent voice is **always provide ref_audio**. The Base model is designed for voice cloning via ICL — without a reference sample, voice identity is effectively random. Voice pool entries for qwen3 should be WAV file paths, not seed tags.
+
+Some seeds also land on Chinese-trained speaker profiles, causing English text to be spoken with Chinese accent or numbers read in Chinese. This is because the model is multilingual (10 languages) and the random seed selects from the full speaker distribution.
 
 **Voice resolution order** (`_resolve_voice`):
 
-1. `seed:N` tag → seed-based generation, no ref_audio
-2. Recognised audio file → ref_audio for ICL; `ref_text` only set if voice matches the configured default voice
+1. `seed:N` tag → seed-based generation, no ref_audio (unreliable voice identity)
+2. Recognised audio file → ref_audio for ICL (reliable voice identity)
 3. Unrecognised string (e.g. pocket safetensors, predefined name) → log warning, fall back to configured default
 4. `None` → use configured default voice and seed
+
+**Temperature:** Controls sampling randomness. Default 0.9 is too wild — voices shift dramatically. Set to 0.75 for more consistent output. Online recommendation is 0.8.
 
 **Instruct parameter:** optional style/emotion string passed to the model. Can be set as a default in config (`instruct` key) or per-request via guillemet pipe syntax. Controls speaking style — e.g. `"calm and warm"`, `"enthusiastic"`.
 
 **Speed:** The `speed` parameter is accepted by `model.generate()` but **ignored** — mlx-audio's source says "not directly supported yet". No native speed control. Soundstretch post-processing is on hold (sounds unnatural).
 
-**Config keys:** `model_id`, `voice`, `voice_text`, `speed` (currently no-op), `seed`, `instruct`
+**Config keys:** `model_id`, `voice`, `voice_text`, `speed` (currently no-op), `seed`, `temperature`, `instruct`
 
 ---
 
