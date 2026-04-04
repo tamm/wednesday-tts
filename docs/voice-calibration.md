@@ -155,9 +155,20 @@ Higher precision models (6bit, 8bit) produce less degenerate audio at the same s
 With daemon-side chunking, each text chunk is an independent `model.generate()` call. ICL voice cloning re-runs from scratch per chunk, so the voice can shift between chunks — like the same person switching dialects.
 
 This is worse on 4-bit and with shorter chunks. Potential mitigations:
-- **Streaming mode** (`supports_streaming = True`): one continuous generation call, so the model maintains voice state throughout. Currently disabled due to per-chunk volume inconsistency, but may work now that voice pinning is in place.
 - **Longer chunks**: more context per generation = more stable voice, but higher latency.
 - **Higher precision model**: less quantisation noise = less drift.
+
+### Streaming mode (tested and disabled)
+
+`supports_streaming = True` on the qwen3 backend enables mlx-audio's streaming output, which emits audio every `streaming_interval` seconds (default 1.5s). This was tested on 2026-04-04.
+
+Results:
+- RTF improved (0.85-0.93 vs 1.0-1.5 in batch mode) — generation is faster
+- Voice consistency improved (one continuous generation, no per-chunk ICL re-cloning)
+- But: 35-43 tiny audio fragments per request. The interval is time-based, not linguistically aligned, so cuts happen mid-word. This causes choppy pacing, mid-word pauses, and elongated syllables.
+- Degenerate audio still appeared on longer texts, suggesting the model degrades regardless of mode.
+
+Streaming mode is not viable until mlx-audio supports word-boundary-aligned chunking. The batch path with sentence-boundary chunking produces better listening quality despite slightly worse RTF.
 
 ---
 
