@@ -129,6 +129,38 @@ Set in config:
 
 ---
 
+## Sampling parameters for audio quality
+
+Beyond temperature, three parameters control degenerate (garbled/repetitive) audio. All are passed to `model.generate()` and configurable in `tts-config.json` under `models.qwen3`.
+
+| Parameter | mlx-audio default | Description |
+|-----------|-------------------|-------------|
+| `repetition_penalty` | 1.05 | Penalises repeated speech tokens. Higher = less garbled loops. |
+| `top_p` | 1.0 | Nucleus sampling cutoff. Lower = cuts low-probability garbage tokens. |
+| `top_k` | 50 | Candidate pool size. Lower = tighter, less noise. |
+
+### Per-hardware recommendations
+
+4-bit quantisation introduces sampling noise. Weaker hardware needs stricter settings to compensate.
+
+| Hardware | repetition_penalty | top_p | top_k | Notes |
+|----------|-------------------|-------|-------|-------|
+| M1 (Erin) | 1.35 | 0.7 | 20 | Aggressive. Required for 0.6B-4bit at real-time. |
+| Newer chips | 1.2 | 0.85 | 30 | Can afford looser settings, especially with 6bit/8bit models. |
+
+Higher precision models (6bit, 8bit) produce less degenerate audio at the same settings, so you can relax the penalties.
+
+### Voice drift across chunks
+
+With daemon-side chunking, each text chunk is an independent `model.generate()` call. ICL voice cloning re-runs from scratch per chunk, so the voice can shift between chunks — like the same person switching dialects.
+
+This is worse on 4-bit and with shorter chunks. Potential mitigations:
+- **Streaming mode** (`supports_streaming = True`): one continuous generation call, so the model maintains voice state throughout. Currently disabled due to per-chunk volume inconsistency, but may work now that voice pinning is in place.
+- **Longer chunks**: more context per generation = more stable voice, but higher latency.
+- **Higher precision model**: less quantisation noise = less drift.
+
+---
+
 ## Repeating the process on a new machine
 
 1. Install the model if not cached: first `daemon.load()` call will download it.
