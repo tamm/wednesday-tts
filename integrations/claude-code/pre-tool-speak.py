@@ -175,6 +175,10 @@ def main() -> None:
     try:
         input_data = json.load(sys.stdin)
 
+        # Teammate/subagent sessions have agent_id set — only the main session speaks
+        if input_data.get("agent_id"):
+            sys.exit(0)
+
         session_id = input_data.get("session_id", "unknown")
         cwd = input_data.get("cwd", "")
         transcript_path = input_data.get("transcript_path")

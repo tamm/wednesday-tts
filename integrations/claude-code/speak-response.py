@@ -205,8 +205,13 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
-    # Teammate/subagent sessions have agent_id set — only the main session speaks
-    if payload.get("agent_id"):
+    # Log payload keys for debugging teammate suppression
+    session_id = payload.get("session_id", "")
+    with open("/tmp/tts-hook-debug.log", "a") as _dbg:
+        _dbg.write(f"{time.strftime('%H:%M:%S')} keys={sorted(payload.keys())}\n")
+
+    # Teammate/subagent sessions — only the main session speaks
+    if payload.get("agent_id") or payload.get("agent_name") or payload.get("team_name"):
         sys.exit(0)
 
     session_id = payload.get("session_id", "unknown")
