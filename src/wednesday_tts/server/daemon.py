@@ -28,6 +28,8 @@ import time
 import numpy as np
 import sounddevice as sd  # type: ignore[import]
 
+from wednesday_tts.platform import suppress_dictation, unsuppress_dictation
+
 from .backends import REGISTRY, TTSBackend
 from ..normalize.chunking import chunk_text_server
 
@@ -443,6 +445,9 @@ _order_cond = threading.Condition(_order_lock)
 _next_seq = 0       # sequence number the playback queue expects next
 _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
 _skip_gen = 0       # incremented on SKIP; playback write loop bails but queue/renders survive
+_msg_id_counter = 0         # monotonic message ID; incremented per request
+_playing_msg_id: int = -1   # msg_id of the chunk currently being played
+_skip_msg_id: int = -1      # msg_id that was last skipped; generation threads bail if they match
 
 playback_queue: queue.Queue = queue.Queue()
 _current_pan: float = 0.5  # stereo pan: 0.0=left, 0.5=centre, 1.0=right
@@ -453,6 +458,7 @@ _active_backend_name: str = ""
 
 # Playback liveness tracking — lets watchdogs detect a wedged out_stream.write()
 _playback_heartbeat: float = 0.0     # monotonic time of last successful stream write
+_level_last_sent: float = 0.0        # monotonic time of last playback_level overlay event
 _playback_stream_ref: sd.OutputStream | None = None  # current stream; watchdog can abort this
 _playback_stream_lock = threading.Lock()  # protects _playback_stream_ref
 
@@ -478,22 +484,44 @@ def _stop_playback() -> None:
         _order_cond.notify_all()
     # Kill spatial stream so head-tracked audio stops immediately
     _kill_spatial_stream()
+    unsuppress_dictation()
 
 
 def _skip_current() -> None:
-    """Skip the currently playing audio item. Queue and in-flight renders survive.
+    """Skip the entire current message (all remaining chunks with the same msg_id).
 
-    Increments _skip_gen so the playback write loop bails on the current chunk,
-    but does NOT drain the queue or touch _stop_gen. The next queued item
-    plays immediately.
+    Drains queued items belonging to the same message FIRST, then bails the
+    current write loop. This ordering prevents the playback worker from
+    grabbing the next same-message chunk before we can remove it.
+    Also sets _skip_msg_id so in-flight generation threads bail.
     """
-    global _skip_gen
+    global _skip_gen, _skip_msg_id
+    # Drain items belonging to the currently playing message
+    skip_id = _playing_msg_id
+    _skip_msg_id = skip_id
+    requeue = []
+    while True:
+        try:
+            item = playback_queue.get_nowait()
+            playback_queue.task_done()
+            if item is None:
+                requeue.append(item)
+            elif isinstance(item, tuple) and len(item) >= 3 and item[2] == skip_id:
+                continue  # discard — same message
+            else:
+                requeue.append(item)
+        except queue.Empty:
+            break
+    for item in requeue:
+        playback_queue.put(item)
+    # Now bail the currently playing chunk
     _skip_gen += 1
     _kill_spatial_stream()
 
 
 def _sigusr1_handler(sig: int, frame) -> None:
     """SIGUSR1 = stop talking immediately. Sent by stop-tts.sh."""
+    print("[cmd] SIGUSR1 received, stopping playback", flush=True)
     _stop_playback()
 
 
@@ -937,10 +965,9 @@ def _send_subtitle(text: str, audio_dur: float = 0) -> None:
 
 
 def _send_overlay_idle() -> None:
-    """Tell the overlay we're done speaking — atomic batch."""
+    """Tell the overlay we're done speaking."""
     _send_overlay(
         {"type": "playback_stopped"},
-        {"type": "state", "state": "idle"},
     )
 
 
@@ -989,7 +1016,7 @@ def playback_worker(backend: TTSBackend) -> None:
     Mode is selected on device change. SpatialStream is only used when
     a Bluetooth headphone is the default output device.
     """
-    global _playback_heartbeat
+    global _playback_heartbeat, _level_last_sent
     out_stream: sd.OutputStream | None = None
     device_rate = _get_device_samplerate(backend.sample_rate)
     use_spatial = False
@@ -1053,14 +1080,19 @@ def playback_worker(backend: TTSBackend) -> None:
         if item is None:
             break
 
-        # Unpack (audio, subtitle_text) tuple or bare array (from streaming backends)
+        # Unpack (audio, subtitle_text, msg_id) tuple or bare array
+        global _playing_msg_id
         if isinstance(item, tuple):
-            item, subtitle_text = item
+            if len(item) >= 3:
+                item, subtitle_text, _playing_msg_id = item[0], item[1], item[2]
+            else:
+                item, subtitle_text = item[0], item[1]
         else:
             subtitle_text = None
 
         _chunk_t0 = time.monotonic()
         _playback_heartbeat = time.monotonic()
+        suppress_dictation()
         try:
             # Re-detect mode every chunk — CoreAudio query is fast (no subprocess,
             # no PA reinit) so there's no reason to gate this on an event.
@@ -1212,6 +1244,11 @@ def playback_worker(backend: TTSBackend) -> None:
                     stereo = np.column_stack((mono * gain_l, mono * gain_r))
                     out_stream.write(stereo)
                     _playback_heartbeat = time.monotonic()
+                    # Send peak level to overlay at ~10 Hz
+                    if _playback_heartbeat - _level_last_sent >= 0.1:
+                        peak = float(np.max(np.abs(mono)))
+                        _send_overlay({"type": "playback_level", "level": min(peak, 1.0)})
+                        _level_last_sent = _playback_heartbeat
                     offset = end
                 if is_last and not _should_bail_pa():
                     silence = np.zeros((int(device_rate * 0.1), 2), dtype=np.float32)
@@ -1230,9 +1267,11 @@ def playback_worker(backend: TTSBackend) -> None:
         finally:
             playback_queue.task_done()
             if playback_queue.empty():
+                unsuppress_dictation()
                 _send_overlay_idle()
 
     # Shutdown
+    unsuppress_dictation()
     _kill_spatial_stream()
     if out_stream is not None:
         try:
@@ -1277,12 +1316,14 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── STOP ──────────────────────────────────────────────────────────
         if message == "STOP":
+            print(f"[cmd] STOP received, draining queue", flush=True)
             _stop_playback()
             conn.send(b"ok")
             return
 
         # ── SKIP ──────────────────────────────────────────────────────────
         if message == "SKIP":
+            print(f"[cmd] SKIP received, msg_id={_playing_msg_id}", flush=True)
             _skip_current()
             conn.send(b"ok")
             return
@@ -1472,6 +1513,11 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # ── Set stereo pan for this request ──────────────────────────────
         _current_pan = pan
 
+        # ── Assign message ID for skip tracking ──────────────────────────
+        global _msg_id_counter
+        _msg_id_counter += 1
+        msg_id = _msg_id_counter
+
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
 
@@ -1486,10 +1532,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         if use_streaming:
             print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={voice}, pan={pan:.2f}", flush=True)
             _gs = gen_snap  # capture for closure
+            _mid = msg_id   # capture for closure
             gs_kwargs = {
                 "speed": speed,
                 "playback_queue": playback_queue,
-                "stop_check": lambda: _stop_gen != _gs,
+                "stop_check": lambda: _stop_gen != _gs or _skip_msg_id == _mid,
+                "msg_id": msg_id,
             }
             if instruct:
                 gs_kwargs["instruct"] = instruct
@@ -1518,15 +1566,15 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
             total_audio_secs = 0.0
             for ci, chunk_text in enumerate(text_chunks):
-                if _stop_gen != gen_snap:
+                if _stop_gen != gen_snap or _skip_msg_id == msg_id:
                     break
                 # Text is already normalised — just wrap in a segment tuple
                 chunk_segments = [(None, None, chunk_text)]
                 chunk_audio = _render_segments(
                     chunk_segments, backend, speed, gen_snap, default_voice=voice,
                 )
-                if chunk_audio is not None and _stop_gen == gen_snap:
-                    playback_queue.put((chunk_audio, chunk_text))
+                if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
+                    playback_queue.put((chunk_audio, chunk_text, msg_id))
                     total_audio_secs += len(chunk_audio) / backend.sample_rate
                     print(
                         f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
@@ -1547,12 +1595,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # ── Enqueue in order (streaming path) ─────────────────────────────
         if seq is not None:
             with _order_cond:
-                if _stop_gen != gen_snap:
+                if _stop_gen != gen_snap or _skip_msg_id == msg_id:
                     conn.send(b"ok")
                     return
                 deadline = time.monotonic() + 5
                 while _next_seq != seq:
-                    if _stop_gen != gen_snap:
+                    if _stop_gen != gen_snap or _skip_msg_id == msg_id:
                         conn.send(b"ok")
                         return
                     remaining = deadline - time.monotonic()
@@ -1561,15 +1609,15 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                         _next_seq = seq
                         break
                     _order_cond.wait(timeout=min(remaining, 10))
-                if _stop_gen != gen_snap:
+                if _stop_gen != gen_snap or _skip_msg_id == msg_id:
                     conn.send(b"ok")
                     return
                 if audio is not None:
-                    playback_queue.put((audio, text))
+                    playback_queue.put((audio, text, msg_id))
                 _next_seq = 0
                 _order_cond.notify_all()
-        elif audio is not None:
-            playback_queue.put((audio, text))
+        elif audio is not None and _skip_msg_id != msg_id:
+            playback_queue.put((audio, text, msg_id))
 
         if audio is not None:
             _stat_inc("audio_seconds_total", len(audio) / backend.sample_rate)
@@ -1718,7 +1766,7 @@ def main() -> None:
                 "Warning. Competing TTS services detected at startup. "
                 "Check the daemon log for details."
             )
-            playback_queue.put((audio, None))
+            playback_queue.put((audio, None, -1))
         except Exception:
             pass  # logged already, don't block startup
 

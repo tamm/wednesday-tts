@@ -187,6 +187,7 @@ class Qwen3TTSBackend(TTSBackend):
     def generate_streaming(
         self, text: str, speed: float | None = None, voice: str | None = None,
         instruct: str | None = None, playback_queue=None, stop_check=None,
+        msg_id: int = -1,
     ) -> "np.ndarray | None":
         """Generate audio with streaming — yield chunks to playback_queue as they arrive.
 
@@ -244,7 +245,7 @@ class Qwen3TTSBackend(TTSBackend):
                     if playback_queue is not None:
                         # First chunk carries subtitle text; rest are None
                         subtitle = text if n_chunks == 1 else None
-                        playback_queue.put((arr, subtitle))
+                        playback_queue.put((arr, subtitle, msg_id))
                     else:
                         collected.append(arr)
 

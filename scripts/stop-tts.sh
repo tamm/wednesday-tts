@@ -9,6 +9,8 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "mingw"* || "$OSTYPE" == "cygwin" ]]; 
     exit 0
 fi
 
+echo "$(date '+%H:%M:%S') stop-tts.sh called with args: $*" >> /tmp/stop-tts-debug.log
+
 if [[ "$1" == "skip" ]]; then
     python3 -c "
 import socket

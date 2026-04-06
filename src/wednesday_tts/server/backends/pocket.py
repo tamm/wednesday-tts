@@ -105,7 +105,8 @@ class PocketTTSBackend(TTSBackend):
         return arr
 
     def generate_streaming(self, text: str, speed: float | None = None,
-                           playback_queue=None, stop_check=None, voice: str | None = None) -> "np.ndarray | None":
+                           playback_queue=None, stop_check=None, voice: str | None = None,
+                           msg_id: int = -1) -> "np.ndarray | None":
         """Generate audio via streaming inference, pipe through soundstretch, queue chunks.
 
         If playback_queue is provided and speed != 1.0:
@@ -132,11 +133,13 @@ class PocketTTSBackend(TTSBackend):
         if playback_queue is not None:
             if needs_speed:
                 return self._generate_streaming_pipe(
-                    text, use_speed, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT, voice_state=voice_state
+                    text, use_speed, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT,
+                    voice_state=voice_state, msg_id=msg_id,
                 )
             # speed ~= 1.0: queue raw chunks directly, no soundstretch
             return self._generate_streaming_direct(
-                text, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT, voice_state=voice_state
+                text, playback_queue, stop_check, _FIRST_CHUNK_TIMEOUT,
+                voice_state=voice_state, msg_id=msg_id,
             )
 
         # No queue: collect all chunks, concatenate, return
@@ -175,7 +178,8 @@ class PocketTTSBackend(TTSBackend):
         return result
 
     def _generate_streaming_direct(self, text: str, playback_queue,
-                                    stop_check, first_chunk_timeout: float, voice_state=None) -> None:
+                                    stop_check, first_chunk_timeout: float,
+                                    voice_state=None, msg_id: int = -1) -> None:
         """Stream model chunks directly into playback_queue (no soundstretch)."""
         gen_start = time.monotonic()
         total_samples = 0
@@ -197,7 +201,7 @@ class PocketTTSBackend(TTSBackend):
                 if arr.ndim > 1:
                     arr = arr.flatten()
                 if arr.size > 0:
-                    playback_queue.put(arr.astype(np.float32))
+                    playback_queue.put((arr.astype(np.float32), None, msg_id))
                     total_samples += arr.size
                     n_chunks += 1
 
@@ -207,7 +211,8 @@ class PocketTTSBackend(TTSBackend):
 
     def _generate_streaming_pipe(self, text: str, speed: float,
                                   playback_queue, stop_check,
-                                  first_chunk_timeout: float, voice_state=None) -> None:
+                                  first_chunk_timeout: float,
+                                  voice_state=None, msg_id: int = -1) -> None:
         """Stream model output through soundstretch pipe, queue stretched chunks.
 
         Pipeline:
@@ -268,7 +273,7 @@ class PocketTTSBackend(TTSBackend):
                     # Convert int16 PCM to float32
                     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
                     if samples.size > 0:
-                        playback_queue.put(samples)
+                        playback_queue.put((samples, None, msg_id))
             except Exception as exc:
                 print(f"[stream-pipe] reader error: {exc}", flush=True)
             finally:
