@@ -31,6 +31,7 @@ import sounddevice as sd  # type: ignore[import]
 from wednesday_tts.platform import suppress_dictation, unsuppress_dictation
 
 from .backends import REGISTRY, TTSBackend
+from .vpio import VPIOUnit
 from ..normalize.chunking import chunk_text_server
 
 SOCKET_PATH = "/tmp/tts-daemon.sock"
@@ -462,6 +463,10 @@ _level_last_sent: float = 0.0        # monotonic time of last playback_level ove
 _playback_stream_ref: sd.OutputStream | None = None  # current stream; watchdog can abort this
 _playback_stream_lock = threading.Lock()  # protects _playback_stream_ref
 
+# VPIO audio unit — set up at startup, used instead of PortAudio on speaker output
+_vpio: VPIOUnit | None = None
+_vpio_lock = threading.Lock()  # guards setup/teardown only; feed_audio is lock-free
+
 
 def _stop_playback() -> None:
     """Stop current audio and drain the queue. Safe to call from any thread.
@@ -484,6 +489,8 @@ def _stop_playback() -> None:
         _order_cond.notify_all()
     # Kill spatial stream so head-tracked audio stops immediately
     _kill_spatial_stream()
+    if _vpio is not None:
+        _vpio.clear_buffer()
     unsuppress_dictation()
 
 
@@ -517,6 +524,8 @@ def _skip_current() -> None:
     # Now bail the currently playing chunk
     _skip_gen += 1
     _kill_spatial_stream()
+    if _vpio is not None:
+        _vpio.clear_buffer()
 
 
 def _sigusr1_handler(sig: int, frame) -> None:
@@ -1122,6 +1131,44 @@ def playback_worker(backend: TTSBackend) -> None:
 
             audio = item.astype(np.float32)
             pan = _current_pan
+
+            # --- VPIO path (speakers only, not BT headphones) ---
+            # VPIO handles output + AEC reference in one unit. We feed audio and
+            # wait real-time duration — same pattern as spatial, no PortAudio needed.
+            vpio_ok = False
+            if not use_spatial and _vpio is not None and _vpio._running:
+                vpio_audio = _limiter(audio.copy(), ceiling=0.85, rate=backend.sample_rate)
+                vpio_audio = _anti_click(vpio_audio, backend.sample_rate)
+                if subtitle_text:
+                    dur = len(audio) / backend.sample_rate
+                    _send_subtitle(subtitle_text, audio_dur=dur)
+                    subtitle_text = None
+                else:
+                    _send_overlay({"type": "playback_started"})
+                write_gen_v = _stop_gen
+                write_skip_v = _skip_gen
+
+                def _should_bail_vpio() -> bool:
+                    return _stop_gen != write_gen_v or _skip_gen != write_skip_v
+
+                _vpio.feed_audio(vpio_audio, sample_rate=backend.sample_rate)
+                _play_dur_v = len(vpio_audio) / backend.sample_rate
+                _wait_end_v = time.monotonic() + _play_dur_v
+                LEVEL_INTERVAL = 0.1
+                _level_t = time.monotonic()
+                while time.monotonic() < _wait_end_v and not _should_bail_vpio():
+                    _sleep = min(LEVEL_INTERVAL, _wait_end_v - time.monotonic())
+                    if _sleep > 0:
+                        time.sleep(_sleep)
+                    _playback_heartbeat = time.monotonic()
+                    if _playback_heartbeat - _level_last_sent >= LEVEL_INTERVAL:
+                        # Estimate level from remaining buffer fraction
+                        _send_overlay({"type": "playback_level", "level": 0.5})
+                        _level_last_sent = _playback_heartbeat
+                vpio_ok = True
+
+            if vpio_ok:
+                continue
 
             spatial_ok = False
             if use_spatial and bt_uid:
@@ -1750,6 +1797,17 @@ def main() -> None:
 
     signal.signal(signal.SIGUSR1, _sigusr1_handler)
 
+    # Start VPIO if available (macOS only). Non-fatal — falls back to PortAudio.
+    global _vpio
+    try:
+        _vpio = VPIOUnit()
+        _vpio.setup()
+        _vpio.start()
+        print("[vpio] VoiceProcessingIO started — using VPIO for speaker output", flush=True)
+    except Exception as _vpio_exc:
+        print(f"[vpio] VPIO unavailable ({_vpio_exc}), using PortAudio for output", flush=True)
+        _vpio = None
+
     pb_thread = threading.Thread(target=playback_worker, args=(backend,), daemon=True)
     pb_thread.start()
 
@@ -1790,6 +1848,11 @@ def main() -> None:
     finally:
         playback_queue.put(None)
         pb_thread.join(timeout=5)
+        if _vpio is not None:
+            try:
+                _vpio.stop()
+            except Exception:
+                pass
         server.close()
         for path in (SOCKET_PATH, PID_PATH):
             try:
