@@ -187,10 +187,17 @@ def main() -> None:
     if os.path.exists(MUTE_PATH) or os.environ.get("TTS_MUTE"):
         sys.exit(0)
 
-    # Barge-in active — user is still speaking, hold TTS until insertion completes
+    # Barge-in active — user is still speaking, hold TTS until insertion completes.
+    # Max age 30s to prevent stale flags from silencing TTS permanently.
     barge_in_path = os.path.join(_TEMP, "wednesday-yarn-barge-in")
-    if os.path.exists(barge_in_path):
-        sys.exit(0)
+    try:
+        age = time.time() - os.path.getmtime(barge_in_path)
+        if age < 30:
+            sys.exit(0)
+        else:
+            os.unlink(barge_in_path)  # stale, clean up
+    except FileNotFoundError:
+        pass
 
     # Parse hook payload from stdin
     try:
