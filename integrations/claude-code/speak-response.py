@@ -198,6 +198,10 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
+    # Teammate/subagent sessions have agent_id set — only the main session speaks
+    if payload.get("agent_id"):
+        sys.exit(0)
+
     session_id = payload.get("session_id", "unknown")
     cwd = payload.get("cwd", "")
 
