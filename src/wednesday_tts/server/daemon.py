@@ -967,7 +967,6 @@ def _send_subtitle(text: str, audio_dur: float = 0) -> None:
     if audio_dur > 0:
         msg["audio_dur"] = audio_dur
     _send_overlay(
-        {"type": "state", "state": "responding"},
         msg,
         {"type": "playback_started"},
     )
