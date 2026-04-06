@@ -187,6 +187,11 @@ def main() -> None:
     if os.path.exists(MUTE_PATH) or os.environ.get("TTS_MUTE"):
         sys.exit(0)
 
+    # Barge-in active — user is still speaking, hold TTS until insertion completes
+    barge_in_path = os.path.join(_TEMP, "wednesday-yarn-barge-in")
+    if os.path.exists(barge_in_path):
+        sys.exit(0)
+
     # Parse hook payload from stdin
     try:
         payload = json.load(sys.stdin)
