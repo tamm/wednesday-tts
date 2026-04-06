@@ -1796,16 +1796,16 @@ def main() -> None:
 
     signal.signal(signal.SIGUSR1, _sigusr1_handler)
 
-    # Start VPIO if available (macOS only). Non-fatal — falls back to PortAudio.
-    global _vpio
-    try:
-        _vpio = VPIOUnit()
-        _vpio.setup()
-        _vpio.start()
-        print("[vpio] VoiceProcessingIO started — using VPIO for speaker output", flush=True)
-    except Exception as _vpio_exc:
-        print(f"[vpio] VPIO unavailable ({_vpio_exc}), using PortAudio for output", flush=True)
-        _vpio = None
+    # VPIO disabled — playback path not wired yet, and running VPIO without
+    # routing audio through it causes the mic to hear speakers with no AEC.
+    # TODO: enable once playback worker uses VPIO feed_audio() path.
+    # global _vpio
+    # try:
+    #     _vpio = VPIOUnit()
+    #     _vpio.setup()
+    #     _vpio.start()
+    # except Exception as _vpio_exc:
+    #     _vpio = None
 
     pb_thread = threading.Thread(target=playback_worker, args=(backend,), daemon=True)
     pb_thread.start()
