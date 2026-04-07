@@ -42,6 +42,7 @@ class Qwen3TTSBackend(TTSBackend):
 
     Voice pool entries (in tts-config.json models.qwen3.voice_pool) can be:
         - Audio file paths: "/path/to/voice.wav" — used as ref_audio for ICL cloning
+        - Objects with voice_text: {"voice": "/path/to.wav", "voice_text": "transcript"}
         - Seed tags: "seed:42" — deterministic seed-based voice generation
     """
 
@@ -80,7 +81,7 @@ class Qwen3TTSBackend(TTSBackend):
         """Resolve a voice parameter into (ref_audio, ref_text, seed).
 
         Voice resolution order:
-        1. voice is a seed tag ("seed:42") → use that seed, no ref_audio
+        1. voice is a seed tag ("seed:42") → use that seed with configured default ref_audio
         2. voice is a supported audio file → use as ref_audio with fixed seed
         3. voice is something unrecognised (pocket safetensors, predefined name, etc.)
            → log warning, fall back to configured default voice
@@ -92,22 +93,33 @@ class Qwen3TTSBackend(TTSBackend):
             (ref_audio_path | None, ref_text | None, seed)
         """
         if voice is not None:
+            # Dict entry from voice_pool: {"voice": "path", "voice_text": "transcript"}
+            if isinstance(voice, dict):
+                v_path = voice.get("voice", "")
+                v_text = voice.get("voice_text")
+                if _is_audio_file(v_path):
+                    return v_path, v_text, self._seed
+                # Dict but no valid audio — fall through to default
+
             # Seed tag: "seed:42"
-            tag_seed = _parse_seed_tag(voice)
+            tag_seed = _parse_seed_tag(voice) if isinstance(voice, str) else None
             if tag_seed is not None:
+                if self._voice and _is_audio_file(self._voice):
+                    return self._voice, self._voice_text, tag_seed
                 return None, None, tag_seed
 
-            # Supported audio file
-            if _is_audio_file(voice):
+            # Supported audio file (string path)
+            if isinstance(voice, str) and _is_audio_file(voice):
                 ref_text = self._voice_text if voice == self._voice else None
                 return voice, ref_text, self._seed
 
             # Unrecognised — fall back to default
-            print(
-                f"[qwen3] voice {voice!r} not recognised (not audio, not seed:N), "
-                f"using default",
-                flush=True,
-            )
+            if not isinstance(voice, dict):
+                print(
+                    f"[qwen3] voice {voice!r} not recognised (not audio, not seed:N), "
+                    f"using default",
+                    flush=True,
+                )
 
         # Default: configured voice with fixed seed
         if self._voice and _is_audio_file(self._voice):
