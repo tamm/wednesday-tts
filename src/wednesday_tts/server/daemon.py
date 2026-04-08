@@ -260,7 +260,10 @@ def _resolve_pool_index(index: int) -> str:
         model_cfg = cfg.get("models", {}).get(active, {})
         pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
         if 0 <= index < len(pool):
-            return pool[index]
+            entry = pool[index]
+            if isinstance(entry, dict):
+                return entry.get("voice", "sam")
+            return entry
     except Exception:
         pass
     print(f"[voice-tag] Pool index {index} out of range or config missing, falling back to sam", flush=True)
@@ -1601,32 +1604,49 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 conn.send(b"ok")
                 return
         else:
-            # ── Chunked BATCH: split long text, render & enqueue each chunk ──
-            # For short text (single chunk), this collapses to the old behaviour.
-            text_chunks = chunk_text_server(text, min_size=120, max_size=300)
-            print(
-                f"[req] BATCH seq={seq}, {len(text)} chars → {len(text_chunks)} chunk(s), "
-                f"speed={speed}, voice={voice}, pan={pan:.2f}",
-                flush=True,
-            )
-
-            total_audio_secs = 0.0
-            for ci, chunk_text in enumerate(text_chunks):
-                if _stop_gen != gen_snap or _skip_msg_id == msg_id:
-                    break
-                # Text is already normalised — just wrap in a segment tuple
-                chunk_segments = [(None, None, chunk_text)]
+            # ── BATCH render ──────────────────────────────────────────────────
+            if needs_backend_switch:
+                # Mixed backends (e.g. SAM + qwen3) — render the parsed segments
+                # directly so each segment uses its assigned voice/backend.
+                print(
+                    f"[req] MULTI-VOICE seq={seq}, {len(text)} chars → {len(segments)} segment(s), "
+                    f"speed={speed}, pan={pan:.2f}",
+                    flush=True,
+                )
                 chunk_audio = _render_segments(
-                    chunk_segments, backend, speed, gen_snap, default_voice=voice,
+                    segments, backend, speed, gen_snap, default_voice=voice,
                 )
                 if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
-                    playback_queue.put((chunk_audio, chunk_text, msg_id))
-                    total_audio_secs += len(chunk_audio) / backend.sample_rate
-                    print(
-                        f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
-                        f"({len(chunk_audio) / backend.sample_rate:.1f}s)",
-                        flush=True,
+                    playback_queue.put((chunk_audio, text, msg_id))
+                    total_audio_secs = len(chunk_audio) / backend.sample_rate
+                    print(f"[req] multi-voice enqueued ({total_audio_secs:.1f}s)", flush=True)
+                else:
+                    total_audio_secs = 0.0
+            else:
+                # Single voice — chunk for lower latency
+                text_chunks = chunk_text_server(text, min_size=120, max_size=300)
+                print(
+                    f"[req] BATCH seq={seq}, {len(text)} chars → {len(text_chunks)} chunk(s), "
+                    f"speed={speed}, voice={voice}, pan={pan:.2f}",
+                    flush=True,
+                )
+
+                total_audio_secs = 0.0
+                for ci, chunk_text in enumerate(text_chunks):
+                    if _stop_gen != gen_snap or _skip_msg_id == msg_id:
+                        break
+                    chunk_segments = [(None, None, chunk_text)]
+                    chunk_audio = _render_segments(
+                        chunk_segments, backend, speed, gen_snap, default_voice=voice,
                     )
+                    if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
+                        playback_queue.put((chunk_audio, chunk_text, msg_id))
+                        total_audio_secs += len(chunk_audio) / backend.sample_rate
+                        print(
+                            f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
+                            f"({len(chunk_audio) / backend.sample_rate:.1f}s)",
+                            flush=True,
+                        )
 
             with _order_cond:
                 _next_seq = 0

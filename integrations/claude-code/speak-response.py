@@ -87,7 +87,11 @@ def _get_repo_voice(cwd: str) -> str | None:
     if not pool:
         return None
     h = hashlib.sha256(key.encode()).hexdigest()[:8]
-    return pool[int(h, 16) % len(pool)]
+    entry = pool[int(h, 16) % len(pool)]
+    # Pool entries can be strings or dicts with "voice" key
+    if isinstance(entry, dict):
+        return entry.get("voice")
+    return entry
 
 
 def _fire_and_forget(text: str, session_id: str, wall_time: float,
@@ -100,7 +104,7 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float,
     Uses colon-delimited fields: SEQ:0:N:markdown:<wall_time>:<pan>:<text>
     """
     body_str = text
-    if cwd:
+    if cwd and "\u00ab\u00ab" not in text:
         voice = _get_repo_voice(cwd)
         if voice:
             body_str = f"\u00ab\u00ab{voice}\u00bb{body_str}\u00bb\u00bb"
