@@ -18,15 +18,6 @@ def _is_audio_file(path: str) -> bool:
     return os.path.isfile(path) and os.path.splitext(path)[1].lower() in _AUDIO_EXTS
 
 
-def _parse_seed_tag(voice: str) -> int | None:
-    """Parse a 'seed:N' voice identifier. Returns the seed int or None."""
-    if voice.startswith("seed:"):
-        try:
-            return int(voice[5:])
-        except ValueError:
-            pass
-    return None
-
 
 class Qwen3TTSBackend(TTSBackend):
     """Qwen3-TTS via mlx-audio (MLX-native, Apple Silicon optimised).
@@ -100,13 +91,6 @@ class Qwen3TTSBackend(TTSBackend):
                 if _is_audio_file(v_path):
                     return v_path, v_text, self._seed
                 # Dict but no valid audio — fall through to default
-
-            # Seed tag: "seed:42"
-            tag_seed = _parse_seed_tag(voice) if isinstance(voice, str) else None
-            if tag_seed is not None:
-                if self._voice and _is_audio_file(self._voice):
-                    return self._voice, self._voice_text, tag_seed
-                return None, None, tag_seed
 
             # Supported audio file (string path)
             if isinstance(voice, str) and _is_audio_file(voice):
