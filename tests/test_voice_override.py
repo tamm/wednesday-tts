@@ -14,10 +14,10 @@ class TestVoiceTag:
         assert voice_tag("Hello", "sam") == "««Hello»»"
 
     def test_named_voice(self) -> None:
-        assert voice_tag("Hi", "alba") == "««alba»Hi»»"
+        assert voice_tag("Hi", "tamm1") == "««tamm1»Hi»»"
 
-    def test_path_voice(self) -> None:
-        assert voice_tag("Hi", "/path/to/v.safetensors") == "««/path/to/v.safetensors»Hi»»"
+    def test_index_voice(self) -> None:
+        assert voice_tag("Hi", "3") == "««3»Hi»»"
 
 
 class TestSplitVoiceSegments:
@@ -29,13 +29,11 @@ class TestSplitVoiceSegments:
         segs = _split_voice_segments("««Hello»»")
         assert segs == [("sam", None, "Hello")]
 
-    def test_named_voice_tag(self) -> None:
-        segs = _split_voice_segments("««alba»Hello from alba»»")
-        assert segs == [("alba", None, "Hello from alba")]
-
-    def test_path_voice_tag(self) -> None:
-        segs = _split_voice_segments("««/path/to/voice.safetensors»Hello»»")
-        assert segs == [("/path/to/voice.safetensors", None, "Hello")]
+    def test_pool_index_tag(self) -> None:
+        segs = _split_voice_segments("««4»Hello from pool»»")
+        # Resolves through _resolve_pool_entry — result is a dict or string
+        assert len(segs) == 1
+        assert segs[0][2] == "Hello from pool"
 
     def test_sam_with_surrounding_text(self) -> None:
         text = "Normal voice. ««Robot voice.»» Normal again."
@@ -45,12 +43,11 @@ class TestSplitVoiceSegments:
         assert segs[1] == ("sam", None, "Robot voice.")
         assert segs[2] == (None, None, "Normal again.")
 
-    def test_named_voice_with_surrounding_text(self) -> None:
-        text = "Normal. ««alba»Different voice.»» Normal."
+    def test_pool_name_with_surrounding_text(self) -> None:
+        text = "Normal. ««0»Different voice.»» Normal."
         segs = _split_voice_segments(text)
         assert len(segs) == 3
         assert segs[0] == (None, None, "Normal.")
-        assert segs[1] == ("alba", None, "Different voice.")
         assert segs[2] == (None, None, "Normal.")
 
     def test_multiple_tagged_blocks(self) -> None:
@@ -64,21 +61,20 @@ class TestSplitVoiceSegments:
         assert segs[4] == (None, None, "End.")
 
     def test_mixed_voice_types(self) -> None:
-        text = "Normal. ««alba»Named.»» Middle. ««SAM voice.»» End."
+        text = "Normal. ««0»Pool voice.»» Middle. ««SAM voice.»» End."
         segs = _split_voice_segments(text)
         assert len(segs) == 5
         assert segs[0] == (None, None, "Normal.")
-        assert segs[1] == ("alba", None, "Named.")
         assert segs[2] == (None, None, "Middle.")
         assert segs[3] == ("sam", None, "SAM voice.")
         assert segs[4] == (None, None, "End.")
 
     def test_adjacent_tagged_blocks(self) -> None:
-        text = "««Robot.»»««alba»Neural.»»"
+        text = "««Robot.»»««0»Neural.»»"
         segs = _split_voice_segments(text)
         assert len(segs) == 2
         assert segs[0] == ("sam", None, "Robot.")
-        assert segs[1] == ("alba", None, "Neural.")
+        assert segs[1][2] == "Neural."
 
     def test_only_leading_text(self) -> None:
         text = "Hello ««Robot»»"
@@ -107,40 +103,30 @@ class TestSplitVoiceSegments:
         assert _split_voice_segments("   ") == []
 
     def test_whole_message_wrapped(self) -> None:
-        """Simulates what hooks do — entire message wrapped in a voice tag."""
-        text = "««alba»This is the whole message.»»"
+        """Simulates what hooks do — entire message wrapped in a pool index."""
+        text = "««4»This is the whole message.»»"
         segs = _split_voice_segments(text)
-        assert segs == [("alba", None, "This is the whole message.")]
+        assert len(segs) == 1
+        assert segs[0][2] == "This is the whole message."
 
     # ── Instruct tag tests ──────────────────────────────────────────────
-
-    def test_voice_with_instruct(self) -> None:
-        text = "««seed:42|cheerful»Hello there»»"
-        segs = _split_voice_segments(text)
-        assert segs == [("seed:42", "cheerful", "Hello there")]
 
     def test_instruct_only_no_voice(self) -> None:
         text = "««|calm and warm»Gentle message»»"
         segs = _split_voice_segments(text)
         assert segs == [(None, "calm and warm", "Gentle message")]
 
-    def test_path_voice_with_instruct(self) -> None:
-        text = "««/path/to/voice.wav|excited»Wow!»»"
-        segs = _split_voice_segments(text)
-        assert segs == [("/path/to/voice.wav", "excited", "Wow!")]
-
     def test_voice_with_empty_instruct(self) -> None:
         """Pipe with no instruct after it — instruct should be None."""
-        text = "««alba|»Hello»»"
+        text = "««sam|»Hello»»"
         segs = _split_voice_segments(text)
-        assert segs == [("alba", None, "Hello")]
+        assert segs == [("sam", None, "Hello")]
 
     def test_mixed_instruct_and_plain(self) -> None:
-        text = "Normal. ««seed:7|rushed»Quick update.»» Back to normal."
+        text = "Normal. ««0|rushed»Quick update.»» Back to normal."
         segs = _split_voice_segments(text)
         assert len(segs) == 3
         assert segs[0] == (None, None, "Normal.")
-        assert segs[1] == ("seed:7", "rushed", "Quick update.")
         assert segs[2] == (None, None, "Back to normal.")
 
 

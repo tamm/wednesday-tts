@@ -63,8 +63,8 @@ def _get_last_assistant_message(transcript_path: str | None) -> str:
     return ""
 
 
-def _get_repo_voice(cwd: str) -> str | None:
-    """Deterministic voice from repo/cwd path hash. Returns None = use default."""
+def _get_repo_voice_index(cwd: str) -> int | None:
+    """Deterministic voice pool index from repo/cwd path hash. Returns None if no pool."""
     import hashlib
     import subprocess
     try:
@@ -87,11 +87,7 @@ def _get_repo_voice(cwd: str) -> str | None:
     if not pool:
         return None
     h = hashlib.sha256(key.encode()).hexdigest()[:8]
-    entry = pool[int(h, 16) % len(pool)]
-    # Pool entries can be strings or dicts with "voice" key
-    if isinstance(entry, dict):
-        return entry.get("voice")
-    return entry
+    return int(h, 16) % len(pool)
 
 
 def _fire_and_forget(text: str, session_id: str, wall_time: float,
@@ -105,9 +101,9 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float,
     """
     body_str = text
     if cwd and "\u00ab\u00ab" not in text:
-        voice = _get_repo_voice(cwd)
-        if voice:
-            body_str = f"\u00ab\u00ab{voice}\u00bb{body_str}\u00bb\u00bb"
+        idx = _get_repo_voice_index(cwd)
+        if idx is not None:
+            body_str = f"\u00ab\u00ab{idx}\u00bb{body_str}\u00bb\u00bb"
 
     pan_str = f"{pan:.3f}" if pan != 0.5 else ""
 

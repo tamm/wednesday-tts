@@ -190,8 +190,8 @@ def _split_voice_segments(
       - ««text»»                        → voice_name="sam" (backward compatible)
       - ««alba»text»»                   → voice_name="alba" (named voice)
       - ««2»text»»                      → voice_pool index 2 (resolved from config)
+      - ««tamm1»text»»                  → voice_pool name lookup
       - ««/path/v.safetensors»text»»    → custom voice file path
-      - ««seed:42|cheerful»text»»       → voice + instruct (pipe-separated)
       - ««|calm and warm»text»»         → instruct only, default voice
 
     Returns a list of (voice, instruct, text) tuples preserving original order.
@@ -225,9 +225,9 @@ def _split_voice_segments(
             # Empty voice (e.g. ««|calm»text»») means default voice
             if not voice_id:
                 voice_id = None
-            # Resolve pool index (pure digits) to voice name from config
-            elif voice_id.isdigit():
-                voice_id = _resolve_pool_index(int(voice_id))
+            # Resolve pool reference (index or name) from config
+            elif voice_id != "sam":
+                voice_id = _resolve_pool_entry(voice_id)
         else:
             # No separator — SAM voice, whole content is text
             voice_id = "sam"
@@ -247,10 +247,13 @@ def _split_voice_segments(
     return segments
 
 
-def _resolve_pool_index(index: int) -> str:
-    """Resolve a voice_pool index to a voice name from tts-config.json.
+def _resolve_pool_entry(voice_id: str) -> str | dict:
+    """Resolve a voice_pool reference (index or name) to a voice entry.
 
-    Falls back to "sam" if the config is missing or the index is out of range.
+    Accepts a numeric index ("4") or a name ("tamm1") to match against
+    the "name" field in pool entries. Returns the full dict entry (with
+    voice + voice_text) if available, or a plain string path.
+    Falls back to "sam" if not found.
     """
     cfg_path = os.path.expanduser("~/.claude/tts-config.json")
     try:
@@ -259,14 +262,20 @@ def _resolve_pool_index(index: int) -> str:
         active = cfg.get("active_model", "pocket")
         model_cfg = cfg.get("models", {}).get(active, {})
         pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
-        if 0 <= index < len(pool):
-            entry = pool[index]
-            if isinstance(entry, dict):
-                return entry.get("voice", "sam")
-            return entry
+
+        # Try numeric index first
+        if voice_id.isdigit():
+            index = int(voice_id)
+            if 0 <= index < len(pool):
+                return pool[index]
+        else:
+            # Match by name
+            for entry in pool:
+                if isinstance(entry, dict) and entry.get("name") == voice_id:
+                    return entry
     except Exception:
         pass
-    print(f"[voice-tag] Pool index {index} out of range or config missing, falling back to sam", flush=True)
+    print(f"[voice-tag] Pool entry {voice_id!r} not found, falling back to sam", flush=True)
     return "sam"
 
 
@@ -296,8 +305,8 @@ def _render_segments(
             if render_backend is None:
                 render_backend = primary_backend
             render_voice = None
-        elif voice_name:
-            # Named voice / path — use primary backend with this voice
+        elif voice_name is not None:
+            # Named voice / path / dict — use primary backend with this voice
             render_backend = primary_backend
             render_voice = voice_name
         else:
