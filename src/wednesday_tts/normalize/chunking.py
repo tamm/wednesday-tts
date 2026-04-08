@@ -74,11 +74,15 @@ def chunk_text_intelligently(text, first_chunk_min=40, first_chunk_max=150,
     return [c for c in chunks if c]
 
 
-def chunk_text_server(text, min_size=200, max_size=400):
+def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
     """Server-side chunking: split text into chunks for streaming TTS.
 
     First chunk is 60-120 chars with natural breaks for fast initial response.
     """
+    if backend_name == "qwen3":
+        min_size = min(min_size, 90)
+        max_size = min(max_size, 180)
+
     first_chunk = ""
     rest_text = text
 

@@ -168,3 +168,11 @@ class TestChunkTextServer:
         assert len(result) > 1
         for chunk in result:
             assert len(chunk) <= 200  # generous upper bound
+
+    def test_qwen3_uses_smaller_default_chunk_sizes(self):
+        text = " ".join([f"Sentence {i} is long enough to force chunking." for i in range(20)])
+        result = chunk_text_server(text, backend_name="qwen3")
+
+        assert len(result) > 1
+        for chunk in result[1:]:
+            assert len(chunk) <= 180
