@@ -6,7 +6,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from wednesday_tts.server.backends.sam import SAMBackend, _lowpass, _reverb
+from wednesday_tts.server.backends.sam import SAMBackend, _lowpass, _reverb  # noqa: E402
 
 
 @pytest.fixture()

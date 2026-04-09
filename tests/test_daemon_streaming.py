@@ -442,7 +442,6 @@ class TestPocketCallbackModeFailure:
 
     def test_audio_buf_put_timeout_calls_record_failure(self):
         """When playback_queue.put() is called, generate_streaming queues chunks directly."""
-        import queue as _queue
         from wednesday_tts.server.backends.pocket import PocketTTSBackend
 
         backend = PocketTTSBackend.__new__(PocketTTSBackend)

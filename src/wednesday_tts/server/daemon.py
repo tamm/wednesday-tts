@@ -1059,7 +1059,7 @@ def playback_worker(backend: TTSBackend) -> None:
             return True, uid
         if uid and not has_bin:
             if log:
-                print(f"[playback] BT detected but no SpatialStream binary — PortAudio fallback", flush=True)
+                print("[playback] BT detected but no SpatialStream binary — PortAudio fallback", flush=True)
         else:
             if log:
                 print("[playback] non-BT output — using PortAudio stereo pan", flush=True)
@@ -1381,7 +1381,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── STOP ──────────────────────────────────────────────────────────
         if message == "STOP":
-            print(f"[cmd] STOP received, draining queue", flush=True)
+            print("[cmd] STOP received, draining queue", flush=True)
             _stop_playback()
             conn.send(b"ok")
             return

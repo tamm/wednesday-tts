@@ -1,6 +1,5 @@
 """Tests for hex code normalization."""
 
-import pytest
 
 from wednesday_tts.normalize.hex_codes import normalize_hex_codes
 

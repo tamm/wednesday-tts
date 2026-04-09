@@ -1,6 +1,5 @@
 """Tests for numbers_to_words normalization module."""
 
-import pytest
 
 from wednesday_tts.normalize.numbers_to_words import number_to_words, normalize_large_numbers
 

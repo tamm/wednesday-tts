@@ -42,5 +42,5 @@ for seed in SEEDS:
     sf.write(path, audio, 24000)
     print(f"Wrote {path} ({len(audio)/24000:.1f}s)")
 
-print(f"\nAudition with:")
+print("\nAudition with:")
 print(f"  for f in {OUTDIR}/*.wav; do echo \"$f\"; afplay \"$f\"; done")

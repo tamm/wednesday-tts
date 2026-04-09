@@ -6,8 +6,8 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from wednesday_tts.client.api import voice_tag
-from wednesday_tts.server.daemon import _split_voice_segments, _render_segments
+from wednesday_tts.client.api import voice_tag  # noqa: E402
+from wednesday_tts.server.daemon import _split_voice_segments, _render_segments  # noqa: E402
 
 
 class TestVoiceTag:
