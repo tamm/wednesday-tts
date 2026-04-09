@@ -397,6 +397,13 @@ def _stat_inc(key: str, n: float = 1) -> None:
         _last_activity_time = time.monotonic()
 
 
+def _touch_activity() -> None:
+    """Reset the watchdog timer without changing any stat counters."""
+    global _last_activity_time
+    with _stats_lock:
+        _last_activity_time = time.monotonic()
+
+
 # ---------------------------------------------------------------------------
 # Normalization wiring
 # ---------------------------------------------------------------------------
@@ -1633,7 +1640,10 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     total_audio_secs = 0.0
             else:
                 # Single voice — chunk for lower latency
-                text_chunks = chunk_text_server(text, min_size=120, max_size=300)
+                text_chunks = chunk_text_server(
+                    text, min_size=120, max_size=300,
+                    backend_name=_active_backend_name,
+                )
                 print(
                     f"[req] BATCH seq={seq}, {len(text)} chars → {len(text_chunks)} chunk(s), "
                     f"speed={speed}, voice={voice}, pan={pan:.2f}",
@@ -1650,10 +1660,14 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     )
                     if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
                         playback_queue.put((chunk_audio, chunk_text, msg_id))
-                        total_audio_secs += len(chunk_audio) / backend.sample_rate
+                        chunk_secs = len(chunk_audio) / backend.sample_rate
+                        total_audio_secs += chunk_secs
+                        # Heartbeat: tell the watchdog we're still making
+                        # progress so it doesn't kill long multi-chunk renders.
+                        _touch_activity()
                         print(
                             f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
-                            f"({len(chunk_audio) / backend.sample_rate:.1f}s)",
+                            f"({chunk_secs:.1f}s)",
                             flush=True,
                         )
 
