@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import numpy as np
+import pytest
+
+np = pytest.importorskip("numpy")
 
 from wednesday_tts.client.api import voice_tag
 from wednesday_tts.server.daemon import _split_voice_segments, _render_segments

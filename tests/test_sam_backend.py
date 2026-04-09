@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
 
 from wednesday_tts.server.backends.sam import SAMBackend, _lowpass, _reverb
 
