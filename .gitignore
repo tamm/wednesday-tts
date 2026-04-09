@@ -57,3 +57,6 @@ config/tts-config.json
 tts-service.py
 tts-server.py
 .claude/
+
+# Clacks inter-session messaging
+.clacks/

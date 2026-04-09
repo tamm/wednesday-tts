@@ -433,7 +433,7 @@ class TestProcessSpeechTextPrep:
         mock_backend.generate.return_value = None
         mock_backend.supports_streaming = False
 
-        def fake_chunk(t):
+        def fake_chunk(t, **_kw):
             captured["chunks"] = [t]
             return [t]
 

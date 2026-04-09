@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# permission-clear.sh — PostToolUse hook
-# Removes the permission flag file so the dictation pipeline resumes insertion.
-# Also notifies the HUD overlay to clear the permission block.
+# permission-clear.sh — PostToolUse / UserPromptSubmit hook
+# Removes ALL permission flag files so the dictation pipeline resumes insertion.
+# Clears all sessions because any user action means the hold is no longer needed.
 
-INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id','unknown'))" 2>/dev/null)
-SESSION_ID="${SESSION_ID:-unknown}"
-
-rm -f "/tmp/wednesday-yarn-permission-${SESSION_ID}"
+rm -f /tmp/wednesday-yarn-permission-*
 
 # Clear the HUD permission block
 OVERLAY_SOCK="/tmp/wednesday-yarn-overlay.sock"

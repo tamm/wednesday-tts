@@ -7,7 +7,7 @@ import re
 REGEX_SIGNALS = re.compile(
     r'\(\?[<!=]|'          # lookaround
     r'\\[dwWsSbB]|'        # char class shorthand
-    r'\[\^?[^\]]+\]|'      # char class [...]
+    r'\[\^?(?:[^\]]*[\\^]|[^\]]*\w-\w)[^\]]*\]|'  # char class with metachar/range
     r'\{[0-9,]+\}|'        # quantifier {n,m}
     r'(?<!\\)\(\?:|'       # non-capturing group
     r'\(\?[imsxLu]'        # flags group
@@ -99,7 +99,7 @@ def normalize_regex(text):
         r'(?<!\w)((?:\\[dwWsSbB]|'
         r'\(\?(?:[<!=][^)]*|:)|'
         r'\\[^a-zA-Z ]|'
-        r'\[\^?[^\]]+\]|'
+        r'\[\^?(?:[^\]]*[\\^]|[^\]]*\w-\w)[^\]]*\]|'
         r'[+*?{}|^$])'
         r'(?:[^,\s]{0,40})?)',
         lambda m: regex_to_speech(m.group(1)) if REGEX_SIGNALS.search(m.group(1)) else m.group(0),

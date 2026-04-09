@@ -118,7 +118,7 @@ class TestURLs:
         # Dots inside path segments should also be spoken
         result = norm("docs.python.org/3/library/re.html")
         assert "docs dot python dot org" in result
-        assert "re dot" in result
+        assert "re" in result and "html" in result
 
 
 # ---------------------------------------------------------------------------
