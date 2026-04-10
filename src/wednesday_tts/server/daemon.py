@@ -247,6 +247,15 @@ def _split_voice_segments(
     return segments
 
 
+def _voice_label(voice: "str | dict | None") -> str:
+    """Human-readable label for a voice value (for logging)."""
+    if voice is None:
+        return "default"
+    if isinstance(voice, dict):
+        return voice.get("name") or os.path.basename(voice.get("voice", "?"))
+    return str(voice)
+
+
 def _resolve_pool_entry(voice_id: str) -> str | dict:
     """Resolve a voice_pool reference (index or name) to a voice entry.
 
@@ -267,15 +276,18 @@ def _resolve_pool_entry(voice_id: str) -> str | dict:
         if voice_id.isdigit():
             index = int(voice_id)
             if 0 <= index < len(pool):
-                return pool[index]
+                entry = pool[index]
+                print(f"[voice] pool[{index}] → {_voice_label(entry)}", flush=True)
+                return entry
         else:
             # Match by name
-            for entry in pool:
+            for i, entry in enumerate(pool):
                 if isinstance(entry, dict) and entry.get("name") == voice_id:
+                    print(f"[voice] pool name {voice_id!r} → [{i}] {_voice_label(entry)}", flush=True)
                     return entry
-    except Exception:
-        pass
-    print(f"[voice-tag] Pool entry {voice_id!r} not found, falling back to sam", flush=True)
+    except Exception as exc:
+        print(f"[voice] config error resolving {voice_id!r}: {exc}", flush=True)
+    print(f"[voice] pool entry {voice_id!r} not found, falling back to sam", flush=True)
     return "sam"
 
 
@@ -295,7 +307,7 @@ def _render_segments(
     chunks: list[np.ndarray] = []
     target_rate = primary_backend.sample_rate
 
-    for voice_name, instruct, segment_text in segments:
+    for seg_i, (voice_name, instruct, segment_text) in enumerate(segments):
         if _stop_gen != gen_snap:
             break
 
@@ -312,6 +324,12 @@ def _render_segments(
         else:
             render_backend = primary_backend
             render_voice = default_voice
+
+        print(
+            f"[voice] segment {seg_i}: backend={render_backend.__class__.__name__}, "
+            f"voice={_voice_label(render_voice)}, {len(segment_text)} chars",
+            flush=True,
+        )
 
         # Build kwargs — add instruct if the backend supports it
         gen_kwargs: dict = {"speed": speed, "voice": render_voice}
@@ -469,6 +487,32 @@ _msg_id_counter = 0         # monotonic message ID; incremented per request
 _playing_msg_id: int = -1   # msg_id of the chunk currently being played
 _skip_msg_id: int = -1      # msg_id that was last skipped; generation threads bail if they match
 
+# Message completion tracking: handlers signal when all chunks for a msg_id
+# are enqueued, so the playback worker knows when it can move to the next message.
+_msg_done: set[int] = set()          # msg_ids whose chunks are all enqueued
+_msg_done_lock = threading.Lock()
+_msg_done_event = threading.Event()  # poked when a msg finishes enqueuing
+
+
+def _mark_msg_done(msg_id: int) -> None:
+    """Signal that all chunks for msg_id have been enqueued."""
+    with _msg_done_lock:
+        _msg_done.add(msg_id)
+    _msg_done_event.set()
+
+
+def _is_msg_done(msg_id: int) -> bool:
+    """Check if all chunks for msg_id have been enqueued."""
+    with _msg_done_lock:
+        return msg_id in _msg_done
+
+
+def _clear_msg_done(msg_id: int) -> None:
+    """Remove msg_id from the done set (after playback finishes it)."""
+    with _msg_done_lock:
+        _msg_done.discard(msg_id)
+
+
 playback_queue: queue.Queue = queue.Queue()
 _current_pan: float = 0.5  # stereo pan: 0.0=left, 0.5=centre, 1.0=right
 _device_changed = threading.Event()  # set by health worker when default output device changes
@@ -502,6 +546,10 @@ def _stop_playback() -> None:
             playback_queue.task_done()
         except queue.Empty:
             break
+    # Clear message-done tracking
+    with _msg_done_lock:
+        _msg_done.clear()
+    _msg_done_event.set()
     with _order_cond:
         _stop_gen += 1
         _next_seq = 0
@@ -1102,8 +1150,112 @@ def playback_worker(backend: TTSBackend) -> None:
     # Initial mode detection
     use_spatial, bt_uid = _detect_spatial_mode()
 
+    # Message grouping: buffer chunks from other messages so we finish one
+    # message completely before starting the next. This prevents the
+    # nightmarish interleaving of two speakers alternating every chunk.
+    _deferred: dict[int, list[tuple]] = {}   # msg_id → list of queued items
+    _current_msg: int | None = None          # msg_id we are currently playing
+
+    def _next_item():
+        """Get the next item to play, respecting message grouping.
+
+        Returns (item, from_queue) where from_queue=True means the item
+        came from playback_queue.get() and needs a task_done() call,
+        and from_queue=False means it was deferred (task_done already called).
+
+        If we have a current message and there are deferred chunks for it,
+        return one of those. Otherwise pull from the queue. If the queue
+        gives us a chunk for a different message, defer it and keep pulling.
+        """
+        nonlocal _current_msg
+
+        def _advance_to_deferred():
+            """Try to advance _current_msg to the next deferred message."""
+            nonlocal _current_msg
+            if _deferred:
+                next_id = min(_deferred.keys())
+                _current_msg = next_id
+                items = _deferred[next_id]
+                if items:
+                    return items.pop(0), False
+                else:
+                    del _deferred[next_id]
+            return None
+
+        # First: drain any deferred chunks for the current message
+        if _current_msg is not None and _current_msg in _deferred:
+            items = _deferred[_current_msg]
+            if items:
+                return items.pop(0), False
+            else:
+                del _deferred[_current_msg]
+
+        # If current message is done, advance to the next deferred message
+        if _current_msg is not None and _is_msg_done(_current_msg):
+            _clear_msg_done(_current_msg)
+            _current_msg = None
+            result = _advance_to_deferred()
+            if result:
+                return result
+
+        # Pull from the main queue, using a short timeout so we can
+        # periodically check if the current message finished enqueuing
+        # (its chunks may already be deferred).
+        while True:
+            try:
+                raw = playback_queue.get(timeout=0.2)
+            except queue.Empty:
+                # Current message might be done — check both the explicit
+                # signal and the implicit "nothing left anywhere" case.
+                if _current_msg is not None:
+                    done = _is_msg_done(_current_msg)
+                    # Also treat as done if queue is empty and no deferred
+                    # chunks exist for current msg — the STOP handler may
+                    # have cleared _msg_done before we could check it.
+                    if done or (not _deferred.get(_current_msg)):
+                        _clear_msg_done(_current_msg)
+                        _current_msg = None
+                        result = _advance_to_deferred()
+                        if result:
+                            return result
+                continue
+
+            if raw is None:
+                return None, True  # shutdown sentinel
+
+            # Extract msg_id from tuple
+            if isinstance(raw, tuple) and len(raw) >= 3:
+                chunk_msg_id = raw[2]
+            else:
+                chunk_msg_id = -1
+
+            # No current message — start this one
+            if _current_msg is None:
+                _current_msg = chunk_msg_id
+                return raw, True
+
+            # Same message — play it
+            if chunk_msg_id == _current_msg:
+                return raw, True
+
+            # Different message — defer it and mark this queue get() as done
+            _deferred.setdefault(chunk_msg_id, []).append(raw)
+            playback_queue.task_done()
+
+            # Check if current message is now done (all chunks enqueued)
+            # and we should just advance
+            if _is_msg_done(_current_msg):
+                _clear_msg_done(_current_msg)
+                _current_msg = None
+                result = _advance_to_deferred()
+                if result:
+                    return result
+
     while True:
-        item = playback_queue.get()
+        result = _next_item()
+        if result is None:
+            break
+        item, _from_queue = result
         if item is None:
             break
 
@@ -1330,8 +1482,11 @@ def playback_worker(backend: TTSBackend) -> None:
         except Exception as exc:
             print(f"[playback] error: {exc}", flush=True)
         finally:
-            playback_queue.task_done()
-            if playback_queue.empty():
+            # Only call task_done() for items that came from playback_queue.get()
+            # (not for deferred items which already had task_done() called).
+            if _from_queue:
+                playback_queue.task_done()
+            if playback_queue.empty() and not _deferred:
                 unsuppress_dictation()
                 _send_overlay_idle()
 
@@ -1595,7 +1750,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             and _stop_gen == gen_snap
         )
         if use_streaming:
-            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={voice}, pan={pan:.2f}", flush=True)
+            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={_voice_label(voice)}, pan={pan:.2f}", flush=True)
             _gs = gen_snap  # capture for closure
             _mid = msg_id   # capture for closure
             gs_kwargs = {
@@ -1613,6 +1768,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
             # If audio is None, generate_streaming already queued chunks directly
             if audio is None:
+                _mark_msg_done(msg_id)
                 with _order_cond:
                     _next_seq = 0
                     _order_cond.notify_all()
@@ -1638,6 +1794,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     print(f"[req] multi-voice enqueued ({total_audio_secs:.1f}s)", flush=True)
                 else:
                     total_audio_secs = 0.0
+                _mark_msg_done(msg_id)
             else:
                 # Single voice — chunk for lower latency
                 text_chunks = chunk_text_server(
@@ -1646,7 +1803,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 )
                 print(
                     f"[req] BATCH seq={seq}, {len(text)} chars → {len(text_chunks)} chunk(s), "
-                    f"speed={speed}, voice={voice}, pan={pan:.2f}",
+                    f"speed={speed}, voice={_voice_label(voice)}, pan={pan:.2f}",
                     flush=True,
                 )
 
@@ -1670,6 +1827,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                             f"({chunk_secs:.1f}s)",
                             flush=True,
                         )
+                _mark_msg_done(msg_id)
 
             with _order_cond:
                 _next_seq = 0
@@ -1703,10 +1861,12 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     return
                 if audio is not None:
                     playback_queue.put((audio, text, msg_id))
+                _mark_msg_done(msg_id)
                 _next_seq = 0
                 _order_cond.notify_all()
         elif audio is not None and _skip_msg_id != msg_id:
             playback_queue.put((audio, text, msg_id))
+            _mark_msg_done(msg_id)
 
         if audio is not None:
             _stat_inc("audio_seconds_total", len(audio) / backend.sample_rate)
@@ -1816,8 +1976,9 @@ def main() -> None:
             _kwargs["speed"] = _model_config["speed"]
         if _model_config.get("seed") is not None:
             _kwargs["seed"] = _model_config["seed"]
-        if _model_config.get("temperature") is not None:
-            _kwargs["temperature"] = _model_config["temperature"]
+        for _gen_key in ("temperature", "top_p", "top_k", "repetition_penalty"):
+            if _model_config.get(_gen_key) is not None:
+                _kwargs[_gen_key] = _model_config[_gen_key]
 
     global _active_backend, _active_backend_name
     backend = backend_cls(**_kwargs)

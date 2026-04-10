@@ -104,6 +104,11 @@ def _fire_and_forget(text: str, session_id: str, wall_time: float,
         idx = _get_repo_voice_index(cwd)
         if idx is not None:
             body_str = f"\u00ab\u00ab{idx}\u00bb{body_str}\u00bb\u00bb"
+            try:
+                with open("/tmp/tts-hook-debug.log", "a") as _dbg:
+                    _dbg.write(f"{time.strftime('%H:%M:%S')} voice pool_idx={idx} cwd={cwd}\n")
+            except Exception:
+                pass
 
     pan_str = f"{pan:.3f}" if pan != 0.5 else ""
 
@@ -205,10 +210,13 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
-    # Log payload keys for debugging teammate suppression
+    # Log payload for debugging voice selection + teammate suppression
     session_id = payload.get("session_id", "")
     with open("/tmp/tts-hook-debug.log", "a") as _dbg:
-        _dbg.write(f"{time.strftime('%H:%M:%S')} keys={sorted(payload.keys())}\n")
+        _dbg.write(
+            f"{time.strftime('%H:%M:%S')} keys={sorted(payload.keys())} "
+            f"cwd={payload.get('cwd', '')} session={session_id}\n"
+        )
 
     # Teammate/subagent sessions — only the main session speaks
     if payload.get("agent_id") or payload.get("agent_name") or payload.get("team_name"):
