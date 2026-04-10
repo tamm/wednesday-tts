@@ -37,24 +37,41 @@ MUTE_PATH = os.path.join(_TEMP, "tts-mute")
 # ---------------------------------------------------------------------------
 
 def _get_last_assistant_message(transcript_path: str | None) -> str:
-    """Fallback: extract last assistant message from the transcript JSON."""
+    """Fallback: extract last assistant message from the JSONL transcript.
+
+    Claude Code writes transcripts as newline-delimited JSON, one message
+    per line, with `type` of "assistant"/"user" and content nested under
+    `message.content`. Parse line-by-line — `json.load` on the whole file
+    fails silently and leaves TTS mute for the turn.
+    """
     if not transcript_path or not os.path.exists(transcript_path):
         return ""
     try:
-        with open(transcript_path, encoding="utf-8") as f:
-            data = json.load(f)
-        messages = data if isinstance(data, list) else data.get("messages", [])
+        messages = []
+        with open(transcript_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
         for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    parts = [
-                        block.get("text", "")
-                        for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ]
-                    return " ".join(parts).strip()
-                return str(content).strip()
+            if msg.get("type") != "assistant":
+                continue
+            content = msg.get("message", {}).get("content", "")
+            if isinstance(content, list):
+                parts = [
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                text = " ".join(p for p in parts if p).strip()
+                if text:
+                    return text
+            elif isinstance(content, str) and content.strip():
+                return content.strip()
     except Exception:
         pass
     return ""
