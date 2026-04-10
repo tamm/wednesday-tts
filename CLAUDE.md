@@ -11,7 +11,7 @@ Read `docs/inclusive-terms.md`. No exceptions. The default branch is `main`.
 - 18 normalization modules under `src/wednesday_tts/normalize/` (including dates/years)
 - Server at `src/wednesday_tts/server/` — Flask on localhost:5678, backends extracted
 - SAM backend (retro 1982 formant synth) with lowpass + reverb post-processing
-- Per-request voice switching via `««...»»` guillemet tags (SAM voice) — mid-sentence backend swaps
+- Voice pipeline: pool-based voice selection, inline guillemet switching — see `docs/voice-pipeline-spec.md`
 - Thin Claude Code hooks in `integrations/claude-code/`
 - Client library at `src/wednesday_tts/client/api.py`
 
@@ -50,6 +50,10 @@ launchctl kickstart -k gui/$(id -u)/com.tamm.wednesday-tts
 ```
 
 No need to ask first. This command is always allowed.
+
+## Voice pipeline
+
+**Read `docs/voice-pipeline-spec.md` before making any changes to voice selection, the wire protocol, guillemet tags, or the speak-response hook.** That spec is the source of truth for how voices are chosen and how hooks communicate with the daemon.
 
 ## Pocket TTS (primary backend)
 

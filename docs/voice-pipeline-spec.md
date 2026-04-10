@@ -1,0 +1,241 @@
+# Voice Pipeline Spec
+
+Source of truth for how voice selection works, end to end.
+
+## Wire Protocol
+
+All communication from hooks to the daemon is a single JSON object sent over the Unix socket at `/tmp/tts-daemon.sock`, newline-terminated. No custom syntax. Just JSON.
+
+### Message Schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["command"],
+  "properties": {
+    "command": {
+      "type": "string",
+      "enum": ["speak", "stop", "ping", "drain", "normalize", "stats", "render"],
+      "description": "Required. speak = normalise, render audio, play through speakers. stop = halt current playback and drain queue. ping = health check, returns 'ok'. drain = wait for playback queue to empty. normalize = return cleaned text without generating audio. stats = return telemetry as JSON. render = normalise, render audio, return raw PCM bytes (no playback)."
+    },
+    "text": {
+      "type": "string",
+      "description": "The text to speak, normalise, or render. May contain ««guillemet»» tags for inline voice switches. Required when command is speak, normalize, or render."
+    },
+    "normalization": {
+      "type": "string",
+      "enum": ["markdown", "pre-normalized"],
+      "description": "Controls text cleanup before synthesis. Omit for standard normalization (numbers, abbreviations, symbols). 'markdown' = strip markdown formatting (headers, links, code fences, bold, etc.) then standard normalization. 'pre-normalized' = text is already clean, skip all normalization."
+    },
+    "voice_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}$",
+      "description": "8-char hex hash used to deterministically select a voice from the pool. The daemon maps it via int(hash, 16) % pool_size. The hook can derive this from anything stable — repo root, cwd, etc. Omit to use the model's default voice."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Caller's session UUID (e.g. from Claude Code). Included in all log lines for this request so you can trace a voice issue back to a specific session."
+    },
+    "pan": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Stereo pan position computed from terminal window location. 0.0 = hard left, 0.5 = centre, 1.0 = hard right. Omit for centre."
+    },
+    "timestamp": {
+      "type": "number",
+      "description": "Wall-clock epoch (seconds) when the hook fired. Used to measure end-to-end latency from hook trigger to first audio output."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "command": { "enum": ["speak", "normalize", "render"] } } },
+      "then": { "required": ["text"] }
+    }
+  ]
+}
+```
+
+## Voice Pool
+
+The voice pool lives in `~/.claude/tts-config.json` under the active model's config. It is an array of voice entries.
+
+### Voice Entry Schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["name", "voice"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique human-readable identifier. Used in logs and for named voice references in guillemet tags."
+    },
+    "voice": {
+      "type": "string",
+      "description": "Path to voice file (wav, safetensors) or a predefined backend name (e.g. 'alba')."
+    },
+    "voice_text": {
+      "type": "string",
+      "description": "Reference transcript for voice cloning backends. Omit if not needed."
+    }
+  }
+}
+```
+
+### Default Voice
+
+The model config must include a `default_voice` field using the same schema as a pool entry:
+
+```json
+{
+  "default_voice": {
+    "name": "default",
+    "voice": "/Users/tammsjodin/Music/voices/qwen3/default.wav",
+    "voice_text": "When the sunlight strikes random raindrops..."
+  }
+}
+```
+
+This is the voice used when no pool entry can be resolved. It is a voice entry, not a bare path.
+
+### Guillemet Voice
+
+The model config can optionally include a `guillemet_voice` field to control what `««text»»` (no voice specifier) uses:
+
+```json
+{
+  "guillemet_voice": "sam"
+}
+```
+
+If set to `"sam"`, uses the SAM backend (default). Otherwise, it follows the same voice entry schema as pool entries and uses the primary backend. Omit to default to SAM.
+
+### Voice Resolution
+
+The daemon is the **sole decision point** for voice selection. Hooks do not read the voice pool they just send enough information to make decisions.
+
+Resolution order:
+
+1. If `session_id` is provided → `int(sha256(session_id)[:8], 16) % len(pool)` → use that pool entry.
+2. Else if `voice_hash` is provided → `int(voice_hash, 16) % len(pool)` → use that pool entry.
+3. If neither is available, or pool is empty → use the model's **default voice**.
+4. If resolution fails for any reason → use the model's default voice.
+
+Never fall back to SAM. SAM is not a fallback — it is a special-purpose voice for inline switching only.
+
+If the model backend itself fails (crash, missing model, GPU error), the final escape hatch on macOS is the system `say` command. Something is always better than silence.
+
+## Inline Voice Switching (Guillemet Tags)
+
+Guillemet tags `««...»»` allow mid-sentence voice changes within a message. They are for fun/effect — a retro robot voice for a word, a different character voice for a quote. They are **not** the mechanism for choosing the message's primary voice.
+
+### Syntax
+
+| Pattern | Meaning |
+|---------|---------|
+| Plain text (no tags) | Speak with the **request voice** (resolved from session_id, voice_hash, or default). |
+| `««voice_name»text»»` | Speak `text` in the named voice on the primary backend. |
+| `««voice_name\|instruct»text»»` | Named voice with instruct text (e.g. `««alba\|whisper»boo»»`). |
+| `««\|instruct»text»»` | Instruct only, no voice switch. Uses the request voice with the given instruct (e.g. `««\|excited»great news»»`). |
+| `««text»»` | Speak `text` in the **guillemet voice** (see below). Defaults to SAM (retro 1982 formant synth). |
+
+## Pipeline
+
+### Terminology
+
+- **Message**: One complete request from a hook. One assistant response = one message. Identified by `msg_id`.
+- **Segment**: A contiguous piece of text within a message that shares a single voice. A message with no guillemet tags has one segment. A message like `"Hello ««world»» goodbye"` has three segments (plain, guillemet, plain).
+- **Chunk**: A piece of audio within a segment. Streaming backends produce multiple chunks per segment for lower latency. Batch backends produce one chunk per segment.
+
+Message > Segment > Chunk. Playback order follows this hierarchy strictly.
+
+### Step 1: Hook fires
+
+Triggered by a Claude Code assistant message (primary session only — agent/subagent messages are filtered out by the hook).
+
+The hook:
+
+1. Extracts `cwd`, `session_id` from the Claude Code payload.
+2. Filters out agent/subagent messages — if the payload contains `agent_id`, `agent_name`, or `team_name`, the hook exits without sending anything. Only the primary session speaks.
+3. Extracts the assistant message text from the payload.
+4. Computes `voice_hash`: SHA-256 of the git repo root (or cwd if not in a repo), truncated to 8 hex chars.
+5. Computes `pan`: stereo position from the terminal window's screen location (macOS only, falls back to centre).
+6. Records `timestamp` for latency tracking.
+7. Sends a JSON object to the daemon socket with all of the above.
+
+### Step 2: Daemon receives request
+
+1. Parse JSON. Extract `session_id`, `voice_hash`, `text`, etc.
+2. Assign a `msg_id` (monotonic integer). One request = one message = one `msg_id`. Used everywhere: rendering, queueing, playback, logging.
+3. Resolve voice from `session_id` or `voice_hash` (see Voice Resolution above). Log it.
+4. This resolved voice is the **request voice** for the entire message.
+
+Messages are processed and played strictly one at a time. A message is all segments and all chunks from a single request. If a new request arrives while a previous message is still rendering or playing, it waits. The listener never hears audio from two messages interleaved.
+
+### Step 3: Parse inline voice switches
+
+Before normalisation, parse guillemet tags in the text:
+
+1. Split text into segments: plain text segments and tagged segments.
+2. Plain text segments get the request voice.
+3. Tagged segments get their specified voice (SAM if no voice specifier, named voice otherwise).
+4. Each segment knows its voice and backend before normalisation begins.
+
+### Step 4: Normalise
+
+Run each segment's text through the normalisation pipeline (unless `normalization` is `"pre-normalized"`). Voice identifiers are never normalised.
+
+### Step 5: Render
+
+For each segment:
+- Plain/named voice segments → primary backend with assigned voice.
+- SAM segments → SAM backend.
+
+Segments are rendered and played in order. Each segment streams individually if the backend supports it — a mixed-voice message is just a sequence of segments, each with its own voice and backend.
+
+### Step 6: Playback
+
+- Segments play in order: segment 0 finishes completely before segment 1 starts.
+- Within a streaming segment, chunks play in generation order.
+- No segment or chunk is skipped or reordered.
+- The next message does not begin until every segment of the current message has finished playing.
+- **STOP**: Cancels the current message immediately. Discards all queued messages. Silence until a new speak request arrives.
+- **SKIP** (SIGUSR1): Cancels the current message immediately. The next queued message begins playing. Use this when the user interrupts but more messages are waiting.
+
+## Logging
+
+Every request gets a `msg_id` (monotonic integer, assigned by daemon on receipt).
+
+### Log Points
+
+| Point | Tag | What to log |
+|-------|-----|-------------|
+| Hook send | `[hook]` | `voice_hash=H session=S cwd=PATH` |
+| Daemon receive | `[req]` | `msg_id=N voice_hash=H session=S → voice=NAME` |
+| Segment parse | `[req]` | `msg_id=N seg=I backend=B voice=NAME chars=C` |
+| Render complete | `[req]` | `msg_id=N seg=I audio=Xs rtf=R` |
+| Enqueue | `[req]` | `msg_id=N seg=I enqueued` |
+| Playback start | `[play]` | `msg_id=N seg=I start` |
+| Playback done | `[play]` | `msg_id=N seg=I done` |
+| Message done | `[play]` | `msg_id=N all segments played` |
+
+**Privacy note:** For now, text content appears in logs for debugging convenience. Long-term, replace text with a hash of what was spoken.
+
+**Session/agent IDs** are included at receive time so you can trace which session produced which voice.
+
+## What NOT to do
+
+| Rule | Why |
+|------|-----|
+| Do not embed voice selection in the text body | Conflates message voice with inline switching. Caused the dict-as-string bug where voice dicts were serialised into guillemet tags and re-parsed. |
+| Do not fall back to SAM on resolution failure | SAM is a novelty voice for inline fun, not a fallback. Default voice exists for a reason. |
+| Do not read the voice pool in the hook | One reader (daemon), one decision point. Hook sends a hash, daemon resolves. Prevents pool-size mismatches. |
+| Do not use `str(dict)` as a voice identifier | Voice entries are dicts in memory, passed by reference. Never serialise them to strings for matching or transport. |
+| Do not send sequence numbers from hooks | Chunking and ordering are internal daemon concerns. Hooks send whole messages. |
+| Do not use custom string-delimited wire formats | Colons, pipes, and other delimiters appear in normal text and break parsing. JSON is the wire format, full stop. |
+| Do not resolve the voice more than once per request | Resolve at receive time, pass the resolved entry through the pipeline. Re-resolution caused the same hash to produce different results when config was re-read mid-request. |
+| Do not normalise voice identifiers | Parse guillemet tags before normalisation. Voice names and paths must not go through the text normaliser. |
+| Do not use `int(time.time())` as any kind of identifier | Wall-clock time is not monotonic and collides across concurrent requests. Use monotonic counters or UUIDs. |
