@@ -191,24 +191,21 @@ class TestAbortStream:
 class TestDaemonStreamingToQueue:
     """Verify the daemon's streaming path feeds chunks into playback_queue."""
 
-    def test_streaming_feeds_queue_and_advances_seq(self):
-        """SEQ:0 streaming should call generate_streaming and complete the request.
-
-        When generate_streaming returns None (queued directly), _next_seq resets to 0.
-        """
+    def test_streaming_feeds_queue_and_completes(self):
+        """JSON speak with streaming backend should call generate_streaming."""
         from wednesday_tts.server import daemon
+        import json
 
         saved_stats = dict(daemon._stats)
-        saved_next_seq = daemon._next_seq
         daemon._stats["requests_total"] = 0
         daemon._stats["requests_completed"] = 0
         daemon._stats["requests_errored"] = 0
         daemon._stats["requests_stopped"] = 0
-        daemon._next_seq = 0
 
         try:
+            msg = json.dumps({"command": "speak", "text": "hello", "normalization": "pre-normalized"})
             mock_conn = MagicMock()
-            mock_conn.recv.return_value = b"SEQ:0:N:normalized::hello"
+            mock_conn.recv.return_value = msg.encode("utf-8")
 
             mock_backend = MagicMock()
             mock_backend.supports_streaming = True
@@ -219,33 +216,30 @@ class TestDaemonStreamingToQueue:
 
             with patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]), \
                  patch.object(daemon, "run_normalize", return_value="hello"), \
-                 patch.object(daemon, "_dedup_check", return_value=False):
+                 patch.object(daemon, "_dedup_check", return_value=False), \
+                 patch.object(daemon, "_resolve_voice_for_request", return_value=None):
                 daemon.handle_client(mock_conn, mock_backend)
 
-            # generate_streaming should have been called
             assert mock_backend.generate_streaming.call_count >= 1
-            # _next_seq resets to 0 after streaming completes
-            assert daemon._next_seq == 0, f"_next_seq should be 0, got {daemon._next_seq}"
             assert daemon._stats["requests_completed"] >= 1
         finally:
             daemon._stats.update(saved_stats)
-            daemon._next_seq = saved_next_seq
 
     def test_streaming_fallback_to_batch_on_timeout(self):
         """When generate_streaming returns audio (not None), it gets enqueued normally."""
         from wednesday_tts.server import daemon
+        import json
 
         saved_stats = dict(daemon._stats)
-        saved_next_seq = daemon._next_seq
         daemon._stats["requests_total"] = 0
         daemon._stats["requests_completed"] = 0
         daemon._stats["requests_errored"] = 0
         daemon._stats["requests_stopped"] = 0
-        daemon._next_seq = 0
 
         try:
+            msg = json.dumps({"command": "speak", "text": "hello", "normalization": "pre-normalized"})
             mock_conn = MagicMock()
-            mock_conn.recv.return_value = b"SEQ:0:N:normalized::hello"
+            mock_conn.recv.return_value = msg.encode("utf-8")
 
             mock_backend = MagicMock()
             mock_backend.supports_streaming = True
@@ -258,6 +252,7 @@ class TestDaemonStreamingToQueue:
             with patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]), \
                  patch.object(daemon, "run_normalize", return_value="hello"), \
                  patch.object(daemon, "_dedup_check", return_value=False), \
+                 patch.object(daemon, "_resolve_voice_for_request", return_value=None), \
                  patch.object(daemon, "playback_queue") as mock_pq:
                 daemon.handle_client(mock_conn, mock_backend)
 
@@ -266,7 +261,6 @@ class TestDaemonStreamingToQueue:
             assert daemon._stats["requests_completed"] >= 1
         finally:
             daemon._stats.update(saved_stats)
-            daemon._next_seq = saved_next_seq
 
 
 # ---------------------------------------------------------------------------
@@ -279,9 +273,10 @@ class TestPingResponse:
 
     def test_ping_returns_ok(self):
         from wednesday_tts.server import daemon
+        import json
 
         mock_conn = MagicMock()
-        mock_conn.recv.return_value = b"PING"
+        mock_conn.recv.return_value = json.dumps({"command": "ping"}).encode("utf-8")
         daemon.handle_client(mock_conn, MagicMock())
         mock_conn.send.assert_called_once_with(b"ok")
 

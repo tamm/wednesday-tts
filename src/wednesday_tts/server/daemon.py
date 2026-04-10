@@ -182,66 +182,66 @@ def _get_override_backend(name: str) -> TTSBackend | None:
 
 def _split_voice_segments(
     text: str,
-) -> list[tuple[str | None, str | None, str]]:
-    """Split text into segments of (voice_name, instruct, text).
+) -> list[tuple[str | dict | None, str | None, str]]:
+    """Split text into segments of (voice, instruct, text).
 
-    Plain text segments have voice_name=None, instruct=None (use primary backend).
-    Tagged segments use guillemet syntax:
-      - ««text»»                        → voice_name="sam" (backward compatible)
-      - ««alba»text»»                   → voice_name="alba" (named voice)
-      - ««2»text»»                      → voice_pool index 2 (resolved from config)
-      - ««tamm1»text»»                  → voice_pool name lookup
-      - ««/path/v.safetensors»text»»    → custom voice file path
-      - ««|calm and warm»text»»         → instruct only, default voice
+    Plain text segments have voice=None (use the request voice).
+    Tagged segments use guillemet syntax per voice-pipeline-spec.md:
+      - ««text»»                        → guillemet voice (SAM by default, configurable)
+      - ««voice_name»text»»             → named voice from pool
+      - ««voice_name|instruct»text»»    → named voice with instruct
+      - ««|instruct»text»»              → request voice with instruct
 
     Returns a list of (voice, instruct, text) tuples preserving original order.
-    Empty segments are skipped.
     """
-    # Match everything between double guillemets
+    _, _, guillemet_voice = _load_voice_config()
+
     pattern = re.compile(r"\u00ab\u00ab(.+?)\u00bb\u00bb", re.DOTALL)
 
-    segments: list[tuple[str | None, str | None, str]] = []
+    segments: list[tuple[str | dict | None, str | None, str]] = []
     last_end = 0
     for m in pattern.finditer(text):
-        # Plain text before this tag
         before = text[last_end:m.start()].strip()
         if before:
             segments.append((None, None, before))
 
         content = m.group(1)
         instruct = None
-        # Check if content contains a single » that splits voice_id from text.
-        # The double »» is already consumed by the outer regex, so any » inside
-        # is a voice/text separator.
+
         if "\u00bb" in content:
             voice_id, tagged_text = content.split("\u00bb", 1)
             voice_id = voice_id.strip()
             tagged_text = tagged_text.strip()
-            # Parse voice|instruct if pipe is present
+            # Parse voice|instruct
             if "|" in voice_id:
                 voice_part, instruct = voice_id.split("|", 1)
                 voice_id = voice_part.strip()
                 instruct = instruct.strip() or None
-            # Empty voice (e.g. ««|calm»text»») means default voice
             if not voice_id:
+                # ««|instruct»text»» — request voice with instruct
                 voice_id = None
-            # Resolve pool reference (index or name) from config
-            elif voice_id != "sam":
-                voice_id = _resolve_pool_entry(voice_id)
+            elif voice_id == "sam":
+                pass  # SAM backend, keep as string
+            else:
+                # Named voice — resolve from pool
+                resolved = _resolve_pool_entry_by_name(voice_id)
+                voice_id = resolved  # dict or None
         else:
-            # No separator — SAM voice, whole content is text
-            voice_id = "sam"
+            # ««text»» — guillemet voice (SAM by default)
             tagged_text = content.strip()
+            if guillemet_voice and guillemet_voice != "sam":
+                # Config overrides to a named voice
+                voice_id = guillemet_voice if isinstance(guillemet_voice, dict) else _resolve_pool_entry_by_name(guillemet_voice)
+            else:
+                voice_id = "sam"
 
         if tagged_text:
             segments.append((voice_id, instruct, tagged_text))
         last_end = m.end()
 
-    # Trailing plain text after last tag
     after = text[last_end:].strip()
     if after:
         segments.append((None, None, after))
-    # If no tags found at all, return the whole text as one segment
     if not segments and text.strip():
         segments.append((None, None, text.strip()))
     return segments
@@ -256,13 +256,11 @@ def _voice_label(voice: "str | dict | None") -> str:
     return str(voice)
 
 
-def _resolve_pool_entry(voice_id: str) -> str | dict:
-    """Resolve a voice_pool reference (index or name) to a voice entry.
+def _load_voice_config() -> tuple[list[dict], dict | None, str | None]:
+    """Load voice pool, default voice, and guillemet voice from config.
 
-    Accepts a numeric index ("4") or a name ("tamm1") to match against
-    the "name" field in pool entries. Returns the full dict entry (with
-    voice + voice_text) if available, or a plain string path.
-    Falls back to "sam" if not found.
+    Returns (pool, default_voice_entry, guillemet_voice).
+    Called per-request so config changes take effect without restart.
     """
     cfg_path = os.path.expanduser("~/.claude/tts-config.json")
     try:
@@ -270,25 +268,80 @@ def _resolve_pool_entry(voice_id: str) -> str | dict:
             cfg = json.load(f)
         active = cfg.get("active_model", "pocket")
         model_cfg = cfg.get("models", {}).get(active, {})
-        pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
-
-        # Try numeric index first
-        if voice_id.isdigit():
-            index = int(voice_id)
-            if 0 <= index < len(pool):
-                entry = pool[index]
-                print(f"[voice] pool[{index}] → {_voice_label(entry)}", flush=True)
-                return entry
-        else:
-            # Match by name
-            for i, entry in enumerate(pool):
-                if isinstance(entry, dict) and entry.get("name") == voice_id:
-                    print(f"[voice] pool name {voice_id!r} → [{i}] {_voice_label(entry)}", flush=True)
-                    return entry
+        pool = model_cfg.get("voice_pool") or []
+        default_voice = model_cfg.get("default_voice")
+        guillemet_voice = model_cfg.get("guillemet_voice")
+        # If no explicit default_voice, synthesize one from model config
+        if not default_voice and model_cfg.get("voice"):
+            default_voice = {
+                "name": "default",
+                "voice": model_cfg["voice"],
+            }
+            if model_cfg.get("voice_text"):
+                default_voice["voice_text"] = model_cfg["voice_text"]
+        return pool, default_voice, guillemet_voice
     except Exception as exc:
-        print(f"[voice] config error resolving {voice_id!r}: {exc}", flush=True)
-    print(f"[voice] pool entry {voice_id!r} not found, falling back to sam", flush=True)
-    return "sam"
+        print(f"[voice] config load error: {exc}", flush=True)
+        return [], None, None
+
+
+def _resolve_voice_for_request(
+    session_id: str | None = None,
+    voice_hash: str | None = None,
+) -> dict | None:
+    """Resolve the request voice per the voice pipeline spec.
+
+    Resolution order:
+    1. session_id → sha256(session_id)[:8] → pool index
+    2. voice_hash → int(hash, 16) % pool_size → pool index
+    3. default voice from model config
+    4. None (backend uses its own default)
+
+    Returns a voice entry dict or None.
+    """
+    pool, default_voice, _ = _load_voice_config()
+
+    if pool:
+        # 1. Session ID hash
+        if session_id:
+            h = hashlib.sha256(session_id.encode()).hexdigest()[:8]
+            idx = int(h, 16) % len(pool)
+            entry = pool[idx]
+            print(f"[voice] session_id → pool[{idx}] → {_voice_label(entry)}", flush=True)
+            return entry
+
+        # 2. Voice hash from hook
+        if voice_hash:
+            try:
+                idx = int(voice_hash, 16) % len(pool)
+                entry = pool[idx]
+                print(f"[voice] voice_hash={voice_hash} → pool[{idx}] → {_voice_label(entry)}", flush=True)
+                return entry
+            except (ValueError, IndexError):
+                pass
+
+    # 3. Default voice
+    if default_voice:
+        print(f"[voice] → default ({_voice_label(default_voice)})", flush=True)
+        return default_voice
+
+    # 4. No config at all
+    print("[voice] → backend default (no config)", flush=True)
+    return None
+
+
+def _resolve_pool_entry_by_name(name: str) -> dict | None:
+    """Resolve a named voice from the pool (for guillemet tags).
+
+    Falls back to default voice, never SAM.
+    """
+    pool, default_voice, _ = _load_voice_config()
+    for i, entry in enumerate(pool):
+        if isinstance(entry, dict) and entry.get("name") == name:
+            print(f"[voice] guillemet name {name!r} → pool[{i}]", flush=True)
+            return entry
+    print(f"[voice] guillemet name {name!r} not found → default", flush=True)
+    return default_voice
 
 
 def _render_segments(
@@ -472,15 +525,6 @@ def run_normalize(text: str, content_type: str = "markdown") -> str:
     return normalize(text, content_type=content_type, dictionary=dictionary, filenames_dict=filenames_dict)
 
 
-# ---------------------------------------------------------------------------
-# Ordered chunk delivery
-# ---------------------------------------------------------------------------
-# Ensures chunks enqueued for playback arrive in sequence-number order even
-# when parallel renders complete out of order.
-
-_order_lock = threading.Lock()
-_order_cond = threading.Condition(_order_lock)
-_next_seq = 0       # sequence number the playback queue expects next
 _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
 _skip_gen = 0       # incremented on SKIP; playback write loop bails but queue/renders survive
 _msg_id_counter = 0         # monotonic message ID; incremented per request
@@ -538,7 +582,7 @@ def _stop_playback() -> None:
     OutputStream stays open but goes silent (nothing to write).
     Increments _stop_gen so in-flight generation threads bail out.
     """
-    global _next_seq, _stop_gen
+    global _stop_gen
     # Drain the queue — discard all pending items
     while True:
         try:
@@ -550,10 +594,7 @@ def _stop_playback() -> None:
     with _msg_done_lock:
         _msg_done.clear()
     _msg_done_event.set()
-    with _order_cond:
-        _stop_gen += 1
-        _next_seq = 0
-        _order_cond.notify_all()
+    _stop_gen += 1
     # Kill spatial stream so head-tracked audio stops immediately
     _kill_spatial_stream()
     if _vpio is not None:
@@ -1508,48 +1549,54 @@ def playback_worker(backend: TTSBackend) -> None:
 def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
     """Handle one client connection.
 
-    Protocols (wire format, newline-terminated or fixed recv):
-        SEQ:N:speed:ct:ts:pan:text  render text with sequence N, play in order
-                                    ct=content_type (markdown|normalized), ts=epoch float or empty
-                                    pan=stereo position 0.0-1.0 (empty = 0.5 centre)
-        SEQ:N:speed:ct:ts:text      (legacy 6-field form, pan defaults to 0.5)
-        SPEED:speed:text        legacy unsequenced render (backward compat, deprecated)
-        PCM:speed:text          render and return raw PCM (4-byte LE sample_rate + float32)
-        NORMALIZE:ct:text       normalize text and return it as UTF-8 (no audio)
-        DRAIN                   wait for all audio, reset seq counter
-        STOP                    stop current audio, drain queue
-        PING                    health check
-        STATS                   return telemetry JSON
-    """
-    global _next_seq
+    Wire protocol: JSON object, newline-terminated. See docs/voice-pipeline-spec.md.
 
+    Commands:
+        speak       normalise, render audio, play through speakers
+        stop        halt current playback and drain queue
+        ping        health check
+        drain       wait for playback queue to empty
+        normalize   return cleaned text without generating audio
+        stats       return telemetry as JSON
+        render      normalise, render audio, return raw PCM bytes (no playback)
+    """
     try:
-        message = conn.recv(65536).decode("utf-8").strip()
-        if not message:
+        raw = conn.recv(65536).decode("utf-8").strip()
+        if not raw:
             conn.send(b"ok")
             return
 
+        # Parse JSON message
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            print(f"[req] invalid JSON: {raw[:80]!r}", flush=True)
+            conn.send(b"error")
+            return
+
+        command = msg.get("command", "speak")
+
         # ── PING ──────────────────────────────────────────────────────────
-        if message == "PING":
+        if command == "ping":
             conn.send(b"ok")
             return
 
         # ── STOP ──────────────────────────────────────────────────────────
-        if message == "STOP":
+        if command == "stop":
             print("[cmd] STOP received, draining queue", flush=True)
             _stop_playback()
             conn.send(b"ok")
             return
 
         # ── SKIP ──────────────────────────────────────────────────────────
-        if message == "SKIP":
+        if command == "skip":
             print(f"[cmd] SKIP received, msg_id={_playing_msg_id}", flush=True)
             _skip_current()
             conn.send(b"ok")
             return
 
         # ── STATS ─────────────────────────────────────────────────────────
-        if message == "STATS":
+        if command == "stats":
             with _stats_lock:
                 s = dict(_stats)
             uptime = time.time() - s["service_start_time"] if s["service_start_time"] else 0
@@ -1574,46 +1621,34 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             return
 
         # ── DRAIN ─────────────────────────────────────────────────────────
-        if message == "DRAIN":
-            # join() has no built-in timeout — poll with a deadline instead
+        if command == "drain":
             deadline = time.monotonic() + 30
             while not playback_queue.empty():
                 if time.monotonic() > deadline:
                     print("DRAIN timeout after 30s", flush=True)
                     break
                 time.sleep(0.05)
-            with _order_cond:
-                _next_seq = 0
-                _order_cond.notify_all()
             conn.send(b"ok")
             return
 
         # ── NORMALIZE — return normalized text, no audio ───────────────
-        if message.startswith("NORMALIZE:"):
-            # NORMALIZE:content_type:text
-            parts = message.split(":", 2)
-            if len(parts) == 3:
-                ct = parts[1]
-                norm_text = parts[2]
+        if command == "normalize":
+            text = msg.get("text", "")
+            normalization = msg.get("normalization", "markdown")
+            if normalization == "pre-normalized":
+                conn.sendall(text.encode("utf-8"))
             else:
-                ct = "markdown"
-                norm_text = message[len("NORMALIZE:"):]
-            result_text = run_normalize(norm_text, content_type=ct)
-            conn.sendall(result_text.encode("utf-8"))
+                result_text = run_normalize(text, content_type=normalization)
+                conn.sendall(result_text.encode("utf-8"))
             return
 
-        # ── PCM — render and return raw bytes, no playback ─────────────
-        if message.startswith("PCM:"):
-            parts = message.split(":", 2)
-            pcm_speed = DEFAULT_SPEED
-            pcm_text = message[4:]
-            if len(parts) == 3:
-                try:
-                    pcm_speed = float(parts[1])
-                    pcm_text = parts[2]
-                except ValueError:
-                    pass
-            audio = backend.generate(pcm_text, speed=pcm_speed)
+        # ── RENDER — render and return raw PCM bytes, no playback ──────
+        if command == "render":
+            text = msg.get("text", "")
+            normalization = msg.get("normalization", "markdown")
+            if normalization != "pre-normalized":
+                text = run_normalize(text, content_type=normalization)
+            audio = backend.generate(text, speed=DEFAULT_SPEED)
             if audio is not None:
                 sr_bytes = struct.pack("<I", backend.sample_rate)
                 pcm_bytes = audio.astype(np.float32).tobytes()
@@ -1622,86 +1657,58 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 conn.send(b"")
             return
 
+        # ── SPEAK — the main path ─────────────────────────────────────────
+        if command != "speak":
+            print(f"[req] unknown command: {command!r}", flush=True)
+            conn.send(b"error")
+            return
+
         _stat_inc("requests_total")
 
-        # ── Parse message ─────────────────────────────────────────────────
+        text = msg.get("text", "")
+        if not text.strip():
+            conn.send(b"ok")
+            return
+
+        session_id = msg.get("session_id")
+        voice_hash = msg.get("voice_hash")
+        normalization = msg.get("normalization", "markdown")
+        pan: float = max(0.0, min(1.0, float(msg.get("pan", 0.5))))
+        timestamp = msg.get("timestamp")
+
+        # ── Resolve request voice (once, per spec) ─────────────────────
+        request_voice = _resolve_voice_for_request(
+            session_id=session_id,
+            voice_hash=voice_hash,
+        )
+
+        # ── Assign message ID ─────────────────────────────────────────
+        global _msg_id_counter
+        _msg_id_counter += 1
+        msg_id = _msg_id_counter
+
+        latency_note = ""
+        if timestamp:
+            latency_note = f" latency={time.time() - timestamp:.2f}s"
+
+        print(
+            f"[req] msg_id={msg_id} voice_hash={voice_hash} session={session_id} "
+            f"→ voice={_voice_label(request_voice)} pan={pan:.2f} "
+            f"{len(text)} chars{latency_note}",
+            flush=True,
+        )
+
+        # ── Set stereo pan for this request ──────────────────────────────
         global _current_pan
-        seq: int | None = None
-        speed = DEFAULT_SPEED
-        text = message
-        content_type = "normalized"  # backward compat
-        voice: str | None = None
-        pan: float = 0.5  # default centre
+        _current_pan = pan
 
-        if message.startswith("SEQ:"):
-            # 7-field: SEQ:N:speed:ct:ts:pan:text  (pan = float or empty)
-            # 6-field: SEQ:N:speed:ct:ts:text       (legacy, no pan)
-            # 4-field: SEQ:N:speed:text              (oldest, __ct:/__t: prefixes)
-            #
-            # Detect 7-field vs 6-field: try splitting at 6 colons first.
-            # If parts[5] is empty or a valid float, treat as 7-field (pan field).
-            # Otherwise fall back to 6-field parse.
-            parts7 = message.split(":", 6)
-            if len(parts7) >= 7 and (not parts7[5] or re.match(r"^[01]?\.\d+$", parts7[5])):
-                # 7-field format with pan
-                try:
-                    seq = int(parts7[1])
-                    speed = DEFAULT_SPEED if parts7[2] == "N" else float(parts7[2])
-                    content_type = parts7[3] if parts7[3] else "markdown"
-                    # parts7[4] is timestamp
-                    if parts7[5]:
-                        pan = max(0.0, min(1.0, float(parts7[5])))
-                    text = parts7[6]
-                except ValueError:
-                    pass
-            else:
-                parts = message.split(":", 5)
-                if len(parts) >= 6:
-                    # 6-field format (no pan)
-                    try:
-                        seq = int(parts[1])
-                        speed = DEFAULT_SPEED if parts[2] == "N" else float(parts[2])
-                        content_type = parts[3] if parts[3] else "markdown"
-                        # parts[4] is timestamp
-                        text = parts[5]
-                    except ValueError:
-                        pass
-            if seq is None:
-                # Old 4-field format — backward compat
-                parts4 = message.split(":", 3)
-                if len(parts4) >= 4:
-                    try:
-                        seq = int(parts4[1])
-                        speed = DEFAULT_SPEED if parts4[2] == "N" else float(parts4[2])
-                        text = parts4[3]
-                    except ValueError:
-                        pass
-                    # Legacy __ct: prefix embedded in text
-                    _ct = re.match(r"^__ct:([a-zA-Z0-9_-]+)__", text)
-                    if _ct:
-                        content_type = _ct.group(1)
-                        text = text[_ct.end():]
-                    # Legacy __t: timestamp prefix
-                    text = re.sub(r"^__t:[\d.]+__", "", text)
-
-        elif message.startswith("SPEED:"):
-            # DEPRECATED: use SEQ:0 instead. Will be removed in a future version.
-            parts = message.split(":", 2)
-            if len(parts) == 3:
-                try:
-                    speed = float(parts[1])
-                    text = parts[2]
-                except ValueError:
-                    pass
-
-        # ── Parse voice segments BEFORE normalisation ──────────────────
-        # Voice IDs may contain paths that normalisation would mangle.
+        # ── Parse inline voice switches BEFORE normalisation ─────────────
         segments = _split_voice_segments(text)
 
-        # ── Normalize text segments (not voice IDs) ──────────────────────
-        if content_type != "normalized":
+        # ── Normalise text segments (not voice IDs) ──────────────────────
+        if normalization != "pre-normalized":
             segments = [
-                (v, i, run_normalize(t, content_type=content_type))
+                (v, i, run_normalize(t, content_type=normalization))
                 for v, i, t in segments
             ]
 
@@ -1710,38 +1717,33 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── Dedup: skip if this text was recently spoken ─────────────────
         if _dedup_check(text):
-            print(f"[req] dedup skip, seq={seq}, {len(text)} chars", flush=True)
+            print(f"[req] dedup skip, msg_id={msg_id}, {len(text)} chars", flush=True)
             _stat_inc("requests_completed")
             conn.send(b"ok")
             return
 
-        # Determine if we need backend switching (SAM segments mixed with pocket).
-        # A single pocket voice for the whole message is NOT mixed — we can stream.
+        # Determine if we need backend switching (SAM segments mixed with primary).
         needs_backend_switch = any(
             v == "sam" for v, _, _ in segments
         ) and any(v != "sam" for v, _, _ in segments)
 
         # Extract voice and instruct for single-segment or uniform-voice messages
+        voice = request_voice
         instruct = None
         if len(segments) == 1 and segments[0][0] and segments[0][0] != "sam":
             voice = segments[0][0]
             instruct = segments[0][1]
             text = segments[0][2]
-        elif not any(v is not None for v, _, _ in segments):
-            voice = None  # no tags at all
-
-        # ── Set stereo pan for this request ──────────────────────────────
-        _current_pan = pan
-
-        # ── Assign message ID for skip tracking ──────────────────────────
-        global _msg_id_counter
-        _msg_id_counter += 1
-        msg_id = _msg_id_counter
+        elif len(segments) == 1 and segments[0][1]:
+            # Instruct-only tag (voice=None means use request voice)
+            instruct = segments[0][1]
+            text = segments[0][2]
 
         # ── Render ────────────────────────────────────────────────────────
         gen_snap = _stop_gen
+        speed = DEFAULT_SPEED
 
-        # Streaming: single voice on primary backend, no backend switching needed
+        # Streaming: single voice on primary backend, no backend switching
         use_streaming = (
             not needs_backend_switch
             and not any(v == "sam" for v, _, _ in segments)
@@ -1750,9 +1752,9 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             and _stop_gen == gen_snap
         )
         if use_streaming:
-            print(f"[req] STREAM-RENDER seq={seq}, {len(text)} chars, speed={speed}, voice={_voice_label(voice)}, pan={pan:.2f}", flush=True)
-            _gs = gen_snap  # capture for closure
-            _mid = msg_id   # capture for closure
+            print(f"[req] STREAM msg_id={msg_id}, {len(text)} chars, voice={_voice_label(voice)}", flush=True)
+            _gs = gen_snap
+            _mid = msg_id
             gs_kwargs = {
                 "speed": speed,
                 "playback_queue": playback_queue,
@@ -1766,23 +1768,19 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             except TypeError:
                 audio = backend.generate_streaming(text, **gs_kwargs)
 
-            # If audio is None, generate_streaming already queued chunks directly
             if audio is None:
                 _mark_msg_done(msg_id)
-                with _order_cond:
-                    _next_seq = 0
-                    _order_cond.notify_all()
                 _stat_inc("requests_completed")
                 conn.send(b"ok")
                 return
         else:
-            # ── BATCH render ──────────────────────────────────────────────────
+            # ── BATCH render ──────────────────────────────────────────────
+            total_audio_secs = 0.0
+
             if needs_backend_switch:
-                # Mixed backends (e.g. SAM + qwen3) — render the parsed segments
-                # directly so each segment uses its assigned voice/backend.
                 print(
-                    f"[req] MULTI-VOICE seq={seq}, {len(text)} chars → {len(segments)} segment(s), "
-                    f"speed={speed}, pan={pan:.2f}",
+                    f"[req] MULTI-VOICE msg_id={msg_id}, {len(text)} chars → "
+                    f"{len(segments)} seg(s)",
                     flush=True,
                 )
                 chunk_audio = _render_segments(
@@ -1791,23 +1789,18 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
                     playback_queue.put((chunk_audio, text, msg_id))
                     total_audio_secs = len(chunk_audio) / backend.sample_rate
-                    print(f"[req] multi-voice enqueued ({total_audio_secs:.1f}s)", flush=True)
-                else:
-                    total_audio_secs = 0.0
                 _mark_msg_done(msg_id)
             else:
-                # Single voice — chunk for lower latency
                 text_chunks = chunk_text_server(
                     text, min_size=120, max_size=300,
                     backend_name=_active_backend_name,
                 )
                 print(
-                    f"[req] BATCH seq={seq}, {len(text)} chars → {len(text_chunks)} chunk(s), "
-                    f"speed={speed}, voice={_voice_label(voice)}, pan={pan:.2f}",
+                    f"[req] BATCH msg_id={msg_id}, {len(text)} chars → "
+                    f"{len(text_chunks)} chunk(s), voice={_voice_label(voice)}",
                     flush=True,
                 )
 
-                total_audio_secs = 0.0
                 for ci, chunk_text in enumerate(text_chunks):
                     if _stop_gen != gen_snap or _skip_msg_id == msg_id:
                         break
@@ -1819,8 +1812,6 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                         playback_queue.put((chunk_audio, chunk_text, msg_id))
                         chunk_secs = len(chunk_audio) / backend.sample_rate
                         total_audio_secs += chunk_secs
-                        # Heartbeat: tell the watchdog we're still making
-                        # progress so it doesn't kill long multi-chunk renders.
                         _touch_activity()
                         print(
                             f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
@@ -1829,42 +1820,14 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                         )
                 _mark_msg_done(msg_id)
 
-            with _order_cond:
-                _next_seq = 0
-                _order_cond.notify_all()
-
             if total_audio_secs > 0:
                 _stat_inc("audio_seconds_total", total_audio_secs)
             _stat_inc("requests_completed")
             conn.send(b"ok")
             return
 
-        # ── Enqueue in order (streaming path) ─────────────────────────────
-        if seq is not None:
-            with _order_cond:
-                if _stop_gen != gen_snap or _skip_msg_id == msg_id:
-                    conn.send(b"ok")
-                    return
-                deadline = time.monotonic() + 5
-                while _next_seq != seq:
-                    if _stop_gen != gen_snap or _skip_msg_id == msg_id:
-                        conn.send(b"ok")
-                        return
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        print(f"SEQ timeout: expected {_next_seq}, got {seq}. Resetting.", flush=True)
-                        _next_seq = seq
-                        break
-                    _order_cond.wait(timeout=min(remaining, 10))
-                if _stop_gen != gen_snap or _skip_msg_id == msg_id:
-                    conn.send(b"ok")
-                    return
-                if audio is not None:
-                    playback_queue.put((audio, text, msg_id))
-                _mark_msg_done(msg_id)
-                _next_seq = 0
-                _order_cond.notify_all()
-        elif audio is not None and _skip_msg_id != msg_id:
+        # ── Streaming path — audio returned directly ──────────────────────
+        if audio is not None and _skip_msg_id != msg_id:
             playback_queue.put((audio, text, msg_id))
             _mark_msg_done(msg_id)
 

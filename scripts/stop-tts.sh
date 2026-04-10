@@ -13,12 +13,12 @@ echo "$(date '+%H:%M:%S') stop-tts.sh called with args: $*" >> /tmp/stop-tts-deb
 
 if [[ "$1" == "skip" ]]; then
     python3 -c "
-import socket
+import socket, json
 try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(1)
     s.connect('/tmp/tts-daemon.sock')
-    s.send(b'SKIP')
+    s.sendall((json.dumps({'command':'skip'})+'\n').encode())
     s.recv(16)
 except: pass
 " 2>/dev/null
@@ -38,7 +38,7 @@ try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(1)
     s.connect('/tmp/tts-daemon.sock')
-    s.send(b'STOP')
+    s.sendall((json.dumps({'command':'stop'})+'\n').encode())
     ok = s.recv(16)
     s.close()
     if ok not in (b'ok',):

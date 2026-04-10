@@ -11,17 +11,16 @@ Dedup is handled server-side by the daemon's ring buffer.
 If the server is not running, the hook exits silently (no error, no crash).
 """
 
+import hashlib
 import json
 import os
 import socket
+import subprocess
 import sys
-import urllib.request
-import urllib.error
+import time
 
-TTS_URL = "http://localhost:5678/speak?content_type=markdown"
-CONNECT_TIMEOUT = 1.0  # seconds — bail fast if server not running
 UNIX_SOCKET_PATH = "/tmp/tts-daemon.sock"
-_IS_WINDOWS = os.name == "nt"
+CONNECT_TIMEOUT = 1.0  # seconds — bail fast if server not running
 
 
 # ---------------------------------------------------------------------------
@@ -78,10 +77,8 @@ def _get_unsent_assistant_texts(transcript_path: str | None) -> list[str]:
 # Server communication
 # ---------------------------------------------------------------------------
 
-def _get_repo_voice(cwd: str) -> str | None:
-    """Deterministic voice from repo/cwd path hash. Returns None = use default."""
-    import hashlib
-    import subprocess
+def _compute_voice_hash(cwd: str) -> str:
+    """SHA-256 of git repo root (or cwd), first 8 hex chars."""
     try:
         repo = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
@@ -90,75 +87,49 @@ def _get_repo_voice(cwd: str) -> str | None:
     except Exception:
         repo = ""
     key = repo or cwd
-    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
+def _send_json(msg: dict) -> bool:
+    """Send a JSON message to the TTS daemon over Unix socket. Returns True on success."""
     try:
-        with open(cfg_path) as f:
-            cfg = json.load(f)
-        active = cfg.get("active_model", "pocket")
-        model_cfg = cfg.get("models", {}).get(active, {})
-        pool = model_cfg.get("voice_pool") or cfg.get("voice_pool", [])
+        payload = (json.dumps(msg) + "\n").encode("utf-8")
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(CONNECT_TIMEOUT)
+        s.connect(UNIX_SOCKET_PATH)
+        try:
+            s.sendall(payload)
+            s.settimeout(0.5)
+            try:
+                s.recv(64)
+            except Exception:
+                pass
+            return True
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    except (FileNotFoundError, ConnectionRefusedError, OSError):
+        return False
     except Exception:
-        pool = []
-    if not pool:
-        return None
-    h = hashlib.sha256(key.encode()).hexdigest()[:8]
-    return pool[int(h, 16) % len(pool)]
+        return False
 
 
 def _post_to_server(text: str, session_id: str, cwd: str = "",
                     pan: float = 0.5) -> bool:
-    """Send text to the wednesday-tts server. Returns True on success.
-
-    On macOS/Linux: Unix socket using the daemon protocol (SEQ command).
-    On Windows: HTTP POST to localhost:5678.
-    """
+    """Send text to the wednesday-tts server. Returns True on success."""
+    msg: dict = {
+        "command": "speak",
+        "text": text,
+        "normalization": "markdown",
+        "session_id": session_id,
+        "pan": pan,
+        "timestamp": time.time(),
+    }
     if cwd:
-        voice = _get_repo_voice(cwd)
-        if voice:
-            text = f"\u00ab\u00ab{voice}\u00bb{text}\u00bb\u00bb"
-    pan_str = f"{pan:.3f}" if pan != 0.5 else ""
-    if _IS_WINDOWS:
-        body = text.encode("utf-8")
-        req = urllib.request.Request(
-            TTS_URL,
-            data=body,
-            headers={
-                "Content-Type": "text/plain; charset=utf-8",
-                "X-Session-Id": session_id,
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT) as resp:
-                return resp.status < 400
-        except urllib.error.URLError:
-            return False
-        except Exception:
-            return False
-    else:
-        # Unix socket — daemon protocol: SEQ:0:speed:ct:ts:pan:text
-        try:
-            cmd = f"SEQ:0:N:markdown::{pan_str}:{text}\n".encode("utf-8")
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(CONNECT_TIMEOUT)
-            s.connect(UNIX_SOCKET_PATH)
-            try:
-                s.sendall(cmd)
-                s.settimeout(0.5)
-                try:
-                    s.recv(64)
-                except Exception:
-                    pass
-                return True
-            finally:
-                try:
-                    s.close()
-                except Exception:
-                    pass
-        except (FileNotFoundError, ConnectionRefusedError, OSError):
-            return False
-        except Exception:
-            return False
+        msg["voice_hash"] = _compute_voice_hash(cwd)
+    return _send_json(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -206,12 +177,11 @@ def main() -> None:
 
         # Compute stereo pan from terminal window position
         pan = 0.5
-        if not _IS_WINDOWS:
-            try:
-                from window_position import compute_pan
-                pan = compute_pan()
-            except Exception:
-                pass
+        try:
+            from window_position import compute_pan
+            pan = compute_pan()
+        except Exception:
+            pass
 
         _post_to_server(combined, session_id, cwd=cwd, pan=pan)
 

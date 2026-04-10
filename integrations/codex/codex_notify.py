@@ -26,6 +26,26 @@ def _compute_pan() -> float:
         return 0.5
 
 
+def _send_json(msg: dict) -> None:
+    """Connect to Unix socket, send JSON newline-terminated, wait briefly, close."""
+    try:
+        payload = (json.dumps(msg) + "\n").encode("utf-8")
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(1.0)
+        sock.connect(UNIX_SOCKET_PATH)
+        try:
+            sock.sendall(payload)
+            sock.settimeout(0.25)
+            try:
+                sock.recv(64)
+            except Exception:
+                pass
+        finally:
+            sock.close()
+    except Exception:
+        pass
+
+
 def _send_to_tts(text: str, pan: float) -> bool:
     body = text.strip()
     if len(body) < 5:
@@ -33,25 +53,14 @@ def _send_to_tts(text: str, pan: float) -> bool:
     if os.path.exists(MUTE_PATH) or os.environ.get("TTS_MUTE"):
         return False
 
-    pan_str = f"{pan:.3f}" if pan != 0.5 else ""
-    cmd = f"SEQ:0:N:markdown:{time.time()}:{pan_str}:{body}\n".encode("utf-8")
-
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(1.0)
-        sock.connect(UNIX_SOCKET_PATH)
-        try:
-            sock.sendall(cmd)
-            sock.settimeout(0.25)
-            try:
-                sock.recv(64)
-            except Exception:
-                pass
-            return True
-        finally:
-            sock.close()
-    except Exception:
-        return False
+    _send_json({
+        "command": "speak",
+        "text": body,
+        "normalization": "markdown",
+        "pan": pan,
+        "timestamp": time.time(),
+    })
+    return True
 
 
 def _extract_message(payload: dict) -> str | None:

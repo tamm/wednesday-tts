@@ -24,7 +24,6 @@ import time
 # ---------------------------------------------------------------------------
 
 UNIX_SOCKET_PATH = "/tmp/tts-daemon.sock"
-_IS_WINDOWS = os.name == "nt"
 
 # Path to mute sentinel file (shared with other hooks)
 _TEMP = tempfile.gettempdir()
@@ -69,29 +68,15 @@ def _get_assistant_text(payload: dict) -> str:
     return ""
 
 
-def _fire_and_forget(text: str, wall_time: float) -> None:
-    """Send text to the TTS server via Unix socket using the daemon protocol.
-
-    Uses colon-delimited fields: SEQ:0:N:markdown:<wall_time>:<text>
-    """
-    if not text or len(text.strip()) < 2:
-        return
-
-    if _IS_WINDOWS:
-        return
-
+def _send_json(msg: dict) -> None:
+    """Send a JSON message to the TTS daemon over Unix socket."""
     try:
-        # We use SEQ:0 for all hooks; the daemon's dedup ring buffer (20 items)
-        # prevents us from speaking the same text twice if AfterModel and
-        # AfterAgent overlap.
-        # Prepend __v:fantine__ to ensure Gemini always uses the 'fantine' voice.
-        body = f"__v:fantine__{text}"
-        cmd = f"SEQ:0:N:markdown:{wall_time}:{body}\n".encode("utf-8")
+        payload = (json.dumps(msg) + "\n").encode("utf-8")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(5)
         s.connect(UNIX_SOCKET_PATH)
         try:
-            s.sendall(cmd)
+            s.sendall(payload)
             s.settimeout(0.5)
             try:
                 s.recv(64)
@@ -101,6 +86,19 @@ def _fire_and_forget(text: str, wall_time: float) -> None:
             s.close()
     except (ConnectionRefusedError, FileNotFoundError, OSError):
         pass
+
+
+def _fire_and_forget(text: str, wall_time: float) -> None:
+    """Send text to the TTS server via Unix socket using JSON protocol."""
+    if not text or len(text.strip()) < 2:
+        return
+
+    _send_json({
+        "command": "speak",
+        "text": text,
+        "normalization": "markdown",
+        "timestamp": wall_time,
+    })
 
 
 # ---------------------------------------------------------------------------
