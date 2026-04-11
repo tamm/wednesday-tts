@@ -351,6 +351,7 @@ def _render_segments(
     gen_snap: int,
     default_voice: str | None = None,
     default_instruct: str | None = None,
+    msg_id: int = -1,
 ) -> "np.ndarray | None":
     """Render a list of voice segments and concatenate into one audio array.
 
@@ -361,7 +362,7 @@ def _render_segments(
     target_rate = primary_backend.sample_rate
 
     for seg_i, (voice_name, instruct, segment_text) in enumerate(segments):
-        if _stop_gen != gen_snap:
+        if _stop_gen != gen_snap or (msg_id > 0 and _skip_msg_id == msg_id):
             break
 
         if voice_name == "sam":
@@ -528,8 +529,14 @@ def run_normalize(text: str, content_type: str = "markdown") -> str:
 _stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
 _skip_gen = 0       # incremented on SKIP; playback write loop bails but queue/renders survive
 _msg_id_counter = 0         # monotonic message ID; incremented per request
-_playing_msg_id: int = -1   # msg_id of the chunk currently being played
+_playing_msg_id: int = -1   # msg_id of the chunk currently being written to audio device
+_playback_current_msg_id: int = -1  # msg_id the playback worker has claimed (set before write starts)
 _skip_msg_id: int = -1      # msg_id that was last skipped; generation threads bail if they match
+
+# Post-skip grace period: new speak requests are rejected for this many seconds
+# after a skip. A second skip/stop within the grace period triggers a full drain.
+_SKIP_GRACE_SECS = 3.0
+_skip_grace_until: float = 0.0  # monotonic time after which new speaks are allowed again
 
 # Message completion tracking: handlers signal when all chunks for a msg_id
 # are enqueued, so the playback worker knows when it can move to the next message.
@@ -582,7 +589,7 @@ def _stop_playback() -> None:
     OutputStream stays open but goes silent (nothing to write).
     Increments _stop_gen so in-flight generation threads bail out.
     """
-    global _stop_gen
+    global _stop_gen, _skip_grace_until
     # Drain the queue — discard all pending items
     while True:
         try:
@@ -595,6 +602,9 @@ def _stop_playback() -> None:
         _msg_done.clear()
     _msg_done_event.set()
     _stop_gen += 1
+    # Post-stop grace: reject incoming speaks briefly so a user-initiated
+    # stop isn't immediately talked over by queued requests.
+    _skip_grace_until = time.monotonic() + _SKIP_GRACE_SECS
     # Kill spatial stream so head-tracked audio stops immediately
     _kill_spatial_stream()
     if _vpio is not None:
@@ -610,11 +620,22 @@ def _skip_current() -> None:
     grabbing the next same-message chunk before we can remove it.
     Also sets _skip_msg_id so in-flight generation threads bail.
     """
-    global _skip_gen, _skip_msg_id
-    # Drain items belonging to the currently playing message
-    skip_id = _playing_msg_id
+    global _skip_gen, _skip_msg_id, _skip_grace_until
+    # Use _playback_current_msg_id (set when playback worker claims a chunk,
+    # before audio write begins) rather than _playing_msg_id (set only when
+    # audio write starts). This closes the race where skip fires after a chunk
+    # is enqueued but before the playback worker has begun writing it.
+    skip_id = _playback_current_msg_id
     _skip_msg_id = skip_id
+    _skip_grace_until = time.monotonic() + _SKIP_GRACE_SECS
+    print(
+        f"[skip] skipping msg_id={skip_id} "
+        f"(playing={_playing_msg_id}, claimed={_playback_current_msg_id}), "
+        f"grace={_SKIP_GRACE_SECS}s",
+        flush=True,
+    )
     requeue = []
+    dropped = 0
     while True:
         try:
             item = playback_queue.get_nowait()
@@ -622,6 +643,7 @@ def _skip_current() -> None:
             if item is None:
                 requeue.append(item)
             elif isinstance(item, tuple) and len(item) >= 3 and item[2] == skip_id:
+                dropped += 1
                 continue  # discard — same message
             else:
                 requeue.append(item)
@@ -629,6 +651,7 @@ def _skip_current() -> None:
             break
     for item in requeue:
         playback_queue.put(item)
+    print(f"[skip] drained {dropped} queued chunk(s) for msg_id={skip_id}", flush=True)
     # Now bail the currently playing chunk
     _skip_gen += 1
     _kill_spatial_stream()
@@ -1301,10 +1324,11 @@ def playback_worker(backend: TTSBackend) -> None:
             break
 
         # Unpack (audio, subtitle_text, msg_id) tuple or bare array
-        global _playing_msg_id
+        global _playing_msg_id, _playback_current_msg_id
         if isinstance(item, tuple):
             if len(item) >= 3:
                 item, subtitle_text, _playing_msg_id = item[0], item[1], item[2]
+                _playback_current_msg_id = _playing_msg_id  # set before audio write begins
             else:
                 item, subtitle_text = item[0], item[1]
         else:
@@ -1350,14 +1374,14 @@ def playback_worker(backend: TTSBackend) -> None:
             if not use_spatial and _vpio is not None and _vpio._running:
                 vpio_audio = _limiter(audio.copy(), ceiling=0.85, rate=backend.sample_rate)
                 vpio_audio = _anti_click(vpio_audio, backend.sample_rate)
-                if subtitle_text:
+                write_gen_v = _stop_gen
+                write_skip_v = _skip_gen
+                if subtitle_text and _skip_msg_id != _playing_msg_id:
                     dur = len(audio) / backend.sample_rate
                     _send_subtitle(subtitle_text, audio_dur=dur)
                     subtitle_text = None
-                else:
+                elif not subtitle_text and _skip_msg_id != _playing_msg_id:
                     _send_overlay({"type": "playback_started"})
-                write_gen_v = _stop_gen
-                write_skip_v = _skip_gen
 
                 def _should_bail_vpio() -> bool:
                     return _stop_gen != write_gen_v or _skip_gen != write_skip_v
@@ -1392,14 +1416,14 @@ def playback_worker(backend: TTSBackend) -> None:
                 else:
                     spatial_audio = _limiter(audio.copy(), ceiling=0.85, rate=backend.sample_rate)
                     spatial_audio = _anti_click(spatial_audio, backend.sample_rate)
-                    if subtitle_text:
+                    write_gen = _stop_gen
+                    write_skip = _skip_gen
+                    if subtitle_text and _skip_msg_id != _playing_msg_id:
                         dur = len(audio) / backend.sample_rate
                         _send_subtitle(subtitle_text, audio_dur=dur)
                         subtitle_text = None
-                    else:
+                    elif not subtitle_text and _skip_msg_id != _playing_msg_id:
                         _send_overlay({"type": "playback_started"})
-                    write_gen = _stop_gen
-                    write_skip = _skip_gen
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
 
@@ -1475,15 +1499,15 @@ def playback_worker(backend: TTSBackend) -> None:
                     continue
                 print(f"[playback] PortAudio stream opened, rate={device_rate}", flush=True)
 
-            if subtitle_text:
+            write_gen = _stop_gen
+            write_skip = _skip_gen
+            if subtitle_text and _skip_msg_id != _playing_msg_id:
                 dur = len(item) / backend.sample_rate
                 _send_subtitle(subtitle_text, audio_dur=dur)
                 subtitle_text = None
-            else:
+            elif not subtitle_text and _skip_msg_id != _playing_msg_id:
                 _send_overlay({"type": "playback_started"})
             WRITE_CHUNK = int(device_rate * 0.1)
-            write_gen = _stop_gen
-            write_skip = _skip_gen
             flat = audio.reshape(-1)
             offset = 0
             is_last = playback_queue.empty()
@@ -1590,8 +1614,16 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── SKIP ──────────────────────────────────────────────────────────
         if command == "skip":
-            print(f"[cmd] SKIP received, msg_id={_playing_msg_id}", flush=True)
-            _skip_current()
+            if time.monotonic() < _skip_grace_until:
+                # Second skip/stop within grace period — full drain
+                print(
+                    "[cmd] SKIP received within grace period — escalating to full drain",
+                    flush=True,
+                )
+                _stop_playback()
+            else:
+                print(f"[cmd] SKIP received, msg_id={_playing_msg_id}", flush=True)
+                _skip_current()
             conn.send(b"ok")
             return
 
@@ -1667,6 +1699,21 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         text = msg.get("text", "")
         if not text.strip():
+            conn.send(b"ok")
+            return
+
+        # ── Grace period after skip ────────────────────────────────────────
+        # Reject new speak requests for _SKIP_GRACE_SECS after a skip so the
+        # user isn't immediately talked over after barge-in. The grace window
+        # is short enough that legitimate follow-up TTS (from a new user query)
+        # won't be blocked for long.
+        if time.monotonic() < _skip_grace_until:
+            remaining = _skip_grace_until - time.monotonic()
+            print(
+                f"[req] speak rejected — in skip grace ({remaining:.1f}s remaining), "
+                f"msg would have been {len(text)} chars",
+                flush=True,
+            )
             conn.send(b"ok")
             return
 
@@ -1784,7 +1831,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                     flush=True,
                 )
                 chunk_audio = _render_segments(
-                    segments, backend, speed, gen_snap, default_voice=voice,
+                    segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
                 )
                 if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
                     playback_queue.put((chunk_audio, text, msg_id))
@@ -1802,11 +1849,11 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
                 )
 
                 for ci, chunk_text in enumerate(text_chunks):
-                    if _stop_gen != gen_snap or _skip_msg_id == msg_id:
+                    if _stop_gen != gen_snap or (msg_id > 0 and _skip_msg_id == msg_id):
                         break
                     chunk_segments = [(None, None, chunk_text)]
                     chunk_audio = _render_segments(
-                        chunk_segments, backend, speed, gen_snap, default_voice=voice,
+                        chunk_segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
                     )
                     if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
                         playback_queue.put((chunk_audio, chunk_text, msg_id))

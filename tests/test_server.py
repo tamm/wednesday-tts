@@ -13,8 +13,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Stub heavy native deps so tests run without audio hardware or optional extras
-for _mod in ("sounddevice", "soundfile", "numpy"):
+# Stub heavy native deps so tests run without audio hardware or optional extras.
+# numpy is a real dependency — never stub it, or tests that run after this file
+# will see a MagicMock when they import numpy (breaks array comparisons).
+for _mod in ("sounddevice", "soundfile"):
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()
 
