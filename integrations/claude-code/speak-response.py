@@ -21,7 +21,6 @@ import time
 from hook_common import (
     compute_pan,
     compute_voice_hash,
-    is_barge_in_active,
     is_muted,
     is_subagent,
     log_payload_debug,
@@ -72,7 +71,7 @@ def _get_last_assistant_message(transcript_path: str | None) -> str:
 def main() -> None:
     wall_time = time.time()
 
-    if is_muted() or is_barge_in_active():
+    if is_muted():
         sys.exit(0)
 
     try:

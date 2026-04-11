@@ -22,6 +22,7 @@ import signal
 import socket
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -533,10 +534,18 @@ _playing_msg_id: int = -1   # msg_id of the chunk currently being written to aud
 _playback_current_msg_id: int = -1  # msg_id the playback worker has claimed (set before write starts)
 _skip_msg_id: int = -1      # msg_id that was last skipped; generation threads bail if they match
 
-# Post-skip grace period: new speak requests are rejected for this many seconds
-# after a skip. A second skip/stop within the grace period triggers a full drain.
-_SKIP_GRACE_SECS = 3.0
-_skip_grace_until: float = 0.0  # monotonic time after which new speaks are allowed again
+# Barge-in queue-and-delay. When the barge-in flag from wednesday-yarn is
+# fresh (user is currently dictating), new speak requests are NOT rejected —
+# they are appended to _barge_in_pending and held. The currently playing
+# message is dropped by skip. When the flag clears (or expires at the 30s
+# staleness ceiling), _barge_in_worker replays the pending list in arrival
+# order through _process_speak.
+_BARGE_IN_PATH = os.path.join(tempfile.gettempdir(), "wednesday-yarn-barge-in")
+_BARGE_IN_WINDOW_SECS = 3.0    # fresh window from most-recent flag touch
+_BARGE_IN_MAX_AGE_SECS = 30.0  # hard ceiling — after this, flag is stale / dead
+_barge_in_pending: list[dict] = []
+_barge_in_lock = threading.Lock()
+_barge_in_dropped_once = False  # True once we've skipped the current msg for this barge-in cycle
 
 # Message completion tracking: handlers signal when all chunks for a msg_id
 # are enqueued, so the playback worker knows when it can move to the next message.
@@ -602,11 +611,10 @@ def _stop_playback() -> None:
         _msg_done.clear()
     _msg_done_event.set()
     _stop_gen += 1
-    # Note: stop does NOT set _skip_grace_until. A deliberate stop (SIGUSR1,
-    # stop-tts.sh, user's barge-in trigger) must not lock out new speaks —
-    # the user wanted silence NOW and then normal speech. Only skip arms the
-    # grace window, because skip is the "stop this one message and give me
-    # a beat before the next one" case.
+    # Note: stop drops everything and returns to normal immediately. No
+    # grace window. Barge-in (user dictating) is the only case with a
+    # hold window, and it is handled by _process_speak via the pending
+    # list, not by rejecting requests in the stop path.
     # Kill spatial stream so head-tracked audio stops immediately
     _kill_spatial_stream()
     if _vpio is not None:
@@ -622,18 +630,16 @@ def _skip_current() -> None:
     grabbing the next same-message chunk before we can remove it.
     Also sets _skip_msg_id so in-flight generation threads bail.
     """
-    global _skip_gen, _skip_msg_id, _skip_grace_until
+    global _skip_gen, _skip_msg_id
     # Use _playback_current_msg_id (set when playback worker claims a chunk,
     # before audio write begins) rather than _playing_msg_id (set only when
     # audio write starts). This closes the race where skip fires after a chunk
     # is enqueued but before the playback worker has begun writing it.
     skip_id = _playback_current_msg_id
     _skip_msg_id = skip_id
-    _skip_grace_until = time.monotonic() + _SKIP_GRACE_SECS
     print(
         f"[skip] skipping msg_id={skip_id} "
-        f"(playing={_playing_msg_id}, claimed={_playback_current_msg_id}), "
-        f"grace={_SKIP_GRACE_SECS}s",
+        f"(playing={_playing_msg_id}, claimed={_playback_current_msg_id})",
         flush=True,
     )
     requeue = []
@@ -659,6 +665,76 @@ def _skip_current() -> None:
     _kill_spatial_stream()
     if _vpio is not None:
         _vpio.clear_buffer()
+
+
+def _barge_in_flag_mtime() -> float | None:
+    """Wall-clock mtime of the barge-in flag file, or None if absent.
+
+    Silent on any error — the flag is advisory, not critical.
+    """
+    try:
+        return os.path.getmtime(_BARGE_IN_PATH)
+    except OSError:
+        return None
+
+
+def _is_barge_in_fresh() -> bool:
+    """True if the barge-in flag was touched within _BARGE_IN_WINDOW_SECS.
+
+    The flag gets re-touched by wednesday-yarn while the user keeps
+    dictating, extending the window. A hard ceiling of _BARGE_IN_MAX_AGE_SECS
+    protects against a stuck flag: if the flag has not been touched in that
+    long we treat it as dead (a crashed dictation source must never silence
+    TTS forever) and remove it.
+    """
+    mtime = _barge_in_flag_mtime()
+    if mtime is None:
+        return False
+    age = time.time() - mtime
+    if age > _BARGE_IN_MAX_AGE_SECS:
+        # Stale — clean up and report clear.
+        try:
+            os.unlink(_BARGE_IN_PATH)
+        except OSError:
+            pass
+        return False
+    return age < _BARGE_IN_WINDOW_SECS
+
+
+def _barge_in_worker() -> None:
+    """Poll the barge-in flag and replay pending speaks once it clears.
+
+    Runs forever as a daemon thread. When the flag goes stale and there
+    are held speaks, drain the pending list under lock and re-enter
+    _process_speak for each in arrival order. If barge-in becomes fresh
+    again mid-replay, _process_speak re-pends the message automatically,
+    so this worker stays simple.
+    """
+    global _barge_in_dropped_once
+    while True:
+        time.sleep(0.25)
+        if _is_barge_in_fresh():
+            continue
+        # Flag cleared. Reset the one-shot skip guard so the next barge-in
+        # cycle triggers a fresh skip of whatever is playing by then.
+        _barge_in_dropped_once = False
+        with _barge_in_lock:
+            if not _barge_in_pending:
+                continue
+            held = _barge_in_pending[:]
+            _barge_in_pending.clear()
+        print(f"[barge-in] flag cleared, replaying {len(held)} held speak(s)", flush=True)
+        backend = _active_backend
+        if backend is None:
+            # No backend yet — put them back and try again shortly.
+            with _barge_in_lock:
+                _barge_in_pending[:0] = held
+            continue
+        for held_msg in held:
+            try:
+                _process_speak(held_msg, backend)
+            except Exception as exc:
+                print(f"[barge-in] replay failed: {exc}", flush=True)
 
 
 def _sigusr1_handler(sig: int, frame) -> None:
@@ -1569,6 +1645,210 @@ def playback_worker(backend: TTSBackend) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Speak pipeline — shared by handle_client and the barge-in replay worker
+# ---------------------------------------------------------------------------
+
+def _process_speak(msg: dict, backend: TTSBackend) -> None:
+    """Render and enqueue a single speak request.
+
+    This function is the entire speak pipeline: barge-in hold-or-drop,
+    voice resolution, msg_id assignment, normalisation, dedup, chunking,
+    rendering, and playback queue submission.
+
+    Called from:
+    - handle_client, after acking the client.
+    - _barge_in_worker, when replaying held speaks.
+
+    No socket, no reply. The caller already acked (or never had a socket).
+    """
+    global _msg_id_counter, _current_pan, _barge_in_dropped_once
+
+    text = msg.get("text", "")
+    if not text.strip():
+        return
+
+    # ── Barge-in hold ────────────────────────────────────────────────────
+    # If the user is dictating, hold this speak on the pending list and
+    # drop whatever is currently playing. The barge-in worker will replay
+    # held speaks in arrival order once the flag clears.
+    if _is_barge_in_fresh():
+        with _barge_in_lock:
+            _barge_in_pending.append(msg)
+            pending_count = len(_barge_in_pending)
+        if not _barge_in_dropped_once and _playback_current_msg_id > 0:
+            print(
+                f"[barge-in] dropping current msg_id={_playback_current_msg_id} "
+                f"(held {pending_count} incoming speak(s))",
+                flush=True,
+            )
+            _skip_current()
+            _barge_in_dropped_once = True
+        else:
+            print(f"[barge-in] held speak ({pending_count} pending)", flush=True)
+        return
+
+    _stat_inc("requests_total")
+
+    session_id = msg.get("session_id")
+    voice_hash = msg.get("voice_hash")
+    normalization = msg.get("normalization", "markdown")
+    pan: float = max(0.0, min(1.0, float(msg.get("pan", 0.5))))
+    timestamp = msg.get("timestamp")
+
+    # ── Resolve request voice (once, per spec) ─────────────────────
+    request_voice = _resolve_voice_for_request(
+        session_id=session_id,
+        voice_hash=voice_hash,
+    )
+
+    # ── Assign message ID ─────────────────────────────────────────
+    _msg_id_counter += 1
+    msg_id = _msg_id_counter
+
+    latency_note = ""
+    if timestamp:
+        latency_note = f" latency={time.time() - timestamp:.2f}s"
+
+    print(
+        f"[req] msg_id={msg_id} voice_hash={voice_hash} session={session_id} "
+        f"→ voice={_voice_label(request_voice)} pan={pan:.2f} "
+        f"{len(text)} chars{latency_note}",
+        flush=True,
+    )
+
+    # ── Set stereo pan for this request ──────────────────────────────
+    _current_pan = pan
+
+    # ── Parse inline voice switches BEFORE normalisation ─────────────
+    segments = _split_voice_segments(text)
+
+    # ── Normalise text segments (not voice IDs) ──────────────────────
+    if normalization != "pre-normalized":
+        segments = [
+            (v, i, run_normalize(t, content_type=normalization))
+            for v, i, t in segments
+        ]
+
+    # Reassemble text for dedup check
+    text = " ".join(t for _, _, t in segments)
+
+    # ── Dedup: skip if this text was recently spoken ─────────────────
+    if _dedup_check(text):
+        print(f"[req] dedup skip, msg_id={msg_id}, {len(text)} chars", flush=True)
+        _stat_inc("requests_completed")
+        return
+
+    # Determine if we need backend switching (SAM segments mixed with primary).
+    needs_backend_switch = any(
+        v == "sam" for v, _, _ in segments
+    ) and any(v != "sam" for v, _, _ in segments)
+
+    # Extract voice and instruct for single-segment or uniform-voice messages
+    voice = request_voice
+    instruct = None
+    if len(segments) == 1 and segments[0][0] and segments[0][0] != "sam":
+        voice = segments[0][0]
+        instruct = segments[0][1]
+        text = segments[0][2]
+    elif len(segments) == 1 and segments[0][1]:
+        # Instruct-only tag (voice=None means use request voice)
+        instruct = segments[0][1]
+        text = segments[0][2]
+
+    # ── Render ────────────────────────────────────────────────────────
+    gen_snap = _stop_gen
+    speed = DEFAULT_SPEED
+
+    # Streaming: single voice on primary backend, no backend switching
+    use_streaming = (
+        not needs_backend_switch
+        and not any(v == "sam" for v, _, _ in segments)
+        and getattr(backend, "supports_streaming", False)
+        and hasattr(backend, "generate_streaming")
+        and _stop_gen == gen_snap
+    )
+    if use_streaming:
+        print(f"[req] STREAM msg_id={msg_id}, {len(text)} chars, voice={_voice_label(voice)}", flush=True)
+        _gs = gen_snap
+        _mid = msg_id
+        gs_kwargs = {
+            "speed": speed,
+            "playback_queue": playback_queue,
+            "stop_check": lambda: _stop_gen != _gs or _skip_msg_id == _mid,
+            "msg_id": msg_id,
+        }
+        if instruct:
+            gs_kwargs["instruct"] = instruct
+        try:
+            audio = backend.generate_streaming(text, voice=voice, **gs_kwargs)
+        except TypeError:
+            audio = backend.generate_streaming(text, **gs_kwargs)
+
+        if audio is None:
+            _mark_msg_done(msg_id)
+            _stat_inc("requests_completed")
+            return
+
+        # Streaming path — audio returned directly
+        if _skip_msg_id != msg_id:
+            playback_queue.put((audio, text, msg_id))
+            _mark_msg_done(msg_id)
+        _stat_inc("audio_seconds_total", len(audio) / backend.sample_rate)
+        _stat_inc("requests_completed")
+        return
+
+    # ── BATCH render ──────────────────────────────────────────────
+    total_audio_secs = 0.0
+
+    if needs_backend_switch:
+        print(
+            f"[req] MULTI-VOICE msg_id={msg_id}, {len(text)} chars → "
+            f"{len(segments)} seg(s)",
+            flush=True,
+        )
+        chunk_audio = _render_segments(
+            segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
+        )
+        if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
+            playback_queue.put((chunk_audio, text, msg_id))
+            total_audio_secs = len(chunk_audio) / backend.sample_rate
+        _mark_msg_done(msg_id)
+    else:
+        text_chunks = chunk_text_server(
+            text, min_size=120, max_size=300,
+            backend_name=_active_backend_name,
+        )
+        print(
+            f"[req] BATCH msg_id={msg_id}, {len(text)} chars → "
+            f"{len(text_chunks)} chunk(s), voice={_voice_label(voice)}",
+            flush=True,
+        )
+
+        for ci, chunk_text in enumerate(text_chunks):
+            if _stop_gen != gen_snap or (msg_id > 0 and _skip_msg_id == msg_id):
+                break
+            chunk_segments = [(None, None, chunk_text)]
+            chunk_audio = _render_segments(
+                chunk_segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
+            )
+            if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
+                playback_queue.put((chunk_audio, chunk_text, msg_id))
+                chunk_secs = len(chunk_audio) / backend.sample_rate
+                total_audio_secs += chunk_secs
+                _touch_activity()
+                print(
+                    f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
+                    f"({chunk_secs:.1f}s)",
+                    flush=True,
+                )
+        _mark_msg_done(msg_id)
+
+    if total_audio_secs > 0:
+        _stat_inc("audio_seconds_total", total_audio_secs)
+    _stat_inc("requests_completed")
+
+
+# ---------------------------------------------------------------------------
 # Connection handler
 # ---------------------------------------------------------------------------
 
@@ -1616,16 +1896,8 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── SKIP ──────────────────────────────────────────────────────────
         if command == "skip":
-            if time.monotonic() < _skip_grace_until:
-                # Second skip/stop within grace period — full drain
-                print(
-                    "[cmd] SKIP received within grace period — escalating to full drain",
-                    flush=True,
-                )
-                _stop_playback()
-            else:
-                print(f"[cmd] SKIP received, msg_id={_playing_msg_id}", flush=True)
-                _skip_current()
+            print(f"[cmd] SKIP received, msg_id={_playing_msg_id}", flush=True)
+            _skip_current()
             conn.send(b"ok")
             return
 
@@ -1697,193 +1969,15 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
             conn.send(b"error")
             return
 
-        _stat_inc("requests_total")
-
-        text = msg.get("text", "")
-        if not text.strip():
+        # Ack first, process second. The client is fire-and-forget and
+        # _process_speak may take many seconds. The reply byte just tells
+        # the hook the daemon is alive.
+        try:
             conn.send(b"ok")
-            return
-
-        # ── Grace period after skip ────────────────────────────────────────
-        # Reject new speak requests for _SKIP_GRACE_SECS after a skip so the
-        # user isn't immediately talked over after barge-in. The grace window
-        # is short enough that legitimate follow-up TTS (from a new user query)
-        # won't be blocked for long.
-        if time.monotonic() < _skip_grace_until:
-            remaining = _skip_grace_until - time.monotonic()
-            print(
-                f"[req] speak rejected — in skip grace ({remaining:.1f}s remaining), "
-                f"msg would have been {len(text)} chars",
-                flush=True,
-            )
-            conn.send(b"ok")
-            return
-
-        session_id = msg.get("session_id")
-        voice_hash = msg.get("voice_hash")
-        normalization = msg.get("normalization", "markdown")
-        pan: float = max(0.0, min(1.0, float(msg.get("pan", 0.5))))
-        timestamp = msg.get("timestamp")
-
-        # ── Resolve request voice (once, per spec) ─────────────────────
-        request_voice = _resolve_voice_for_request(
-            session_id=session_id,
-            voice_hash=voice_hash,
-        )
-
-        # ── Assign message ID ─────────────────────────────────────────
-        global _msg_id_counter
-        _msg_id_counter += 1
-        msg_id = _msg_id_counter
-
-        latency_note = ""
-        if timestamp:
-            latency_note = f" latency={time.time() - timestamp:.2f}s"
-
-        print(
-            f"[req] msg_id={msg_id} voice_hash={voice_hash} session={session_id} "
-            f"→ voice={_voice_label(request_voice)} pan={pan:.2f} "
-            f"{len(text)} chars{latency_note}",
-            flush=True,
-        )
-
-        # ── Set stereo pan for this request ──────────────────────────────
-        global _current_pan
-        _current_pan = pan
-
-        # ── Parse inline voice switches BEFORE normalisation ─────────────
-        segments = _split_voice_segments(text)
-
-        # ── Normalise text segments (not voice IDs) ──────────────────────
-        if normalization != "pre-normalized":
-            segments = [
-                (v, i, run_normalize(t, content_type=normalization))
-                for v, i, t in segments
-            ]
-
-        # Reassemble text for dedup check
-        text = " ".join(t for _, _, t in segments)
-
-        # ── Dedup: skip if this text was recently spoken ─────────────────
-        if _dedup_check(text):
-            print(f"[req] dedup skip, msg_id={msg_id}, {len(text)} chars", flush=True)
-            _stat_inc("requests_completed")
-            conn.send(b"ok")
-            return
-
-        # Determine if we need backend switching (SAM segments mixed with primary).
-        needs_backend_switch = any(
-            v == "sam" for v, _, _ in segments
-        ) and any(v != "sam" for v, _, _ in segments)
-
-        # Extract voice and instruct for single-segment or uniform-voice messages
-        voice = request_voice
-        instruct = None
-        if len(segments) == 1 and segments[0][0] and segments[0][0] != "sam":
-            voice = segments[0][0]
-            instruct = segments[0][1]
-            text = segments[0][2]
-        elif len(segments) == 1 and segments[0][1]:
-            # Instruct-only tag (voice=None means use request voice)
-            instruct = segments[0][1]
-            text = segments[0][2]
-
-        # ── Render ────────────────────────────────────────────────────────
-        gen_snap = _stop_gen
-        speed = DEFAULT_SPEED
-
-        # Streaming: single voice on primary backend, no backend switching
-        use_streaming = (
-            not needs_backend_switch
-            and not any(v == "sam" for v, _, _ in segments)
-            and getattr(backend, "supports_streaming", False)
-            and hasattr(backend, "generate_streaming")
-            and _stop_gen == gen_snap
-        )
-        if use_streaming:
-            print(f"[req] STREAM msg_id={msg_id}, {len(text)} chars, voice={_voice_label(voice)}", flush=True)
-            _gs = gen_snap
-            _mid = msg_id
-            gs_kwargs = {
-                "speed": speed,
-                "playback_queue": playback_queue,
-                "stop_check": lambda: _stop_gen != _gs or _skip_msg_id == _mid,
-                "msg_id": msg_id,
-            }
-            if instruct:
-                gs_kwargs["instruct"] = instruct
-            try:
-                audio = backend.generate_streaming(text, voice=voice, **gs_kwargs)
-            except TypeError:
-                audio = backend.generate_streaming(text, **gs_kwargs)
-
-            if audio is None:
-                _mark_msg_done(msg_id)
-                _stat_inc("requests_completed")
-                conn.send(b"ok")
-                return
-        else:
-            # ── BATCH render ──────────────────────────────────────────────
-            total_audio_secs = 0.0
-
-            if needs_backend_switch:
-                print(
-                    f"[req] MULTI-VOICE msg_id={msg_id}, {len(text)} chars → "
-                    f"{len(segments)} seg(s)",
-                    flush=True,
-                )
-                chunk_audio = _render_segments(
-                    segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
-                )
-                if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
-                    playback_queue.put((chunk_audio, text, msg_id))
-                    total_audio_secs = len(chunk_audio) / backend.sample_rate
-                _mark_msg_done(msg_id)
-            else:
-                text_chunks = chunk_text_server(
-                    text, min_size=120, max_size=300,
-                    backend_name=_active_backend_name,
-                )
-                print(
-                    f"[req] BATCH msg_id={msg_id}, {len(text)} chars → "
-                    f"{len(text_chunks)} chunk(s), voice={_voice_label(voice)}",
-                    flush=True,
-                )
-
-                for ci, chunk_text in enumerate(text_chunks):
-                    if _stop_gen != gen_snap or (msg_id > 0 and _skip_msg_id == msg_id):
-                        break
-                    chunk_segments = [(None, None, chunk_text)]
-                    chunk_audio = _render_segments(
-                        chunk_segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
-                    )
-                    if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
-                        playback_queue.put((chunk_audio, chunk_text, msg_id))
-                        chunk_secs = len(chunk_audio) / backend.sample_rate
-                        total_audio_secs += chunk_secs
-                        _touch_activity()
-                        print(
-                            f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
-                            f"({chunk_secs:.1f}s)",
-                            flush=True,
-                        )
-                _mark_msg_done(msg_id)
-
-            if total_audio_secs > 0:
-                _stat_inc("audio_seconds_total", total_audio_secs)
-            _stat_inc("requests_completed")
-            conn.send(b"ok")
-            return
-
-        # ── Streaming path — audio returned directly ──────────────────────
-        if audio is not None and _skip_msg_id != msg_id:
-            playback_queue.put((audio, text, msg_id))
-            _mark_msg_done(msg_id)
-
-        if audio is not None:
-            _stat_inc("audio_seconds_total", len(audio) / backend.sample_rate)
-        _stat_inc("requests_completed")
-        conn.send(b"ok")
+        except Exception:
+            pass
+        _process_speak(msg, backend)
+        return
 
     except BrokenPipeError:
         # Client closed socket before we replied — not a real error.
@@ -2031,6 +2125,9 @@ def main() -> None:
 
     watchdog_thread = threading.Thread(target=_hung_request_watchdog, daemon=True)
     watchdog_thread.start()
+
+    barge_in_thread = threading.Thread(target=_barge_in_worker, daemon=True)
+    barge_in_thread.start()
 
     startup_warnings = _check_competing_instances()
     if startup_warnings:

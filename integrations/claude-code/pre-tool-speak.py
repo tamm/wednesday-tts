@@ -20,7 +20,6 @@ import time
 from hook_common import (
     compute_pan,
     compute_voice_hash,
-    is_barge_in_active,
     is_muted,
     is_subagent,
     log_payload_debug,
@@ -86,7 +85,7 @@ def _truncate_at_sentence(text: str) -> str:
 
 
 def main() -> None:
-    if is_muted() or is_barge_in_active():
+    if is_muted():
         sys.exit(0)
 
     try:

@@ -19,33 +19,11 @@ UNIX_SOCKET_PATH = "/tmp/tts-daemon.sock"
 
 _TEMP = tempfile.gettempdir()
 MUTE_PATH = os.path.join(_TEMP, "tts-mute")
-BARGE_IN_PATH = os.path.join(_TEMP, "wednesday-yarn-barge-in")
-BARGE_IN_MAX_AGE_SECS = 30.0
 
 
 def is_muted() -> bool:
     """True if TTS is silenced via sentinel file or TTS_MUTE env var."""
     return os.path.exists(MUTE_PATH) or bool(os.environ.get("TTS_MUTE"))
-
-
-def is_barge_in_active() -> bool:
-    """True if the barge-in flag is present and not stale.
-
-    The flag is set by wednesday-yarn while the user is dictating. Stale
-    flags (older than BARGE_IN_MAX_AGE_SECS) are cleaned up so a crashed
-    barge-in source can never silence TTS permanently.
-    """
-    try:
-        age = time.time() - os.path.getmtime(BARGE_IN_PATH)
-    except FileNotFoundError:
-        return False
-    if age < BARGE_IN_MAX_AGE_SECS:
-        return True
-    try:
-        os.unlink(BARGE_IN_PATH)
-    except OSError:
-        pass
-    return False
 
 
 def is_subagent(payload: dict) -> bool:
