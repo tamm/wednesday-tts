@@ -154,12 +154,17 @@ Message > Segment > Chunk. Playback order follows this hierarchy strictly.
 
 ### Step 1: Hook fires
 
-Triggered by a Claude Code assistant message (primary session only — agent/subagent messages are filtered out by the hook).
+Two hooks can trigger speech:
+
+- `speak-response.py` — Stop hook, runs at end of assistant turn.
+- `pre-tool-speak.py` — PreToolUse hook, speaks mid-turn text blocks before each tool call.
+
+**Both hooks MUST apply the same primary-session filter.** A Claude Code assistant message from a teammate or sub-agent must never reach the daemon.
 
 The hook:
 
 1. Extracts `cwd`, `session_id` from the Claude Code payload.
-2. Filters out agent/subagent messages — if the payload contains `agent_id`, `agent_name`, or `team_name`, the hook exits without sending anything. Only the primary session speaks.
+2. Filters out agent/subagent messages — if the payload contains `agent_id`, `agent_name`, or `team_name`, the hook exits without sending anything. Only the primary session speaks. This is a hard rule: sub-agent / teammate turns must be silent. Both `speak-response.py` and `pre-tool-speak.py` perform this check as their first action after parsing the payload. Do NOT remove or narrow this check.
 3. Extracts the assistant message text from the payload.
 4. Computes `voice_hash`: SHA-256 of the git repo root (or cwd if not in a repo), truncated to 8 hex chars.
 5. Computes `pan`: stereo position from the terminal window's screen location (macOS only, falls back to centre).

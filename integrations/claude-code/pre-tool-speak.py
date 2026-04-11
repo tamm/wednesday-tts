@@ -146,8 +146,8 @@ def main() -> None:
     try:
         input_data = json.load(sys.stdin)
 
-        # Teammate/subagent sessions have agent_id set — only the main session speaks
-        if input_data.get("agent_id"):
+        # Teammate/subagent sessions — only the main session speaks
+        if input_data.get("agent_id") or input_data.get("agent_name") or input_data.get("team_name"):
             sys.exit(0)
 
         session_id = input_data.get("session_id", "unknown")
