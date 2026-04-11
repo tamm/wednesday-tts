@@ -159,8 +159,9 @@ def drain_daemon() -> None:
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(600)  # generous: covers longest realistic audio
     try:
+        import json as _json
         sock.connect(SOCKET_PATH)
-        sock.sendall(b"DRAIN")
+        sock.sendall((_json.dumps({"command": "drain"}) + "\n").encode("utf-8"))
         sock.recv(16)
     except Exception:
         pass
@@ -187,10 +188,11 @@ def daemon_is_responsive(timeout: float = 2.0) -> bool:
         if not os.path.exists(SOCKET_PATH):
             return False
         try:
+            import json as _json
             sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect(SOCKET_PATH)
-            sock.sendall(b"PING")
+            sock.sendall((_json.dumps({"command": "ping"}) + "\n").encode("utf-8"))
             sock.recv(16)
             sock.close()
             return True
@@ -222,14 +224,15 @@ def stop_daemon_audio() -> None:
             return
         except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
             pass
-        # Fallback: socket STOP command
+        # Fallback: socket stop command (JSON wire protocol)
         try:
             if os.path.exists(SOCKET_PATH):
+                import json as _json
                 import socket as _socket
                 sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
                 sock.settimeout(1.0)
                 sock.connect(SOCKET_PATH)
-                sock.sendall(b"STOP")
+                sock.sendall((_json.dumps({"command": "stop"}) + "\n").encode("utf-8"))
                 sock.recv(16)
                 sock.close()
         except Exception:
