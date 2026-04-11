@@ -103,28 +103,30 @@ def _session_is_non_lead_teammate(session_id: str) -> bool:
 
 
 def log_payload_debug(payload: dict, hook_name: str) -> None:
-    """Append a one-line summary of the payload to a debug log.
+    """Append the FULL hook payload to a debug log for diagnosis.
 
-    Records hook name, event, top-level keys, and the values of any
-    known sub-agent signal fields. Used to diagnose which field Claude
-    Code is actually populating when the filter misses a teammate turn.
-    Silent on any failure — debug logging must never break the hook.
+    Dumps every key in the payload verbatim so we can see exactly what
+    Claude Code sends — no guessing which field identifies a teammate.
+    Truncates any single field value to 2000 chars to keep lines
+    readable. Silent on any failure — debug logging must never break
+    the hook.
     """
     try:
         log_path = os.path.join(_TEMP, "wednesday-tts-hook-debug.log")
-        keys = sorted(payload.keys())
-        snapshot = {
-            k: payload.get(k)
-            for k in ("agent_id", "agent_type", "team_name", "teammate_name",
-                      "session_id", "hook_event_name", "permission_mode")
-            if k in payload
-        }
+        safe: dict = {}
+        for k, v in payload.items():
+            try:
+                s = json.dumps(v, default=str)
+                if len(s) > 2000:
+                    s = s[:2000] + "...[truncated]"
+                safe[k] = json.loads(s) if not s.endswith("...[truncated]") else s
+            except Exception:
+                safe[k] = f"<unserialisable {type(v).__name__}>"
         line = json.dumps({
             "t": time.time(),
             "hook": hook_name,
-            "keys": keys,
-            "known": snapshot,
-        }) + "\n"
+            "payload": safe,
+        }, default=str) + "\n"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception:
