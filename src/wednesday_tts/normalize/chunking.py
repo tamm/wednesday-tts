@@ -2,6 +2,14 @@
 
 import re
 
+# Sentence-end pattern: one or more of .!? followed by whitespace.
+# The negative lookbehind refuses to match when the period is preceded by a
+# word-boundary + single letter — i.e. list labels like "A." or initials like
+# "U.S." — so "Next pending: A. foo" does NOT split at "A." and get stranded
+# as a tiny first chunk that takes forever for the next one to land.
+_SENTENCE_END = re.compile(r'(?<!\b[A-Za-z])[.!?]+\s+')
+_SENTENCE_END_STR = r'(?<!\b[A-Za-z])[.!?]+\s+'
+
 
 def chunk_text_intelligently(text, first_chunk_min=40, first_chunk_max=150,
                              second_third_min=80, second_third_max=150,
@@ -26,7 +34,10 @@ def chunk_text_intelligently(text, first_chunk_min=40, first_chunk_max=150,
 
         clause_breaks = []
         for i in range(start, min(end, len(text))):
-            if text[i] in ',;:' and i + 1 < len(text) and text[i + 1] in ' \n\t':
+            # Colons are deliberately excluded — "Next pending: ..." must not
+            # split there, or the listener hears a tiny first chunk and waits
+            # an eternity for the next.
+            if text[i] in ',;' and i + 1 < len(text) and text[i + 1] in ' \n\t':
                 clause_breaks.append(i + 1)
         if clause_breaks:
             return clause_breaks[-1]
@@ -88,7 +99,7 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
 
     if len(text) > 60:
         search_region = text[60:min(120, len(text))]
-        for pattern in [r'[.!?]+\s+', r'[,;:]\s+', r'\W(?=\s)']:
+        for pattern in [_SENTENCE_END_STR, r'[,;]\s+', r'\W(?=\s)']:
             match = re.search(pattern, search_region)
             if match:
                 split_pos = 60 + match.end()
@@ -98,7 +109,7 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
 
         if not first_chunk and len(text) > 120:
             search_region = text[60:min(150, len(text))]
-            for pattern in [r'[.!?]+\s+', r'[,;:]\s+', r'\W(?=\s)']:
+            for pattern in [_SENTENCE_END_STR, r'[,;]\s+', r'\W(?=\s)']:
                 match = re.search(pattern, search_region)
                 if match:
                     split_pos = 60 + match.end()
@@ -113,7 +124,7 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
                 rest_text = text[len(first_chunk):].strip()
     elif len(text) > 30:
         search_region = text[30:min(60, len(text))]
-        for pattern in [r'[.!?]+\s+', r'[,;:]\s+']:
+        for pattern in [_SENTENCE_END_STR, r'[,;]\s+']:
             match = re.search(pattern, search_region)
             if match:
                 split_pos = 30 + match.end()
@@ -123,7 +134,7 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
 
     chunks = [first_chunk] if first_chunk else []
 
-    sentences = re.split(r'([.!?]+(?:\s+|$))', rest_text)
+    sentences = re.split(r'((?<!\b[A-Za-z])[.!?]+(?:\s+|$))', rest_text)
     current_chunk = ""
 
     for i in range(0, len(sentences) - 1, 2):
