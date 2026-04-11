@@ -175,6 +175,20 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
             chunks.append(current_chunk.strip())
             current_chunk = ""
 
+    # Pick up the tail: re.split with a capturing group always returns an
+    # odd-length list, where the final element is whatever came after the
+    # last sentence-end match. If there were NO matches at all, the list is
+    # [rest_text] and the loop above ran zero times — we must still consume
+    # that tail. Without this, any trailing text without a terminal period
+    # (or any rest_text with zero sentence-ends) is silently lost.
+    if len(sentences) % 2 == 1 and sentences[-1]:
+        tail = sentences[-1]
+        if current_chunk and len(current_chunk) + len(tail) > max_size:
+            chunks.append(current_chunk.strip())
+            current_chunk = tail
+        else:
+            current_chunk += tail
+
     if current_chunk.strip():
         chunks.append(current_chunk.strip())
 
