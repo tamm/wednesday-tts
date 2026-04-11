@@ -23,6 +23,7 @@ from hook_common import (
     is_barge_in_active,
     is_muted,
     is_subagent,
+    log_payload_debug,
     send_speak,
 )
 
@@ -92,6 +93,8 @@ def main() -> None:
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
+
+    log_payload_debug(payload, "pre-tool-speak")
 
     if is_subagent(payload):
         sys.exit(0)

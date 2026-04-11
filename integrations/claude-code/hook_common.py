@@ -55,15 +55,102 @@ def is_subagent(payload: dict) -> bool:
     teammates must be silent — Tamm hears all assistant turns via TTS and
     overlapping voices are not acceptable.
 
-    The Claude Code Stop and PreToolUse payloads include any of these
-    fields for non-primary turns. ALL three must be checked. Do not narrow
-    this check without updating docs/voice-pipeline-spec.md.
+    Per the official Claude Code hooks documentation
+    (https://code.claude.com/docs/en/hooks.md,
+     https://code.claude.com/docs/en/agent-teams.md,
+     https://code.claude.com/docs/en/sub-agents.md), the Stop and
+    PreToolUse payloads identify non-primary turns with these fields:
+
+    - Task-tool sub-agent: `agent_id` and `agent_type` are present.
+    - Agent-team teammate: `team_name` and `teammate_name` are present.
+    - Primary/lead session: NONE of the above four fields are present.
+
+    The Stop hook fires for all three — primary, sub-agent, and
+    teammate — so filtering here is the only way to keep teammates
+    silent. ALL four fields must be checked; presence of any one means
+    "not the primary session, do not speak".
+
+    We also retain a team-registry fallback: if the session_id appears
+    in any ~/.claude/teams/*/config.json as something other than the
+    leadSessionId, treat it as a teammate. This is belt-and-braces in
+    case Claude Code changes its payload schema again.
     """
-    return bool(
+    if (
         payload.get("agent_id")
-        or payload.get("agent_name")
+        or payload.get("agent_type")
         or payload.get("team_name")
-    )
+        or payload.get("teammate_name")
+    ):
+        return True
+    session_id = payload.get("session_id")
+    if session_id and _session_is_non_lead_teammate(session_id):
+        return True
+    return False
+
+
+def _session_is_non_lead_teammate(session_id: str) -> bool:
+    """Return True if session_id appears in any team config as something other than the lead.
+
+    Walks ~/.claude/teams/*/config.json. If the given session_id matches
+    any team's leadSessionId, this is the lead — return False (it can
+    speak). Otherwise, if the session_id is listed anywhere in the team
+    config (members array, inboxes, etc.) it is a teammate — return True.
+
+    Silent on errors: the registry is optional; a missing or malformed
+    file must never crash the hook. The default answer on failure is
+    False (speak), because this is a secondary check layered on top of
+    the payload-level filter above.
+    """
+    teams_dir = os.path.expanduser("~/.claude/teams")
+    if not os.path.isdir(teams_dir):
+        return False
+    try:
+        for entry in os.listdir(teams_dir):
+            cfg_path = os.path.join(teams_dir, entry, "config.json")
+            if not os.path.isfile(cfg_path):
+                continue
+            try:
+                with open(cfg_path, encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception:
+                continue
+            if cfg.get("leadSessionId") == session_id:
+                return False  # explicitly the lead, allowed to speak
+            raw = json.dumps(cfg)
+            if session_id in raw:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def log_payload_debug(payload: dict, hook_name: str) -> None:
+    """Append a one-line summary of the payload to a debug log.
+
+    Records hook name, event, top-level keys, and the values of any
+    known sub-agent signal fields. Used to diagnose which field Claude
+    Code is actually populating when the filter misses a teammate turn.
+    Silent on any failure — debug logging must never break the hook.
+    """
+    try:
+        log_path = os.path.join(_TEMP, "wednesday-tts-hook-debug.log")
+        keys = sorted(payload.keys())
+        snapshot = {
+            k: payload.get(k)
+            for k in ("agent_id", "agent_type", "team_name", "teammate_name",
+                      "session_id", "hook_event_name", "permission_mode")
+            if k in payload
+        }
+        line = json.dumps({
+            "t": time.time(),
+            "hook": hook_name,
+            "keys": keys,
+            "known": snapshot,
+        }) + "\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 
 def compute_voice_hash(cwd: str) -> str:
