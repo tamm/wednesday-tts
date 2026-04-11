@@ -17,7 +17,7 @@ All communication from hooks to the daemon is a single JSON object sent over the
     "command": {
       "type": "string",
       "enum": ["speak", "stop", "skip", "ping", "drain", "normalize", "stats", "render"],
-      "description": "Required. speak = normalise, render audio, play through speakers. stop = halt current playback and drain the entire queue (starts a 3s grace window that rejects incoming speaks). skip = drop the remaining chunks of the currently playing message only; later queued messages are preserved (also starts a 3s grace window; a second skip inside the grace escalates to a full stop). ping = health check, returns 'ok'. drain = block until the playback queue empties. normalize = return cleaned text without generating audio. stats = return telemetry as JSON. render = normalise, render audio, return raw PCM bytes (no playback)."
+      "description": "Required. speak = normalise, render audio, play through speakers. stop = halt current playback and drain the entire queue immediately; new speaks are accepted straight after. skip = drop the remaining chunks of the currently playing message only; later queued messages are preserved, and a 3s grace window rejects incoming speaks (a second skip inside the grace escalates to a full stop). ping = health check, returns 'ok'. drain = block until the playback queue empties. normalize = return cleaned text without generating audio. stats = return telemetry as JSON. render = normalise, render audio, return raw PCM bytes (no playback)."
     },
     "text": {
       "type": "string",

@@ -589,7 +589,7 @@ def _stop_playback() -> None:
     OutputStream stays open but goes silent (nothing to write).
     Increments _stop_gen so in-flight generation threads bail out.
     """
-    global _stop_gen, _skip_grace_until
+    global _stop_gen
     # Drain the queue — discard all pending items
     while True:
         try:
@@ -602,9 +602,11 @@ def _stop_playback() -> None:
         _msg_done.clear()
     _msg_done_event.set()
     _stop_gen += 1
-    # Post-stop grace: reject incoming speaks briefly so a user-initiated
-    # stop isn't immediately talked over by queued requests.
-    _skip_grace_until = time.monotonic() + _SKIP_GRACE_SECS
+    # Note: stop does NOT set _skip_grace_until. A deliberate stop (SIGUSR1,
+    # stop-tts.sh, user's barge-in trigger) must not lock out new speaks —
+    # the user wanted silence NOW and then normal speech. Only skip arms the
+    # grace window, because skip is the "stop this one message and give me
+    # a beat before the next one" case.
     # Kill spatial stream so head-tracked audio stops immediately
     _kill_spatial_stream()
     if _vpio is not None:
