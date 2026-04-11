@@ -270,6 +270,3 @@ class TestPathConstants:
 
     def test_failure_path_is_string(self):
         assert isinstance(plat.FAILURE_PATH, str)
-
-    def test_render_timeout_positive(self):
-        assert plat.RENDER_TIMEOUT > 0

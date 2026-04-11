@@ -43,123 +43,28 @@ def spoken_hashes_path(session_id: str) -> str:
     return f"/tmp/tts-spoken-{session_id}"
 
 
-# ── IPC — send text to daemon ────────────────────────────────────────────────
-
-RENDER_TIMEOUT = 15  # seconds — max wait for daemon to ack a single chunk
-
-# Session ID for chime tracking — set by hooks before sending
-session_id: str | None = None
-
-# Wall clock timestamp from hook start — set by hooks before sending.
-# Passed through to the service for end-to-end timing (hook start → speech start).
-hook_start_wall: float | None = None
-
-
-def send_to_daemon(message: str, timeout: float = RENDER_TIMEOUT) -> None:
-    """Send a message to the TTS daemon. Blocks until ack or timeout."""
-    if IS_WINDOWS:
-        _http_send(message, timeout)
-    else:
-        _socket_send(message, timeout)
-
-
-def _http_send(message: str, timeout: float) -> None:
-    """Windows: HTTP POST to the TTS service."""
-    import urllib.request
-    import urllib.error
-
-    # Route control commands to their endpoints
-    if message == "STOP":
-        url = f"{SERVICE_URL}/stop"
-        data = b""
-    elif message == "DRAIN":
-        url = f"{SERVICE_URL}/drain"
-        data = b""
-    elif message == "PING":
-        url = f"{SERVICE_URL}/health"
-        req = urllib.request.Request(url, method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                resp.read()
-        except Exception:
-            raise ConnectionError("TTS service not responding")
-        return
-    elif message.startswith("SEQ:"):
-        # SEQ:N:speed:text — extract just the text for HTTP service
-        parts = message.split(":", 3)
-        text = parts[3] if len(parts) == 4 else message
-        url = f"{SERVICE_URL}/speak"
-        data = text.encode("utf-8")
-    elif message.startswith("SPEED:"):
-        parts = message.split(":", 2)
-        text = parts[2] if len(parts) == 3 else message
-        url = f"{SERVICE_URL}/speak"
-        data = text.encode("utf-8")
-    else:
-        # Plain text
-        url = f"{SERVICE_URL}/speak"
-        data = message.encode("utf-8")
-
-    req = urllib.request.Request(url, data=data, method="POST")
-    if session_id:
-        req.add_header('X-Session-Id', session_id)
-
-    if url.endswith('/speak'):
-        # Fire and forget — use raw socket so we don't wait for a response.
-        # The data lands in the TCP buffer immediately; Flask reads it and
-        # queues the speech regardless of whether we stick around.
-        import socket as _sock
-        # Prepend hook wall clock for end-to-end timing (hook start → speech start)
-        body = data
-        if hook_start_wall is not None:
-            body = f"__t:{hook_start_wall}__".encode('utf-8') + body
-        s = _sock.create_connection(('127.0.0.1', 5678), timeout=2)
-        try:
-            header = f"POST /speak HTTP/1.0\r\nContent-Length: {len(body)}\r\n"
-            if session_id:
-                header += f"X-Session-Id: {session_id}\r\n"
-            header += "\r\n"
-            s.sendall(header.encode('utf-8') + body)
-        finally:
-            s.close()
-    else:
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                resp.read()
-        except Exception as e:
-            raise ConnectionError(f"TTS service error: {e}")
-
-
-def _socket_send(message: str, timeout: float) -> None:
-    """macOS: Unix domain socket to the TTS daemon."""
-    import socket
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.settimeout(timeout)
-        sock.connect(SOCKET_PATH)
-        sock.sendall(message.encode("utf-8"))
-        sock.recv(16)
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
+# ── IPC ──────────────────────────────────────────────────────────────────────
+# The daemon speaks only the JSON wire protocol described in
+# docs/voice-pipeline-spec.md. Every helper in this module that talks to the
+# daemon sends {"command": "..."}\n frames. There is no legacy raw-bytes or
+# colon-delimited SEQ: path left — do not reintroduce one.
 
 
 def drain_daemon() -> None:
-    """Wait for all queued audio to finish playing, then reset seq counter.
+    """Wait for all queued audio to finish playing.
 
-    macOS: sends DRAIN command over socket (blocks until playback done).
-    Windows: no-op — the HTTP service's queue worker handles ordering internally.
+    macOS: sends JSON drain command over the Unix socket (blocks until
+    the playback queue empties).
+    Windows: no-op — the Flask service's queue worker handles ordering
+    internally, so callers do not need a drain barrier.
     """
     if IS_WINDOWS:
-        _http_send("DRAIN", timeout=600)
         return
     import socket
+    import json as _json
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(600)  # generous: covers longest realistic audio
     try:
-        import json as _json
         sock.connect(SOCKET_PATH)
         sock.sendall((_json.dumps({"command": "drain"}) + "\n").encode("utf-8"))
         sock.recv(16)
