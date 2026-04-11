@@ -620,10 +620,19 @@ def _stop_playback() -> None:
         _msg_done.clear()
     _msg_done_event.set()
     _stop_gen += 1
-    # Note: stop drops everything and returns to normal immediately. No
-    # grace window. Barge-in (user dictating) is the only case with a
-    # hold window, and it is handled by _process_speak via the pending
-    # list, not by rejecting requests in the stop path.
+    # Clear barge-in pending list — stop means "forget everything", including
+    # any speaks held for post-barge-in replay. All stop paths (socket command,
+    # SIGUSR1, UserPromptSubmit via stop-tts.sh) go through here, so one place
+    # handles the full reset.
+    global _barge_in_dropped_once
+    with _barge_in_lock:
+        if _barge_in_pending:
+            print(
+                f"[cmd] stop clearing {len(_barge_in_pending)} barge-in pending speak(s)",
+                flush=True,
+            )
+        _barge_in_pending.clear()
+        _barge_in_dropped_once = False
     # Kill spatial stream so head-tracked audio stops immediately
     _kill_spatial_stream()
     if _vpio is not None:

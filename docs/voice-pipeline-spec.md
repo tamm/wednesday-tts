@@ -70,12 +70,16 @@ The daemon's behaviour while the flag is fresh:
 5. **Hard ceiling.** `_BARGE_IN_MAX_AGE_SECS` (30 seconds) is the absolute ceiling. If the flag has not been touched in 30 seconds the daemon treats it as stale (crashed dictation source) and removes it. This is the only fail-safe that prevents a wedged yarn from permanently muting TTS.
 6. **Pending-list cap.** `_BARGE_IN_MAX_PENDING` (16 messages) caps the hold list. If the user dictates long enough that more than 16 messages pile up, the oldest is dropped with a log line. Stale held speaks are worse than silence.
 
+**Two ways barge-in ends:**
+1. **Window timeout (normal case):** the flag has not been touched for `_BARGE_IN_WINDOW_SECS` (3 s). `_barge_in_worker` drains `_barge_in_pending` by **replaying** each held speak in arrival order through `_process_speak`. The user paused talking, now hears queued replies.
+2. **User submits a prompt (`UserPromptSubmit` hook fires):** `stop-tts.sh` sends `{"command":"stop"}` to the daemon. The daemon stops current playback AND clears `_barge_in_pending` AND resets `_barge_in_dropped_once`. Held speaks are **dropped, not replayed**. The user submitted a finished prompt and expects fresh responses, not stale audio from before the submit.
+
 **Semantics compared to stop and skip:**
-- `stop` (explicit user "shut up": SIGUSR1, stop-tts.sh, `{"command":"stop"}`): drain the playback queue entirely, NO grace, NO pending list interaction. Subsequent speaks are accepted normally. Stop is a deliberate silence-now-and-go-back-to-normal action.
+- `stop` (explicit user "shut up": SIGUSR1, stop-tts.sh, `{"command":"stop"}`): drain the playback queue entirely AND clear `_barge_in_pending` AND reset `_barge_in_dropped_once`. No grace window. Subsequent speaks play normally. Stop is a deliberate "silence now, forget everything" action — including any audio held for post-barge-in replay.
 - `skip` (`{"command":"skip"}`): drop the current message's chunks by msg_id. Later queued messages are preserved. No grace window. This is "I've heard enough of this one, move on".
 - Barge-in is the ONLY mechanism with a hold window, and it queues rather than rejects.
 
-**What the pipeline must preserve:** no voice is ever lost during normal dictation. If the user dictates, pauses, and Claude has produced replies during that window, the user hears them in order once they stop talking. Voices are only dropped when the pending cap is exceeded (continuous 16+ replies during one uninterrupted dictation) or the 30-second staleness ceiling fires (yarn crash).
+**What the pipeline must preserve:** no voice is ever lost during normal dictation. If the user dictates, pauses, and Claude has produced replies during that window, the user hears them in order once they stop talking — provided they have not submitted a new prompt. Voices are dropped when: the pending cap is exceeded (continuous 16+ replies during one uninterrupted dictation), the 30-second staleness ceiling fires (yarn crash), or the user submits a prompt (stop command received during a barge-in window).
 
 ## Voice Pool
 

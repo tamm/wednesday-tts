@@ -24,6 +24,20 @@ def _get_daemon():
     return d
 
 
+def _call_stop_and_restore_gen(d) -> None:
+    """Call _stop_playback() then restore _stop_gen to its pre-call value.
+
+    _stop_playback increments _stop_gen so in-flight generation threads bail.
+    Other test modules (e.g. test_voice_override) call _render_segments with
+    a hardcoded gen_snap=0, which would fail if _stop_gen drifts upward across
+    tests. Restoring the counter keeps the tests independent without changing
+    the behaviour under test (the barge-in state is still cleared).
+    """
+    snap = d._stop_gen
+    d._stop_playback()
+    d._stop_gen = snap
+
+
 class TestStopClearsBargeinPending:
     """_stop_playback must clear barge-in state in all stop scenarios."""
 
@@ -33,7 +47,6 @@ class TestStopClearsBargeinPending:
         with d._barge_in_lock:
             d._barge_in_pending.clear()
             d._barge_in_dropped_once = False
-        # Drain the playback queue so _stop_playback's queue-drain loop exits fast.
         while True:
             try:
                 d.playback_queue.get_nowait()
@@ -47,7 +60,7 @@ class TestStopClearsBargeinPending:
         with d._barge_in_lock:
             d._barge_in_pending.append({"command": "speak", "text": "held message"})
 
-        d._stop_playback()
+        _call_stop_and_restore_gen(d)
 
         with d._barge_in_lock:
             assert d._barge_in_pending == [], (
@@ -60,7 +73,7 @@ class TestStopClearsBargeinPending:
         with d._barge_in_lock:
             d._barge_in_dropped_once = True
 
-        d._stop_playback()
+        _call_stop_and_restore_gen(d)
 
         with d._barge_in_lock:
             assert d._barge_in_dropped_once is False, (
@@ -75,7 +88,7 @@ class TestStopClearsBargeinPending:
                 d._barge_in_pending.append({"command": "speak", "text": f"msg {i}"})
             d._barge_in_dropped_once = True
 
-        d._stop_playback()
+        _call_stop_and_restore_gen(d)
 
         with d._barge_in_lock:
             assert d._barge_in_pending == []
@@ -87,7 +100,7 @@ class TestStopClearsBargeinPending:
         with d._barge_in_lock:
             assert d._barge_in_pending == []
 
-        d._stop_playback()  # must not raise
+        _call_stop_and_restore_gen(d)  # must not raise
 
         with d._barge_in_lock:
             assert d._barge_in_pending == []
