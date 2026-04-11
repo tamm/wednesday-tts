@@ -22,7 +22,6 @@ import signal
 import socket
 import struct
 import subprocess
-import tempfile
 import threading
 import time
 
@@ -540,12 +539,22 @@ _skip_msg_id: int = -1      # msg_id that was last skipped; generation threads b
 # message is dropped by skip. When the flag clears (or expires at the 30s
 # staleness ceiling), _barge_in_worker replays the pending list in arrival
 # order through _process_speak.
-_BARGE_IN_PATH = os.path.join(tempfile.gettempdir(), "wednesday-yarn-barge-in")
+_BARGE_IN_PATH = "/tmp/wednesday-yarn-barge-in"  # wednesday-yarn writes here, hardcoded
 _BARGE_IN_WINDOW_SECS = 3.0    # fresh window from most-recent flag touch
 _BARGE_IN_MAX_AGE_SECS = 30.0  # hard ceiling — after this, flag is stale / dead
+_BARGE_IN_MAX_PENDING = 16     # drop-oldest cap so continuous dictation can't OOM us
 _barge_in_pending: list[dict] = []
 _barge_in_lock = threading.Lock()
-_barge_in_dropped_once = False  # True once we've skipped the current msg for this barge-in cycle
+_barge_in_dropped_once = False  # True once we've committed to this barge-in cycle
+
+# Serialize the whole speak pipeline. _process_speak is called from both
+# handle_client worker threads (client sockets) AND from _barge_in_worker
+# (replay). Without this lock, _msg_id_counter, _current_pan, _skip_msg_id
+# and friends race — two concurrent speaks can collide msg_ids and take
+# out each other's audio via _skip_current. The pipeline is already
+# effectively serial via the playback_queue, so making it formally serial
+# here costs nothing and closes the race window. See arch review §1.
+_speak_pipeline_lock = threading.Lock()
 
 # Message completion tracking: handlers signal when all chunks for a msg_id
 # are enqueued, so the playback worker knows when it can move to the next message.
@@ -707,19 +716,26 @@ def _barge_in_worker() -> None:
     Runs forever as a daemon thread. When the flag goes stale and there
     are held speaks, drain the pending list under lock and re-enter
     _process_speak for each in arrival order. If barge-in becomes fresh
-    again mid-replay, _process_speak re-pends the message automatically,
-    so this worker stays simple.
+    again mid-replay, _process_speak re-pends the message automatically.
+
+    The _barge_in_dropped_once "have we committed to this cycle" guard is
+    reset ONLY after a full replay cycle completes (pending drained AND
+    the flag is still clear). Resetting on every poll tick was wrong —
+    a 250ms gap between yarn touches would reset the guard, letting a
+    late-arriving held speak re-call _skip_current on a message already
+    being replayed. See arch review §2.
     """
     global _barge_in_dropped_once
     while True:
         time.sleep(0.25)
         if _is_barge_in_fresh():
             continue
-        # Flag cleared. Reset the one-shot skip guard so the next barge-in
-        # cycle triggers a fresh skip of whatever is playing by then.
-        _barge_in_dropped_once = False
         with _barge_in_lock:
             if not _barge_in_pending:
+                # Flag clear and nothing held — good time to arm the next
+                # cycle's skip guard.
+                if _barge_in_dropped_once:
+                    _barge_in_dropped_once = False
                 continue
             held = _barge_in_pending[:]
             _barge_in_pending.clear()
@@ -735,6 +751,9 @@ def _barge_in_worker() -> None:
                 _process_speak(held_msg, backend)
             except Exception as exc:
                 print(f"[barge-in] replay failed: {exc}", flush=True)
+        # Replay complete AND flag still clear → end of cycle. Arm the next.
+        if not _is_barge_in_fresh():
+            _barge_in_dropped_once = False
 
 
 def _sigusr1_handler(sig: int, frame) -> None:
@@ -1659,8 +1678,18 @@ def _process_speak(msg: dict, backend: TTSBackend) -> None:
     - handle_client, after acking the client.
     - _barge_in_worker, when replaying held speaks.
 
+    Serialized by _speak_pipeline_lock so that global state
+    (_msg_id_counter, _current_pan, _skip_msg_id, the playback queue and
+    friends) is never touched by two threads at once.
+
     No socket, no reply. The caller already acked (or never had a socket).
     """
+    with _speak_pipeline_lock:
+        _process_speak_locked(msg, backend)
+
+
+def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
+    """Inner body of the speak pipeline. Must be called with _speak_pipeline_lock held."""
     global _msg_id_counter, _current_pan, _barge_in_dropped_once
 
     text = msg.get("text", "")
@@ -1674,15 +1703,39 @@ def _process_speak(msg: dict, backend: TTSBackend) -> None:
     if _is_barge_in_fresh():
         with _barge_in_lock:
             _barge_in_pending.append(msg)
+            # Drop oldest once we exceed the cap. Continuous dictation that
+            # lasts longer than the listener's memory span should not pile
+            # up unbounded — stale held speaks become noise by the time
+            # they'd replay.
+            while len(_barge_in_pending) > _BARGE_IN_MAX_PENDING:
+                dropped = _barge_in_pending.pop(0)
+                dropped_chars = len(dropped.get("text", ""))
+                print(
+                    f"[barge-in] cap {_BARGE_IN_MAX_PENDING} reached, "
+                    f"dropping oldest ({dropped_chars} chars)",
+                    flush=True,
+                )
             pending_count = len(_barge_in_pending)
-        if not _barge_in_dropped_once and _playback_current_msg_id > 0:
-            print(
-                f"[barge-in] dropping current msg_id={_playback_current_msg_id} "
-                f"(held {pending_count} incoming speak(s))",
-                flush=True,
-            )
-            _skip_current()
+        # First held speak of the cycle: commit to the cycle unconditionally
+        # (whether or not there's something currently playing) and drop the
+        # current message if any. Setting _dropped_once True regardless means
+        # a second held speak in the same cycle can't call _skip_current a
+        # second time.
+        if not _barge_in_dropped_once:
             _barge_in_dropped_once = True
+            if _playback_current_msg_id > 0:
+                print(
+                    f"[barge-in] dropping current msg_id={_playback_current_msg_id} "
+                    f"(held {pending_count} incoming speak(s))",
+                    flush=True,
+                )
+                _skip_current()
+            else:
+                print(
+                    f"[barge-in] cycle started, nothing playing "
+                    f"(held {pending_count} incoming speak(s))",
+                    flush=True,
+                )
         else:
             print(f"[barge-in] held speak ({pending_count} pending)", flush=True)
         return

@@ -176,3 +176,63 @@ class TestChunkTextServer:
         assert len(result) > 1
         for chunk in result[1:]:
             assert len(chunk) <= 180
+
+
+# ---------------------------------------------------------------------------
+# Regression: list-label and initials must not split as sentence ends
+# ---------------------------------------------------------------------------
+
+class TestNoSplitAtListLabels:
+    """The chunker must not treat "A.", "B.", "U.", "S." etc. as sentence
+    endings — single-letter-then-period is a list label or initial, not
+    end-of-sentence. See commit 93f13b1 and the chunker-reviewer report.
+    """
+
+    def test_server_keeps_A_with_following_word(self):
+        t = "Before I keep coding, let me confirm the spec. A. Grace should trigger on the barge-in flag. B. Stop is unchanged."
+        result = chunk_text_server(t, backend_name="qwen3")
+        assert len(result) >= 2
+        # chunk 0 must NOT end with a stranded "A."
+        assert not result[0].rstrip().endswith(" A.")
+        # The list-label "A." must be attached to the word that follows it.
+        joined = " ".join(result)
+        assert "A. Grace" in joined
+        assert "B. Stop" in joined
+
+    def test_server_does_not_strand_U_from_US(self):
+        t = "The U.S. economy is growing quickly today and everybody seems to agree."
+        result = chunk_text_server(t, backend_name="qwen3")
+        # No chunk may end with "U." — that would be splitting inside "U.S."
+        for chunk in result:
+            assert not chunk.rstrip().endswith("U."), f"stranded U.: {chunk!r}"
+            assert not chunk.rstrip().endswith("S."), f"stranded S.: {chunk!r}"
+        assert "U.S." in " ".join(result)
+
+    def test_server_keeps_next_pending_colon_intact(self):
+        # The specific phrase that regressed in the wild.
+        t = "Next pending: widen the partial display window so we stop losing earlier words when the utterance grows."
+        result = chunk_text_server(t, backend_name="qwen3")
+        # "Next pending:" must not be its own stranded chunk.
+        assert not result[0].rstrip().endswith("pending:")
+        assert not result[0].rstrip() == "Next pending:"
+        assert "Next pending:" in " ".join(result)
+
+    def test_intelligent_keeps_A_with_following_word(self):
+        # Same rule must apply to chunk_text_intelligently (used by the
+        # streaming first-chunk helper). See chunker-reviewer issue #1.
+        t = "Start list: A. one thing and then more content to push past the first window boundary so the split lands mid-search."
+        result = chunk_text_intelligently(t)
+        assert len(result) >= 1
+        # No chunk may end with a bare " A." — that would mean we split at
+        # the list label and stranded it from the word that follows.
+        for chunk in result:
+            assert not chunk.rstrip().endswith(" A."), f"stranded A.: {chunk!r}"
+        assert "A. one" in " ".join(result)
+
+    def test_intelligent_does_not_strand_U_from_US(self):
+        t = "The U.S. economy is growing quickly and everybody on both sides of the aisle seems to agree with that idea for once."
+        result = chunk_text_intelligently(t)
+        for chunk in result:
+            assert not chunk.rstrip().endswith("U."), f"stranded U.: {chunk!r}"
+            assert not chunk.rstrip().endswith("S."), f"stranded S.: {chunk!r}"
+        assert "U.S." in " ".join(result)

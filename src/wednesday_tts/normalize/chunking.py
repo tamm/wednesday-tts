@@ -7,8 +7,24 @@ import re
 # word-boundary + single letter — i.e. list labels like "A." or initials like
 # "U.S." — so "Next pending: A. foo" does NOT split at "A." and get stranded
 # as a tiny first chunk that takes forever for the next one to land.
+#
+# Both chunk_text_intelligently and chunk_text_server use this, so the rule
+# is enforced in exactly one place. The string form is used by re.split in
+# chunk_text_server where a capturing group is needed.
 _SENTENCE_END = re.compile(r'(?<!\b[A-Za-z])[.!?]+\s+')
-_SENTENCE_END_STR = r'(?<!\b[A-Za-z])[.!?]+\s+'
+_SENTENCE_END_CAPTURE = re.compile(r'((?<!\b[A-Za-z])[.!?]+(?:\s+|$))')
+
+
+def _find_sentence_end(text, start, end):
+    """Return the index just past the last sentence-end in text[start:end], or -1.
+
+    Uses the shared _SENTENCE_END pattern so that list labels like "A." and
+    initials like "U.S." are not treated as sentence ends.
+    """
+    last = -1
+    for m in _SENTENCE_END.finditer(text, start, min(end, len(text))):
+        last = m.end()
+    return last
 
 
 def chunk_text_intelligently(text, first_chunk_min=40, first_chunk_max=150,
@@ -25,12 +41,9 @@ def chunk_text_intelligently(text, first_chunk_min=40, first_chunk_max=150,
 
     def find_break_point(text, start, end):
         """Find best natural break point in range."""
-        sentence_breaks = []
-        for i in range(start, min(end, len(text))):
-            if text[i] in '.!?' and i + 1 < len(text) and text[i + 1] in ' \n\t':
-                sentence_breaks.append(i + 1)
-        if sentence_breaks:
-            return sentence_breaks[-1]
+        sentence_end = _find_sentence_end(text, start, end)
+        if sentence_end > 0:
+            return sentence_end
 
         clause_breaks = []
         for i in range(start, min(end, len(text))):
@@ -97,44 +110,54 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
     first_chunk = ""
     rest_text = text
 
+    # Preference order for first-chunk break: sentence end, clause, whitespace.
+    # Each entry is (compiled_pattern, None) for precompiled or re.compile(...).
+    # \W(?=\s) is deliberately NOT used — it matches a bare "." as a word
+    # character and would re-introduce the "U." split bug.
+    _CLAUSE_BREAK = re.compile(r'[,;]\s+')
+    _WHITESPACE = re.compile(r'\s+')
+
+    def _first_break(region, break_patterns):
+        for pattern in break_patterns:
+            m = pattern.search(region)
+            if m:
+                return m.end()
+        return -1
+
     if len(text) > 60:
-        search_region = text[60:min(120, len(text))]
-        for pattern in [_SENTENCE_END_STR, r'[,;]\s+', r'\W(?=\s)']:
-            match = re.search(pattern, search_region)
-            if match:
-                split_pos = 60 + match.end()
-                first_chunk = text[:split_pos].strip()
-                rest_text = text[split_pos:].strip()
-                break
+        region = text[60:min(120, len(text))]
+        end = _first_break(region, [_SENTENCE_END, _CLAUSE_BREAK, _WHITESPACE])
+        if end > 0:
+            split_pos = 60 + end
+            first_chunk = text[:split_pos].strip()
+            rest_text = text[split_pos:].strip()
 
         if not first_chunk and len(text) > 120:
-            search_region = text[60:min(150, len(text))]
-            for pattern in [_SENTENCE_END_STR, r'[,;]\s+', r'\W(?=\s)']:
-                match = re.search(pattern, search_region)
-                if match:
-                    split_pos = 60 + match.end()
-                    first_chunk = text[:split_pos].strip()
-                    rest_text = text[split_pos:].strip()
-                    break
-
-        if not first_chunk:
-            sentence_match = re.search(r'^[^.!?]+[.!?]+', text)
-            if sentence_match:
-                first_chunk = sentence_match.group(0).strip()
-                rest_text = text[len(first_chunk):].strip()
-    elif len(text) > 30:
-        search_region = text[30:min(60, len(text))]
-        for pattern in [_SENTENCE_END_STR, r'[,;]\s+']:
-            match = re.search(pattern, search_region)
-            if match:
-                split_pos = 30 + match.end()
+            region = text[60:min(150, len(text))]
+            end = _first_break(region, [_SENTENCE_END, _CLAUSE_BREAK, _WHITESPACE])
+            if end > 0:
+                split_pos = 60 + end
                 first_chunk = text[:split_pos].strip()
                 rest_text = text[split_pos:].strip()
-                break
+
+        if not first_chunk:
+            # No suitable break in the search window — take everything up to
+            # (and including) the first real sentence end anywhere in text.
+            m = _SENTENCE_END.search(text)
+            if m:
+                first_chunk = text[:m.end()].strip()
+                rest_text = text[m.end():].strip()
+    elif len(text) > 30:
+        region = text[30:min(60, len(text))]
+        end = _first_break(region, [_SENTENCE_END, _CLAUSE_BREAK])
+        if end > 0:
+            split_pos = 30 + end
+            first_chunk = text[:split_pos].strip()
+            rest_text = text[split_pos:].strip()
 
     chunks = [first_chunk] if first_chunk else []
 
-    sentences = re.split(r'((?<!\b[A-Za-z])[.!?]+(?:\s+|$))', rest_text)
+    sentences = _SENTENCE_END_CAPTURE.split(rest_text)
     current_chunk = ""
 
     for i in range(0, len(sentences) - 1, 2):

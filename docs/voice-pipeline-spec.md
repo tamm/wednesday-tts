@@ -57,6 +57,26 @@ All communication from hooks to the daemon is a single JSON object sent over the
 }
 ```
 
+## Barge-in hold
+
+When the user is dictating to wednesday-yarn (voice input), yarn touches `/tmp/wednesday-yarn-barge-in` to signal "be quiet, I'm talking". The daemon reads this flag directly — hooks are NOT involved in barge-in detection, they always send their speak requests and let the daemon decide.
+
+The daemon's behaviour while the flag is fresh:
+
+1. **Drop what's currently playing.** The very first speak request arriving while the flag is fresh triggers a one-shot `skip` on whatever message is mid-playback. This zero-delay drop gives the user an audible break the instant they start talking. If nothing is playing yet, the cycle still starts — subsequent arrivals are held, not talked over.
+2. **Hold, do not drop, new speak requests.** Every speak request arriving during the window is appended to an in-memory pending list. `{"command":"speak",...}` clients still get an immediate `ok` ack — the daemon has the text, it's just holding it until the user finishes.
+3. **Flag re-touches extend the window.** `_BARGE_IN_WINDOW_SECS` (3 seconds) is measured from the most recent flag mtime, not from first touch. Yarn touches the flag roughly once per second while dictation is active, so the window floats with the user.
+4. **Replay in arrival order.** When the flag has not been touched for the window duration AND the daemon is not already mid-replay, `_barge_in_worker` drains the pending list under lock and re-enters `_process_speak` for each held message. Audio flows through the normal pipeline.
+5. **Hard ceiling.** `_BARGE_IN_MAX_AGE_SECS` (30 seconds) is the absolute ceiling. If the flag has not been touched in 30 seconds the daemon treats it as stale (crashed dictation source) and removes it. This is the only fail-safe that prevents a wedged yarn from permanently muting TTS.
+6. **Pending-list cap.** `_BARGE_IN_MAX_PENDING` (16 messages) caps the hold list. If the user dictates long enough that more than 16 messages pile up, the oldest is dropped with a log line. Stale held speaks are worse than silence.
+
+**Semantics compared to stop and skip:**
+- `stop` (explicit user "shut up": SIGUSR1, stop-tts.sh, `{"command":"stop"}`): drain the playback queue entirely, NO grace, NO pending list interaction. Subsequent speaks are accepted normally. Stop is a deliberate silence-now-and-go-back-to-normal action.
+- `skip` (`{"command":"skip"}`): drop the current message's chunks by msg_id. Later queued messages are preserved. No grace window. This is "I've heard enough of this one, move on".
+- Barge-in is the ONLY mechanism with a hold window, and it queues rather than rejects.
+
+**What the pipeline must preserve:** no voice is ever lost during normal dictation. If the user dictates, pauses, and Claude has produced replies during that window, the user hears them in order once they stop talking. Voices are only dropped when the pending cap is exceeded (continuous 16+ replies during one uninterrupted dictation) or the 30-second staleness ceiling fires (yarn crash).
+
 ## Voice Pool
 
 The voice pool lives in `~/.claude/tts-config.json` under the active model's config. It is an array of voice entries.
@@ -159,7 +179,9 @@ Two hooks can trigger speech:
 - `speak-response.py` — Stop hook, runs at end of assistant turn.
 - `pre-tool-speak.py` — PreToolUse hook, speaks mid-turn text blocks before each tool call.
 
-Shared behaviour that MUST match between the two hooks lives in `integrations/claude-code/hook_common.py`: the mute check, barge-in detection, the primary-session filter, voice hashing, stereo pan, and the Unix-socket sender. Both hooks import from there so they cannot drift out of sync. When adding a new speech-producing hook, import the same helpers; do not reimplement them.
+Shared behaviour that MUST match between the two hooks lives in `integrations/claude-code/hook_common.py`: the mute check, the primary-session filter, voice hashing, stereo pan, and the Unix-socket sender. Both hooks import from there so they cannot drift out of sync. When adding a new speech-producing hook, import the same helpers; do not reimplement them.
+
+The hooks do NOT implement barge-in detection. Barge-in (user-is-dictating) is handled entirely by the daemon — see "Barge-in hold" below. Hooks always send; the daemon decides whether to play now, hold, or drop.
 
 **Both hooks MUST apply the same primary-session filter.** A Claude Code assistant message from a teammate or sub-agent must never reach the daemon.
 
