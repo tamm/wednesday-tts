@@ -159,6 +159,8 @@ Two hooks can trigger speech:
 - `speak-response.py` — Stop hook, runs at end of assistant turn.
 - `pre-tool-speak.py` — PreToolUse hook, speaks mid-turn text blocks before each tool call.
 
+Shared behaviour that MUST match between the two hooks lives in `integrations/claude-code/hook_common.py`: the mute check, barge-in detection, the primary-session filter, voice hashing, stereo pan, and the Unix-socket sender. Both hooks import from there so they cannot drift out of sync. When adding a new speech-producing hook, import the same helpers; do not reimplement them.
+
 **Both hooks MUST apply the same primary-session filter.** A Claude Code assistant message from a teammate or sub-agent must never reach the daemon.
 
 The hook:
