@@ -4,9 +4,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
-
-import pytest
 
 # hook_common lives outside the installed package; add its directory to sys.path.
 _HOOKS_DIR = os.path.join(

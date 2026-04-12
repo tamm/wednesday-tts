@@ -36,6 +36,7 @@ qwen3 = [
 test = [
     "pytest>=7",
     "pytest-cov",
+    "numpy",
 ]
 dev = [
     "wednesday-tts[test]",
