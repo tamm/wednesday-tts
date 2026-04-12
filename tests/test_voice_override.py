@@ -9,6 +9,14 @@ np = pytest.importorskip("numpy")
 from wednesday_tts.client.api import voice_tag  # noqa: E402
 from wednesday_tts.server.daemon import _split_voice_segments, _render_segments  # noqa: E402
 
+try:
+    import samtts  # noqa: F401
+    _HAS_SAMTTS = True
+except ImportError:
+    _HAS_SAMTTS = False
+
+needs_samtts = pytest.mark.skipif(not _HAS_SAMTTS, reason="samtts not installed")
+
 
 class TestVoiceTag:
     def test_sam_default(self) -> None:
@@ -132,6 +140,7 @@ class TestSplitVoiceSegments:
         assert segs[2] == (None, None, "Back to normal.")
 
 
+@needs_samtts
 class TestRenderSegments:
     """Test rendering with SAM as a real backend (no mocks needed — it's instant)."""
 
@@ -176,6 +185,7 @@ class TestRenderSegments:
         assert audio.size > single.size
 
 
+@needs_samtts
 class TestDaemonVoiceCache:
     """Test the lazy-init backend cache."""
 
