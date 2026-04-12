@@ -33,25 +33,23 @@ def is_subagent(payload: dict) -> bool:
     teammates must be silent — Tamm hears all assistant turns via TTS and
     overlapping voices are not acceptable.
 
-    Per the official Claude Code hooks documentation
-    (https://code.claude.com/docs/en/hooks.md,
-     https://code.claude.com/docs/en/agent-teams.md,
-     https://code.claude.com/docs/en/sub-agents.md), the Stop and
-    PreToolUse payloads identify non-primary turns with these fields:
+    WHAT WE DISCOVERED (from live payload capture, 2026-04-11):
+    - Sub-agents: `agent_id` and `agent_type` ARE present in the Stop /
+      PreToolUse payload dict. Definitive signal per official docs.
+    - Agent-team teammates: `team_name` and `teammate_name` are NOT present
+      in the Stop / PreToolUse payload dict. The docs only document those
+      fields for TaskCreated events. Teammate sessions fire ordinary Stop
+      hooks with no identifying payload fields.
+    - Authoritative teammate signal: the transcript JSONL at `transcript_path`
+      has `teamName` and `agentName` on every line for teammate sessions.
+      The lead's transcript does NOT have those fields.
 
-    - Task-tool sub-agent: `agent_id` and `agent_type` are present.
-    - Agent-team teammate: `team_name` and `teammate_name` are present.
-    - Primary/lead session: NONE of the above four fields are present.
-
-    The Stop hook fires for all three — primary, sub-agent, and
-    teammate — so filtering here is the only way to keep teammates
-    silent. ALL four fields must be checked; presence of any one means
-    "not the primary session, do not speak".
-
-    We also retain a team-registry fallback: if the session_id appears
-    in any ~/.claude/teams/*/config.json as something other than the
-    leadSessionId, treat it as a teammate. This is belt-and-braces in
-    case Claude Code changes its payload schema again.
+    Check order:
+    1. Payload agent_id / agent_type → sub-agent, block.
+    2. Payload team_name / teammate_name → belt-and-braces in case Claude Code
+       ever adds them; harmless since they never fire in practice.
+    3. Transcript teamName / agentName → teammate, block.
+    4. Team-registry session_id fallback → last-resort teammate check.
     """
     if (
         payload.get("agent_id")
@@ -60,9 +58,43 @@ def is_subagent(payload: dict) -> bool:
         or payload.get("teammate_name")
     ):
         return True
+    if _transcript_is_teammate(payload.get("transcript_path")):
+        return True
     session_id = payload.get("session_id")
     if session_id and _session_is_non_lead_teammate(session_id):
         return True
+    return False
+
+
+def _transcript_is_teammate(transcript_path: str | None) -> bool:
+    """Return True if the transcript JSONL identifies this as a teammate session.
+
+    Agent-team teammate transcripts have `teamName` and `agentName` on every
+    line. The lead's transcript does not. We only need to find ONE line with
+    either field to be sure.
+
+    Reads up to 20 lines to avoid blocking on a large transcript. Silent on
+    all errors — a missing or unreadable transcript must never silence the
+    lead. Default answer on failure is False (allow to speak).
+    """
+    if not transcript_path:
+        return False
+    try:
+        with open(transcript_path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= 20:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("teamName") or obj.get("agentName"):
+                    return True
+    except Exception:
+        pass
     return False
 
 
