@@ -60,3 +60,4 @@ tts-server.py
 
 # Clacks inter-session messaging
 .clacks/
+.tmp/

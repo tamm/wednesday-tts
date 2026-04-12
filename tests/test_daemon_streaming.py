@@ -12,6 +12,7 @@ All tests mock sounddevice and TTS model -- no real audio hardware needed.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -19,6 +20,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 np = pytest.importorskip("numpy")
+
+# Stub heavy native deps so daemon.py can be imported on CI without audio hardware.
+for _mod in ("sounddevice", "soundfile"):
+    if _mod not in sys.modules:
+        sys.modules[_mod] = MagicMock()
 
 
 # ---------------------------------------------------------------------------
