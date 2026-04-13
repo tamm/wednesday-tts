@@ -314,7 +314,8 @@ class TestHungRequestWatchdog:
             daemon._stats["requests_completed"] = 3
             daemon._stats["requests_stopped"] = 0
             daemon._stats["requests_errored"] = 0
-            daemon._last_activity_time = time.monotonic() - 200
+            # Use a fixed value so the age calculation is deterministic.
+            daemon._last_activity_time = 1000.0
 
             call_count = 0
 
@@ -324,11 +325,13 @@ class TestHungRequestWatchdog:
                 if call_count > 4:
                     raise StopIteration
 
+            # Return a fixed monotonic time so age = 1200 - 1000 = 200 > 120.
             with (
                 patch.object(daemon, "playback_queue") as mock_pq,
                 patch.object(daemon, "_play_error_chime"),
                 patch("os._exit") as mock_exit,
                 patch("time.sleep", side_effect=fake_sleep),
+                patch("time.monotonic", return_value=1200.0),
             ):
                 mock_pq.empty.return_value = True
                 try:
