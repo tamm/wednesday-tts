@@ -1,7 +1,7 @@
 """Tests for numbers_to_words normalization module."""
 
 
-from wednesday_tts.normalize.numbers_to_words import number_to_words, normalize_large_numbers
+from wednesday_tts.normalize.numbers_to_words import normalize_large_numbers, number_to_words
 
 
 class TestNumberToWords:

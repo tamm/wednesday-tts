@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-import time
 import threading
+import time
 
 import numpy as np
 
-from .base import TTSBackend, DEFAULT_SPEED
+from .base import DEFAULT_SPEED, TTSBackend
 
 _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
 
@@ -184,7 +184,7 @@ class Qwen3TTSBackend(TTSBackend):
         self, text: str, speed: float | None = None, voice: str | None = None,
         instruct: str | None = None, playback_queue=None, stop_check=None,
         msg_id: int = -1,
-    ) -> "np.ndarray | None":
+    ) -> np.ndarray | None:
         """Generate audio with streaming — yield chunks to playback_queue as they arrive.
 
         If playback_queue is provided, chunks are queued directly and None is returned.

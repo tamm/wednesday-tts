@@ -2,7 +2,6 @@
 
 from wednesday_tts.normalize.phone import normalize_phone_numbers
 
-
 # --- Aussie mobile ---
 
 def test_mobile_with_spaces():

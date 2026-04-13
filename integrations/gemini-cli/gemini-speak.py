@@ -80,7 +80,7 @@ def _send_json(msg: dict) -> None:
             s.settimeout(0.5)
             try:
                 s.recv(64)
-            except socket.timeout:
+            except TimeoutError:
                 pass
         finally:
             s.close()

@@ -1,8 +1,12 @@
 """Tests for backtick identifier expansion and hash detection."""
 
 from wednesday_tts.normalize.identifiers import (
-    normalize_identifiers, normalize_escape_sequences, normalize_hashes,
-    normalize_dotted_names, normalize_uuids, pattern_descriptor_to_speech,
+    normalize_dotted_names,
+    normalize_escape_sequences,
+    normalize_hashes,
+    normalize_identifiers,
+    normalize_uuids,
+    pattern_descriptor_to_speech,
 )
 
 

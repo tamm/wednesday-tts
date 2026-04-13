@@ -6,7 +6,7 @@ import os
 
 import numpy as np
 
-from .base import TTSBackend, DEFAULT_SPEED
+from .base import DEFAULT_SPEED, TTSBackend
 
 
 class KokoroBackend(TTSBackend):
@@ -31,7 +31,7 @@ class KokoroBackend(TTSBackend):
         from kokoro import KPipeline  # type: ignore[import]
         self._pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
 
-    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> "np.ndarray | None":
+    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> np.ndarray | None:
         if self._pipeline is None:
             raise RuntimeError("KokoroBackend not loaded — call load() first")
 

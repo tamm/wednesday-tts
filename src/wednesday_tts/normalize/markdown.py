@@ -4,7 +4,9 @@ import re
 
 from wednesday_tts.normalize.code_blocks import code_block_to_speech
 from wednesday_tts.normalize.tables import (
-    table_to_speech, MARKDOWN_TABLE_RE, UNICODE_TABLE_RE,
+    MARKDOWN_TABLE_RE,
+    UNICODE_TABLE_RE,
+    table_to_speech,
 )
 
 SPOKEN_REPLACEMENTS = {

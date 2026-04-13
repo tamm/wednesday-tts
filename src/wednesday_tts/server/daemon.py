@@ -30,9 +30,9 @@ import sounddevice as sd  # type: ignore[import]
 
 from wednesday_tts.platform import suppress_dictation, unsuppress_dictation
 
+from ..normalize.chunking import chunk_text_server
 from .backends import REGISTRY, TTSBackend
 from .vpio import VPIOUnit
-from ..normalize.chunking import chunk_text_server
 
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
@@ -247,7 +247,7 @@ def _split_voice_segments(
     return segments
 
 
-def _voice_label(voice: "str | dict | None") -> str:
+def _voice_label(voice: str | dict | None) -> str:
     """Human-readable label for a voice value (for logging)."""
     if voice is None:
         return "default"
@@ -352,7 +352,7 @@ def _render_segments(
     default_voice: str | None = None,
     default_instruct: str | None = None,
     msg_id: int = -1,
-) -> "np.ndarray | None":
+) -> np.ndarray | None:
     """Render a list of voice segments and concatenate into one audio array.
 
     Each segment is rendered with its specified backend (or the primary if None).
@@ -810,8 +810,9 @@ def _upsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
     if from_rate == to_rate:
         return audio
     try:
-        from scipy.signal import resample_poly  # type: ignore[import]
         import math
+
+        from scipy.signal import resample_poly  # type: ignore[import]
         g = math.gcd(to_rate, from_rate)
         return resample_poly(audio, to_rate // g, from_rate // g).astype(np.float32)
     except ImportError:

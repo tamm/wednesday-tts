@@ -22,16 +22,30 @@ Python 3.12 (required for ML dependencies).
 ```bash
 uv venv --python 3.12
 uv pip install -e ".[dev]"
-.venv/bin/python -m pytest
+uv run pytest
 ```
+
+## Pre-push quality gate
+
+Before every `git push`, you MUST run and pass:
+
+```bash
+uv run pytest -q
+uv run ruff check .
+```
+
+Do NOT push if either fails. Do NOT bypass with `--no-verify`. Do NOT stub or skip tests to make CI pass — if a test needs a dep, add the dep to `[test]` extras. Local and CI must run the same tests with the same deps.
 
 ## Code style
 
 - Python 3.10+, type hints on public APIs
-- `ruff` for linting (config in pyproject.toml)
+- `ruff` for linting and formatting (config in pyproject.toml)
+- `bandit` for security linting (SAST)
+- `gitleaks` for secret detection (pre-commit hook)
 - Tests use pytest, fixtures in `conftest.py`
 - Keep modules focused — one concern per file
 - No `master` terminology anywhere
+- No absolute local paths (`/Users/...`, `/home/...`) in committed code — use `~` or `os.path.expanduser`
 
 ## Normalization rule docs
 

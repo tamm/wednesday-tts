@@ -1,7 +1,9 @@
 """Tests for regex pattern to spoken description."""
 
 from wednesday_tts.normalize.regex_speech import (
-    regex_to_speech, normalize_html_tags, normalize_hotkeys,
+    normalize_hotkeys,
+    normalize_html_tags,
+    regex_to_speech,
 )
 
 

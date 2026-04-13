@@ -9,7 +9,6 @@ normalize_technical.
 
 from wednesday_tts.normalize.pipeline import normalize, normalize_technical
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

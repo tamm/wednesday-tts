@@ -3,13 +3,12 @@
 import random
 
 from wednesday_tts.normalize.tables import (
-    parse_table_rows,
-    table_to_speech,
+    _KNOWN_TOPICS,
     MARKDOWN_TABLE_RE,
     UNICODE_TABLE_RE,
-    _KNOWN_TOPICS,
+    parse_table_rows,
+    table_to_speech,
 )
-
 
 # --- parse_table_rows ---
 

@@ -12,20 +12,12 @@ All tests mock sounddevice and TTS model -- no real audio hardware needed.
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
-
-np = pytest.importorskip("numpy")
-
-# Stub heavy native deps so daemon.py can be imported on CI without audio hardware.
-for _mod in ("sounddevice", "soundfile"):
-    if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()
-
 
 # ---------------------------------------------------------------------------
 # Pocket backend: generate_streaming() tests
@@ -199,8 +191,9 @@ class TestDaemonStreamingToQueue:
 
     def test_streaming_feeds_queue_and_completes(self):
         """JSON speak with streaming backend should call generate_streaming."""
-        from wednesday_tts.server import daemon
         import json
+
+        from wednesday_tts.server import daemon
 
         saved_stats = dict(daemon._stats)
         daemon._stats["requests_total"] = 0
@@ -233,8 +226,9 @@ class TestDaemonStreamingToQueue:
 
     def test_streaming_fallback_to_batch_on_timeout(self):
         """When generate_streaming returns audio (not None), it gets enqueued normally."""
-        from wednesday_tts.server import daemon
         import json
+
+        from wednesday_tts.server import daemon
 
         saved_stats = dict(daemon._stats)
         daemon._stats["requests_total"] = 0
@@ -278,8 +272,9 @@ class TestPingResponse:
     """Verify PING always returns b'ok'."""
 
     def test_ping_returns_ok(self):
-        from wednesday_tts.server import daemon
         import json
+
+        from wednesday_tts.server import daemon
 
         mock_conn = MagicMock()
         mock_conn.recv.return_value = json.dumps({"command": "ping"}).encode("utf-8")

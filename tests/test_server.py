@@ -7,22 +7,13 @@ Heavy dependencies (sounddevice, TTS backends) are mocked.
 from __future__ import annotations
 
 import queue
-import sys
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Stub heavy native deps so tests run without audio hardware or optional extras.
-# numpy is a real dependency — never stub it, or tests that run after this file
-# will see a MagicMock when they import numpy (breaks array comparisons).
-for _mod in ("sounddevice", "soundfile"):
-    if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()
-
 from wednesday_tts.server import app as server_module  # noqa: E402
 from wednesday_tts.server.app import app  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

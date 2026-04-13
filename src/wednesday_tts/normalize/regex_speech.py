@@ -2,7 +2,6 @@
 
 import re
 
-
 # Heuristic: a string is "regex-like" if it contains at least one of these
 REGEX_SIGNALS = re.compile(
     r'\(\?[<!=]|'          # lookaround

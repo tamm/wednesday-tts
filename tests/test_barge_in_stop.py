@@ -9,13 +9,6 @@ rather than replayed after the user finishes dictating.
 from __future__ import annotations
 
 import queue
-import sys
-from unittest.mock import MagicMock
-
-# Stub heavy native deps — no audio hardware needed.
-for _mod in ("sounddevice", "soundfile"):
-    if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()
 
 
 def _get_daemon():

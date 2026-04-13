@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import TTSBackend, DEFAULT_SPEED
+from .base import DEFAULT_SPEED, TTSBackend
 
 # Lowpass: single-pole IIR coefficient.  Higher = more smoothing (0–1).
 _LOWPASS_ALPHA = 0.55

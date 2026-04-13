@@ -1,36 +1,51 @@
 """Main normalization pipeline — calls modules in order."""
 
+from wednesday_tts.normalize.camelcase import normalize_all_caps, normalize_camelcase
 from wednesday_tts.normalize.code_blocks import normalize_code_blocks
-from wednesday_tts.normalize.urls import normalize_urls
-from wednesday_tts.normalize.identifiers import (
-    normalize_identifiers, normalize_escape_sequences, normalize_hashes,
-    normalize_dotted_names, normalize_uuids,
-)
+from wednesday_tts.normalize.dates import normalize_dates, normalize_years
+from wednesday_tts.normalize.dictionary import apply_dictionary
 from wednesday_tts.normalize.hex_codes import normalize_hex_codes
-from wednesday_tts.normalize.ip_addresses import normalize_ip_addresses
-from wednesday_tts.normalize.phone import normalize_phone_numbers
-from wednesday_tts.normalize.regex_speech import (
-    normalize_regex, normalize_html_tags, normalize_hotkeys,
+from wednesday_tts.normalize.homographs import fix_read_homograph
+from wednesday_tts.normalize.identifiers import (
+    normalize_dotted_names,
+    normalize_escape_sequences,
+    normalize_hashes,
+    normalize_identifiers,
+    normalize_uuids,
 )
+from wednesday_tts.normalize.ip_addresses import normalize_ip_addresses
+from wednesday_tts.normalize.markdown import clean_text_for_speech
+from wednesday_tts.normalize.numbers import (
+    normalize_fractions,
+    normalize_http_codes,
+    normalize_multipliers,
+    normalize_regular_decimals,
+    normalize_repeated_punctuation,
+    normalize_small_decimals,
+    normalize_standalone_punctuation,
+    normalize_storage_units,
+    normalize_tilde_approx,
+    normalize_time_units,
+)
+from wednesday_tts.normalize.numbers_to_words import normalize_large_numbers
 from wednesday_tts.normalize.operators import (
-    normalize_operators, normalize_negative_numbers, normalize_word_dash_number,
+    normalize_negative_numbers,
+    normalize_operators,
+    normalize_word_dash_number,
 )
 from wednesday_tts.normalize.paths import (
-    normalize_file_extensions, normalize_tilde_paths, normalize_slash_paths,
+    normalize_file_extensions,
+    normalize_slash_paths,
+    normalize_tilde_paths,
 )
-from wednesday_tts.normalize.dictionary import apply_dictionary
-from wednesday_tts.normalize.homographs import fix_read_homograph
-from wednesday_tts.normalize.numbers import (
-    normalize_tilde_approx, normalize_fractions, normalize_time_units,
-    normalize_storage_units, normalize_multipliers, normalize_small_decimals,
-    normalize_regular_decimals, normalize_http_codes, normalize_repeated_punctuation,
-    normalize_standalone_punctuation,
+from wednesday_tts.normalize.phone import normalize_phone_numbers
+from wednesday_tts.normalize.regex_speech import (
+    normalize_hotkeys,
+    normalize_html_tags,
+    normalize_regex,
 )
-from wednesday_tts.normalize.dates import normalize_years, normalize_dates
+from wednesday_tts.normalize.urls import normalize_urls
 from wednesday_tts.normalize.versions import normalize_model_versions, normalize_semver
-from wednesday_tts.normalize.numbers_to_words import normalize_large_numbers
-from wednesday_tts.normalize.camelcase import normalize_all_caps, normalize_camelcase
-from wednesday_tts.normalize.markdown import clean_text_for_speech
 
 
 def normalize_technical(text, dictionary=None, filenames_dict=None):

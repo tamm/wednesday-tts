@@ -11,7 +11,6 @@ import time
 
 import numpy as np
 
-
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
 
 
@@ -101,7 +100,7 @@ class TTSBackend:
         """Load the model into memory. Called once at startup."""
         raise NotImplementedError
 
-    def generate(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> "np.ndarray | None":
+    def generate(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> np.ndarray | None:
         """Render text to a float32 audio array. Return None on failure."""
         raise NotImplementedError
 

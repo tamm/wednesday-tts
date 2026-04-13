@@ -3,7 +3,9 @@
 import re
 
 from wednesday_tts.normalize.constants import (
-    LETTER_NAMES, LOWERCASE_ACRONYMS, spell_chars,
+    LETTER_NAMES,
+    LOWERCASE_ACRONYMS,
+    spell_chars,
 )
 
 

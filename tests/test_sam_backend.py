@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
-np = pytest.importorskip("numpy")
-pytest.importorskip("samtts")
-
-from wednesday_tts.server.backends.sam import SAMBackend, _lowpass, _reverb  # noqa: E402
+from wednesday_tts.server.backends.sam import SAMBackend, _lowpass, _reverb
 
 
 @pytest.fixture()

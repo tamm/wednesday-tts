@@ -600,7 +600,7 @@ class VPIOUnit:
         while not self._mic_stop.is_set():
             try:
                 conn, _ = srv.accept()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 break

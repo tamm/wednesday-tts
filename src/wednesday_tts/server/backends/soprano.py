@@ -84,7 +84,7 @@ class SopranoBackend(TTSBackend):
         except Exception:
             pass  # best-effort — if it fails, soprano may still work
 
-    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> "np.ndarray | None":
+    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> np.ndarray | None:
         if self._model is None:
             raise RuntimeError("SopranoBackend not loaded — call load() first")
 

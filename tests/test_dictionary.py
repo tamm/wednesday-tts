@@ -5,7 +5,9 @@ import os
 import tempfile
 
 from wednesday_tts.normalize.dictionary import (
-    load_dictionary, load_filenames_dict, apply_dictionary,
+    apply_dictionary,
+    load_dictionary,
+    load_filenames_dict,
 )
 
 

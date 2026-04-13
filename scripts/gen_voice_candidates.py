@@ -8,9 +8,10 @@ Usage:
     .venv/bin/python scripts/gen_voice_candidates.py
 """
 import os
+
+import mlx.core as mx
 import numpy as np
 import soundfile as sf
-import mlx.core as mx
 from mlx_audio.tts import load
 
 MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"

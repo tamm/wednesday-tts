@@ -16,12 +16,12 @@ Backends that support streaming also implement:
 """
 
 from .base import TTSBackend
+from .chatterbox import ChatterboxBackend
 from .kokoro import KokoroBackend
 from .pocket import PocketTTSBackend
+from .qwen3 import Qwen3TTSBackend
 from .sam import SAMBackend
 from .soprano import SopranoBackend
-from .chatterbox import ChatterboxBackend
-from .qwen3 import Qwen3TTSBackend
 
 REGISTRY: dict[str, type[TTSBackend]] = {
     "kokoro": KokoroBackend,

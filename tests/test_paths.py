@@ -3,7 +3,9 @@
 import random
 
 from wednesday_tts.normalize.paths import (
-    normalize_file_extensions, normalize_tilde_paths, normalize_slash_paths,
+    normalize_file_extensions,
+    normalize_slash_paths,
+    normalize_tilde_paths,
 )
 
 

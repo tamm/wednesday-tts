@@ -210,9 +210,9 @@ def send_speak(msg: dict, *, kick_on_timeout: bool = False) -> None:
         s.settimeout(0.5)
         try:
             s.recv(64)
-        except socket.timeout:
+        except TimeoutError:
             pass
-    except socket.timeout:
+    except TimeoutError:
         if kick_on_timeout:
             _kick_daemon_if_dying()
     except Exception:

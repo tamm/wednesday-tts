@@ -1,12 +1,27 @@
 repos:
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v4.0.0-alpha.8
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
     hooks:
-      - id: prettier
-        types: [markdown]
+      - id: gitleaks
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.10
+    rev: v0.15.10
     hooks:
       - id: ruff
         args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        args: ["-c", "pyproject.toml", "-x", "tests,.venv", "-ll"]
+
+  - repo: local
+    hooks:
+      - id: no-local-paths
+        name: Block absolute local paths
+        entry: scripts/check-no-local-paths.sh
+        language: script
+        stages: [pre-commit]
+        types: [text]

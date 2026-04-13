@@ -2,7 +2,6 @@
 
 from wednesday_tts.normalize.camelcase import normalize_all_caps, normalize_camelcase
 
-
 # ---------------------------------------------------------------------------
 # normalize_camelcase
 # ---------------------------------------------------------------------------

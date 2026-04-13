@@ -11,7 +11,7 @@ import time
 
 import numpy as np
 
-from .base import TTSBackend, DEFAULT_SPEED, soundstretch_tempo
+from .base import DEFAULT_SPEED, TTSBackend, soundstretch_tempo
 
 
 class PocketTTSBackend(TTSBackend):
@@ -84,7 +84,7 @@ class PocketTTSBackend(TTSBackend):
         self._voice_states[voice_name] = state
         return state
 
-    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> "np.ndarray | None":
+    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> np.ndarray | None:
         if self._model is None:
             raise RuntimeError("PocketTTSBackend not loaded — call load() first")
 
@@ -106,7 +106,7 @@ class PocketTTSBackend(TTSBackend):
 
     def generate_streaming(self, text: str, speed: float | None = None,
                            playback_queue=None, stop_check=None, voice: str | None = None,
-                           msg_id: int = -1) -> "np.ndarray | None":
+                           msg_id: int = -1) -> np.ndarray | None:
         """Generate audio via streaming inference, pipe through soundstretch, queue chunks.
 
         If playback_queue is provided and speed != 1.0:

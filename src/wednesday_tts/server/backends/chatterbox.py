@@ -6,7 +6,7 @@ import os
 
 import numpy as np
 
-from .base import TTSBackend, DEFAULT_SPEED, soundstretch_tempo
+from .base import DEFAULT_SPEED, TTSBackend, soundstretch_tempo
 
 
 class ChatterboxBackend(TTSBackend):
@@ -51,7 +51,7 @@ class ChatterboxBackend(TTSBackend):
         speed: float | None = None,
         chars_preceding: int = 0,
         voice: str | None = None,
-    ) -> "np.ndarray | None":
+    ) -> np.ndarray | None:
         """Render text to audio.
 
         Args:

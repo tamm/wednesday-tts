@@ -6,9 +6,7 @@ import os
 import time
 from unittest.mock import MagicMock, patch
 
-
 import wednesday_tts.platform as plat
-
 
 # ---------------------------------------------------------------------------
 # spoken_hashes_path()
@@ -88,7 +86,7 @@ class TestFailureLog:
         assert len(lines) == 3
 
     def test_record_failure_silent_on_io_error(self):
-        with patch("builtins.open", side_effect=IOError("disk full")):
+        with patch("builtins.open", side_effect=OSError("disk full")):
             plat.record_failure()  # must not raise
 
     def test_clear_failures_removes_file(self, tmp_path):

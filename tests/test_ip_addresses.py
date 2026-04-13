@@ -2,7 +2,6 @@
 
 from wednesday_tts.normalize.ip_addresses import normalize_ip_addresses
 
-
 # --- Basic addresses ---
 
 def test_private_network():

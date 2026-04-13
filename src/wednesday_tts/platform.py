@@ -60,8 +60,8 @@ def drain_daemon() -> None:
     """
     if IS_WINDOWS:
         return
-    import socket
     import json as _json
+    import socket
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(600)  # generous: covers longest realistic audio
     try:
@@ -161,7 +161,7 @@ def acquire_lock(timeout: float = 30) -> int | None:
                 import fcntl
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return lock_fd
-        except (OSError, IOError):
+        except OSError:
             try:
                 if lock_fd >= 0:
                     os.close(lock_fd)

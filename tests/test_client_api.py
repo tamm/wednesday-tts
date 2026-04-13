@@ -5,9 +5,7 @@ from __future__ import annotations
 import urllib.error
 from unittest.mock import MagicMock, patch
 
-
 from wednesday_tts.client.api import is_server_running, normalize, speak
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -165,7 +163,7 @@ class TestNormalize:
         assert "content_type=plain" in captured["url"]
 
     def test_response_decoded_as_utf8(self):
-        body = "café résumé".encode("utf-8")
+        body = "café résumé".encode()
         mock_resp = _mock_response(body)
         with patch("urllib.request.urlopen", return_value=mock_resp):
             result = normalize("café résumé")

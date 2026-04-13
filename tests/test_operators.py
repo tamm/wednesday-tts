@@ -1,7 +1,9 @@
 """Tests for operator normalization."""
 
 from wednesday_tts.normalize.operators import (
-    normalize_operators, normalize_negative_numbers, normalize_word_dash_number,
+    normalize_negative_numbers,
+    normalize_operators,
+    normalize_word_dash_number,
 )
 
 

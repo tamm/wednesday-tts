@@ -1,10 +1,16 @@
 """Tests for number, unit, storage, and HTTP code normalization."""
 
 from wednesday_tts.normalize.numbers import (
-    normalize_tilde_approx, normalize_fractions, normalize_time_units,
-    normalize_storage_units, normalize_multipliers, normalize_small_decimals,
-    normalize_regular_decimals, normalize_http_codes,
-    normalize_repeated_punctuation, normalize_standalone_punctuation,
+    normalize_fractions,
+    normalize_http_codes,
+    normalize_multipliers,
+    normalize_regular_decimals,
+    normalize_repeated_punctuation,
+    normalize_small_decimals,
+    normalize_standalone_punctuation,
+    normalize_storage_units,
+    normalize_tilde_approx,
+    normalize_time_units,
 )
 
 

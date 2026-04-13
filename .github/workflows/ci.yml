@@ -6,46 +6,50 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+
+      - name: Install PortAudio (sounddevice dependency)
+        run: brew install portaudio
 
       - name: Install with test dependencies
         run: pip install ".[test]"
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ -v --tb=short
 
-  lint:
+  # Single source of truth: pre-commit drives all lint/format/SAST checks.
+  # Local and CI share the exact versions pinned in .pre-commit-config.yaml.
+  pre-commit:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Install ruff
-        run: pip install ruff
+      - uses: pre-commit/action@v3.0.1
 
-      - name: Run ruff
-        run: ruff check .
-
-  secrets:
+  gitleaks:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
         with:

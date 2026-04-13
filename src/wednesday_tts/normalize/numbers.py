@@ -3,7 +3,11 @@
 import re
 
 from wednesday_tts.normalize.constants import (
-    DIGIT_WORDS, UNIT_MAP, STORAGE_MAP, digits_to_spoken, decimal_to_spoken,
+    DIGIT_WORDS,
+    STORAGE_MAP,
+    UNIT_MAP,
+    decimal_to_spoken,
+    digits_to_spoken,
 )
 from wednesday_tts.normalize.numbers_to_words import number_to_words
 
