@@ -49,6 +49,7 @@ class SopranoBackend(TTSBackend):
         # avoiding any writes to site-packages.
         self._patch_soprano_dtype()
         from soprano import SopranoTTS  # type: ignore[import]
+
         self._model = SopranoTTS(backend=self._backend_type, device=self._device)
 
     @staticmethod
@@ -64,6 +65,7 @@ class SopranoBackend(TTSBackend):
         mod_name = "soprano.backends.transformers"
         try:
             import importlib
+
             mod = importlib.import_module(mod_name)
         except ImportError:
             return  # soprano not installed — nothing to do
@@ -84,7 +86,9 @@ class SopranoBackend(TTSBackend):
         except Exception:
             pass  # best-effort — if it fails, soprano may still work
 
-    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> np.ndarray | None:
+    def generate(
+        self, text: str, speed: float | None = None, voice: str | None = None
+    ) -> np.ndarray | None:
         if self._model is None:
             raise RuntimeError("SopranoBackend not loaded — call load() first")
 

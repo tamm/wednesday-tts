@@ -9,6 +9,7 @@ Backend selection via active_model in ~/.claude/tts-config.json (default: pocket
 Run:
     python -m wednesday_tts.server.daemon
 """
+
 from __future__ import annotations
 
 import collections
@@ -41,8 +42,11 @@ DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
 # Path to the SpatialStream binary for head-tracked playback on BT headphones
 _SPATIAL_STREAM_BIN = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "integrations", "spatial-audio", "SpatialStream",
+    "integrations",
+    "spatial-audio",
+    "SpatialStream",
 )
+
 
 def _check_competing_instances() -> list[str]:
     """Log warnings if other processes or launchd services could conflict.
@@ -61,11 +65,12 @@ def _check_competing_instances() -> list[str]:
     try:
         result = subprocess.run(
             ["pgrep", "-f", "wednesday_tts.server.daemon"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         other_pids = [
-            int(p) for p in result.stdout.strip().splitlines()
-            if p.strip() and int(p) != my_pid
+            int(p) for p in result.stdout.strip().splitlines() if p.strip() and int(p) != my_pid
         ]
         if other_pids:
             warnings.append(
@@ -79,7 +84,9 @@ def _check_competing_instances() -> list[str]:
     try:
         result = subprocess.run(
             ["launchctl", "list"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         matching = []
         for line in result.stdout.splitlines():
@@ -103,6 +110,7 @@ def _check_competing_instances() -> list[str]:
     for w in warnings:
         print(f"[startup] WARNING: {w}", flush=True)
     return warnings
+
 
 # Error chime — played when a request times out or errors.
 # Set "error_chime" in ~/.claude/tts-config.json to a sound file path.
@@ -201,7 +209,7 @@ def _split_voice_segments(
     segments: list[tuple[str | dict | None, str | None, str]] = []
     last_end = 0
     for m in pattern.finditer(text):
-        before = text[last_end:m.start()].strip()
+        before = text[last_end : m.start()].strip()
         if before:
             segments.append((None, None, before))
 
@@ -231,7 +239,11 @@ def _split_voice_segments(
             tagged_text = content.strip()
             if guillemet_voice and guillemet_voice != "sam":
                 # Config overrides to a named voice
-                voice_id = guillemet_voice if isinstance(guillemet_voice, dict) else _resolve_pool_entry_by_name(guillemet_voice)
+                voice_id = (
+                    guillemet_voice
+                    if isinstance(guillemet_voice, dict)
+                    else _resolve_pool_entry_by_name(guillemet_voice)
+                )
             else:
                 voice_id = "sam"
 
@@ -315,7 +327,10 @@ def _resolve_voice_for_request(
             try:
                 idx = int(voice_hash, 16) % len(pool)
                 entry = pool[idx]
-                print(f"[voice] voice_hash={voice_hash} → pool[{idx}] → {_voice_label(entry)}", flush=True)
+                print(
+                    f"[voice] voice_hash={voice_hash} → pool[{idx}] → {_voice_label(entry)}",
+                    flush=True,
+                )
                 return entry
             except (ValueError, IndexError):
                 pass
@@ -416,7 +431,7 @@ def _render_segments(
             fade = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
             merged[-overlap:] *= fade[::-1]  # fade out tail
             chunk = chunk.copy()
-            chunk[:overlap] *= fade           # fade in head
+            chunk[:overlap] *= fade  # fade in head
         merged = np.concatenate([merged, chunk])
     return merged
 
@@ -480,15 +495,14 @@ def _touch_activity() -> None:
 # Normalization wiring
 # ---------------------------------------------------------------------------
 
+
 def _load_normalize_deps() -> tuple[list, dict]:
     """Load pronunciation dictionaries, searching package data dir first."""
     dictionary: list = []
     filenames_dict: dict = {}
 
     candidates = [
-        os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data")
-        ),
+        os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data")),
         os.path.join(os.path.expanduser("~"), ".claude", "hooks"),
     ]
 
@@ -522,16 +536,21 @@ def _get_normalize_deps() -> tuple[list, dict]:
 
 def run_normalize(text: str, content_type: str = "markdown") -> str:
     from wednesday_tts.normalize.pipeline import normalize  # lazy import
+
     dictionary, filenames_dict = _get_normalize_deps()
-    return normalize(text, content_type=content_type, dictionary=dictionary, filenames_dict=filenames_dict)
+    return normalize(
+        text, content_type=content_type, dictionary=dictionary, filenames_dict=filenames_dict
+    )
 
 
-_stop_gen = 0       # incremented on STOP; in-flight chunks compare to bail out
-_skip_gen = 0       # incremented on SKIP; playback write loop bails but queue/renders survive
-_msg_id_counter = 0         # monotonic message ID; incremented per request
-_playing_msg_id: int = -1   # msg_id of the chunk currently being written to audio device
-_playback_current_msg_id: int = -1  # msg_id the playback worker has claimed (set before write starts)
-_skip_msg_id: int = -1      # msg_id that was last skipped; generation threads bail if they match
+_stop_gen = 0  # incremented on STOP; in-flight chunks compare to bail out
+_skip_gen = 0  # incremented on SKIP; playback write loop bails but queue/renders survive
+_msg_id_counter = 0  # monotonic message ID; incremented per request
+_playing_msg_id: int = -1  # msg_id of the chunk currently being written to audio device
+_playback_current_msg_id: int = (
+    -1
+)  # msg_id the playback worker has claimed (set before write starts)
+_skip_msg_id: int = -1  # msg_id that was last skipped; generation threads bail if they match
 
 # Barge-in queue-and-delay. When the barge-in flag from wednesday-yarn is
 # fresh (user is currently dictating), new speak requests are NOT rejected —
@@ -540,9 +559,9 @@ _skip_msg_id: int = -1      # msg_id that was last skipped; generation threads b
 # staleness ceiling), _barge_in_worker replays the pending list in arrival
 # order through _process_speak.
 _BARGE_IN_PATH = "/tmp/wednesday-yarn-barge-in"  # wednesday-yarn writes here, hardcoded
-_BARGE_IN_WINDOW_SECS = 3.0    # fresh window from most-recent flag touch
+_BARGE_IN_WINDOW_SECS = 3.0  # fresh window from most-recent flag touch
 _BARGE_IN_MAX_AGE_SECS = 30.0  # hard ceiling — after this, flag is stale / dead
-_BARGE_IN_MAX_PENDING = 16     # drop-oldest cap so continuous dictation can't OOM us
+_BARGE_IN_MAX_PENDING = 16  # drop-oldest cap so continuous dictation can't OOM us
 _barge_in_pending: list[dict] = []
 _barge_in_lock = threading.Lock()
 _barge_in_dropped_once = False  # True once we've committed to this barge-in cycle
@@ -558,7 +577,7 @@ _speak_pipeline_lock = threading.Lock()
 
 # Message completion tracking: handlers signal when all chunks for a msg_id
 # are enqueued, so the playback worker knows when it can move to the next message.
-_msg_done: set[int] = set()          # msg_ids whose chunks are all enqueued
+_msg_done: set[int] = set()  # msg_ids whose chunks are all enqueued
 _msg_done_lock = threading.Lock()
 _msg_done_event = threading.Event()  # poked when a msg finishes enqueuing
 
@@ -585,13 +604,13 @@ def _clear_msg_done(msg_id: int) -> None:
 playback_queue: queue.Queue = queue.Queue()
 _current_pan: float = 0.5  # stereo pan: 0.0=left, 0.5=centre, 1.0=right
 _device_changed = threading.Event()  # set by health worker when default output device changes
-_portaudio_lock = threading.Lock()   # guards sd._terminate()/_initialize() vs active stream writes
+_portaudio_lock = threading.Lock()  # guards sd._terminate()/_initialize() vs active stream writes
 _active_backend: TTSBackend | None = None
 _active_backend_name: str = ""
 
 # Playback liveness tracking — lets watchdogs detect a wedged out_stream.write()
-_playback_heartbeat: float = 0.0     # monotonic time of last successful stream write
-_level_last_sent: float = 0.0        # monotonic time of last playback_level overlay event
+_playback_heartbeat: float = 0.0  # monotonic time of last successful stream write
+_level_last_sent: float = 0.0  # monotonic time of last playback_level overlay event
 _playback_stream_ref: sd.OutputStream | None = None  # current stream; watchdog can abort this
 _playback_stream_lock = threading.Lock()  # protects _playback_stream_ref
 
@@ -775,6 +794,7 @@ def _sigusr1_handler(sig: int, frame) -> None:
 # Device helpers
 # ---------------------------------------------------------------------------
 
+
 def get_default_output_device() -> int | None:
     """Query the current default output device.
 
@@ -813,6 +833,7 @@ def _upsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
         import math
 
         from scipy.signal import resample_poly  # type: ignore[import]
+
         g = math.gcd(to_rate, from_rate)
         return resample_poly(audio, to_rate // g, from_rate // g).astype(np.float32)
     except ImportError:
@@ -830,9 +851,7 @@ def _query_bt_headphone_uid() -> str | None:
     try:
         import ctypes
 
-        ca = ctypes.cdll.LoadLibrary(
-            "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
-        )
+        ca = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
 
         class _PropAddr(ctypes.Structure):
             _fields_ = [
@@ -842,7 +861,7 @@ def _query_bt_headphone_uid() -> str | None:
             ]
 
         def _fourcc(s: str) -> int:
-            return (ord(s[0]) << 24 | ord(s[1]) << 16 | ord(s[2]) << 8 | ord(s[3]))
+            return ord(s[0]) << 24 | ord(s[1]) << 16 | ord(s[2]) << 8 | ord(s[3])
 
         scope_global = _fourcc("glob")
 
@@ -861,8 +880,12 @@ def _query_bt_headphone_uid() -> str | None:
         transport = ctypes.c_uint32(0)
         size2 = ctypes.c_uint32(4)
         err2 = ca.AudioObjectGetPropertyData(
-            device_id.value, ctypes.byref(addr2), 0, None,
-            ctypes.byref(size2), ctypes.byref(transport),
+            device_id.value,
+            ctypes.byref(addr2),
+            0,
+            None,
+            ctypes.byref(size2),
+            ctypes.byref(transport),
         )
         if err2 != 0:
             return None
@@ -930,6 +953,7 @@ def _get_spatial_stream(sample_rate: int, pan: float, device_uid: str) -> subpro
             _spatial_pan = pan
             # Read the ready message
             import select
+
             if select.select([proc.stderr], [], [], 3.0)[0]:
                 line = proc.stderr.readline().decode("utf-8", errors="replace")
                 print(f"[spatial] {line.strip()}", flush=True)
@@ -992,6 +1016,7 @@ def _try_play(item: np.ndarray, sample_rate: int) -> bool:
 # Hung-request watchdog
 # ---------------------------------------------------------------------------
 
+
 def _hung_request_watchdog() -> None:
     """Background thread: exit if a request has been in-flight too long.
 
@@ -1001,7 +1026,7 @@ def _hung_request_watchdog() -> None:
     threshold and forces a clean exit so launchd restarts the daemon.
     """
     HUNG_THRESHOLD = 120  # seconds before declaring a request hung
-    POLL = 10             # check every N seconds
+    POLL = 10  # check every N seconds
 
     time.sleep(30)  # grace period — let first request finish loading model
     while True:
@@ -1032,6 +1057,7 @@ def _hung_request_watchdog() -> None:
 # Audio health watchdog
 # ---------------------------------------------------------------------------
 
+
 def _query_default_device_subprocess() -> tuple[int, str] | None:
     """Query the default output device in a subprocess.
 
@@ -1047,15 +1073,19 @@ def _query_default_device_subprocess() -> tuple[int, str] | None:
     try:
         result = subprocess.run(
             [
-                os.sys.executable, "-c",
+                os.sys.executable,
+                "-c",
                 "import sounddevice as sd, json; "
                 "info = sd.query_devices(kind='output'); "
                 "print(json.dumps({'index': info['index'], 'name': info['name']}))",
             ],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             import json as _json
+
             data = _json.loads(result.stdout.strip())
             return (data["index"], data["name"])
     except Exception:
@@ -1075,10 +1105,10 @@ def _audio_health_worker() -> None:
     doesn't destroy the parent's active stream handles.
     """
     GRACE = 60
-    INTERVAL = 5   # check every 5s for responsive device switching
+    INTERVAL = 5  # check every 5s for responsive device switching
     MAX_FAILS = 5
-    STALL_ABORT = 15   # seconds before aborting a wedged stream
-    STALL_EXIT = 45    # seconds before giving up and exiting for restart
+    STALL_ABORT = 15  # seconds before aborting a wedged stream
+    STALL_EXIT = 45  # seconds before giving up and exiting for restart
 
     time.sleep(GRACE)
     probe_fails = 0
@@ -1098,7 +1128,10 @@ def _audio_health_worker() -> None:
             probe_fails = 0
             current_device, dev_name = result
             if current_device != last_device:
-                print(f"[HEALTH] output device changed: {last_device} → {current_device} ({dev_name})", flush=True)
+                print(
+                    f"[HEALTH] output device changed: {last_device} → {current_device} ({dev_name})",
+                    flush=True,
+                )
                 last_device = current_device
                 _device_changed.set()
         else:
@@ -1117,8 +1150,7 @@ def _audio_health_worker() -> None:
             stall_age = time.monotonic() - _playback_heartbeat
             if stall_age > STALL_EXIT:
                 print(
-                    f"[HEALTH] playback stalled for {stall_age:.0f}s — "
-                    "exiting for restart",
+                    f"[HEALTH] playback stalled for {stall_age:.0f}s — exiting for restart",
                     flush=True,
                 )
                 _play_error_chime()
@@ -1145,6 +1177,7 @@ def _audio_health_worker() -> None:
 # Playback worker
 # ---------------------------------------------------------------------------
 
+
 def _anti_click(audio: np.ndarray, rate: int) -> np.ndarray:
     """Trim artefacts and apply fade-in/out to prevent clicks between chunks."""
     TRIM_START = int(rate * 0.005)
@@ -1158,11 +1191,13 @@ def _anti_click(audio: np.ndarray, rate: int) -> np.ndarray:
         audio = audio[:-TRIM_END].copy()
         audio[:FADE_IN] *= np.linspace(0.0, 1.0, FADE_IN, dtype=np.float32)
         audio[-FADE_OUT:] *= np.linspace(1.0, 0.0, FADE_OUT, dtype=np.float32)
-        audio = np.concatenate([
-            np.zeros(PAD_START, dtype=np.float32),
-            audio,
-            np.zeros(PAD_END, dtype=np.float32),
-        ])
+        audio = np.concatenate(
+            [
+                np.zeros(PAD_START, dtype=np.float32),
+                audio,
+                np.zeros(PAD_END, dtype=np.float32),
+            ]
+        )
     else:
         n = len(audio)
         fade = np.linspace(0.0, 1.0, n, dtype=np.float32)
@@ -1217,8 +1252,9 @@ def _send_overlay_idle() -> None:
     )
 
 
-def _limiter(audio: np.ndarray, ceiling: float = 0.85, window_ms: float = 30.0,
-             rate: int = 48000) -> np.ndarray:
+def _limiter(
+    audio: np.ndarray, ceiling: float = 0.85, window_ms: float = 30.0, rate: int = 48000
+) -> np.ndarray:
     """Simple lookahead peak limiter to prevent dangerously loud output.
 
     1. Hard-clip anything above ceiling (safety net).
@@ -1232,10 +1268,10 @@ def _limiter(audio: np.ndarray, ceiling: float = 0.85, window_ms: float = 30.0,
     n = len(audio)
     gain = np.ones(n, dtype=np.float32)
     for i in range(0, n, window):
-        chunk = audio[i:i + window]
+        chunk = audio[i : i + window]
         peak = np.abs(chunk).max()
         if peak > ceiling:
-            gain[i:i + window] = ceiling / peak
+            gain[i : i + window] = ceiling / peak
 
     # Smooth the gain curve to avoid clicks (simple moving average)
     smooth_len = min(window, n)
@@ -1274,11 +1310,17 @@ def playback_worker(backend: TTSBackend) -> None:
         has_bin = os.path.isfile(_SPATIAL_STREAM_BIN)
         if uid and has_bin:
             if log:
-                print(f"[playback] BT headphones detected, uid={uid} — using spatial stream", flush=True)
+                print(
+                    f"[playback] BT headphones detected, uid={uid} — using spatial stream",
+                    flush=True,
+                )
             return True, uid
         if uid and not has_bin:
             if log:
-                print("[playback] BT detected but no SpatialStream binary — PortAudio fallback", flush=True)
+                print(
+                    "[playback] BT detected but no SpatialStream binary — PortAudio fallback",
+                    flush=True,
+                )
         else:
             if log:
                 print("[playback] non-BT output — using PortAudio stereo pan", flush=True)
@@ -1299,7 +1341,10 @@ def playback_worker(backend: TTSBackend) -> None:
                         dev_name = sd.query_devices(device)["name"]
                     except Exception:
                         pass
-                    print(f"[playback] _open_stream: device={device} ({dev_name}) rate={device_rate}", flush=True)
+                    print(
+                        f"[playback] _open_stream: device={device} ({dev_name}) rate={device_rate}",
+                        flush=True,
+                    )
                     s = sd.OutputStream(
                         samplerate=device_rate,
                         device=device,
@@ -1311,7 +1356,10 @@ def playback_worker(backend: TTSBackend) -> None:
                     _playback_stream_ref = s
                 return s
             except Exception as exc:
-                print(f"[playback] OutputStream open failed (attempt {_attempt + 1}/3): {exc}", flush=True)
+                print(
+                    f"[playback] OutputStream open failed (attempt {_attempt + 1}/3): {exc}",
+                    flush=True,
+                )
                 if _attempt < 2:
                     time.sleep(1.0)
         with _playback_stream_lock:
@@ -1324,8 +1372,8 @@ def playback_worker(backend: TTSBackend) -> None:
     # Message grouping: buffer chunks from other messages so we finish one
     # message completely before starting the next. This prevents the
     # nightmarish interleaving of two speakers alternating every chunk.
-    _deferred: dict[int, list[tuple]] = {}   # msg_id → list of queued items
-    _current_msg: int | None = None          # msg_id we are currently playing
+    _deferred: dict[int, list[tuple]] = {}  # msg_id → list of queued items
+    _current_msg: int | None = None  # msg_id we are currently playing
 
     def _next_item():
         """Get the next item to play, respecting message grouping.
@@ -1517,7 +1565,10 @@ def playback_worker(backend: TTSBackend) -> None:
                 # --- Spatial stream path (BT headphones) ---
                 proc = _get_spatial_stream(backend.sample_rate, pan, bt_uid)
                 if proc is None or proc.poll() is not None:
-                    print("[playback] spatial stream unavailable, falling back to PortAudio", flush=True)
+                    print(
+                        "[playback] spatial stream unavailable, falling back to PortAudio",
+                        flush=True,
+                    )
                     use_spatial = False
                     bt_uid = None
                 else:
@@ -1566,14 +1617,20 @@ def playback_worker(backend: TTSBackend) -> None:
                         _play_dur = len(spatial_audio) / backend.sample_rate
                         _wait = _play_dur - _write_elapsed
                         if _wait > 0 and not _should_bail():
-                            print(f"[playback] spatial: waiting {_wait:.1f}s for playback to finish", flush=True)
+                            print(
+                                f"[playback] spatial: waiting {_wait:.1f}s for playback to finish",
+                                flush=True,
+                            )
                             _wait_end = time.monotonic() + _wait
                             while time.monotonic() < _wait_end and not _should_bail():
                                 time.sleep(min(0.2, _wait_end - time.monotonic()))
                                 _playback_heartbeat = time.monotonic()
                         spatial_ok = True
                     except (BrokenPipeError, OSError) as exc:
-                        print(f"[playback] spatial stream write failed: {exc}, falling back to PortAudio", flush=True)
+                        print(
+                            f"[playback] spatial stream write failed: {exc}, falling back to PortAudio",
+                            flush=True,
+                        )
                         _kill_spatial_stream()
                         use_spatial = False
                         bt_uid = None
@@ -1586,10 +1643,7 @@ def playback_worker(backend: TTSBackend) -> None:
             audio = _limiter(audio, ceiling=0.85, rate=device_rate)
             audio = _anti_click(audio, device_rate)
 
-            need_reopen = (
-                out_stream is None
-                or not out_stream.active
-            )
+            need_reopen = out_stream is None or not out_stream.active
             if need_reopen:
                 if out_stream is not None:
                     try:
@@ -1676,6 +1730,7 @@ def playback_worker(backend: TTSBackend) -> None:
 # ---------------------------------------------------------------------------
 # Speak pipeline — shared by handle_client and the barge-in replay worker
 # ---------------------------------------------------------------------------
+
 
 def _process_speak(msg: dict, backend: TTSBackend) -> None:
     """Render and enqueue a single speak request.
@@ -1787,10 +1842,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
 
     # ── Normalise text segments (not voice IDs) ──────────────────────
     if normalization != "pre-normalized":
-        segments = [
-            (v, i, run_normalize(t, content_type=normalization))
-            for v, i, t in segments
-        ]
+        segments = [(v, i, run_normalize(t, content_type=normalization)) for v, i, t in segments]
 
     # Reassemble text for dedup check
     text = " ".join(t for _, _, t in segments)
@@ -1802,9 +1854,9 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
         return
 
     # Determine if we need backend switching (SAM segments mixed with primary).
-    needs_backend_switch = any(
-        v == "sam" for v, _, _ in segments
-    ) and any(v != "sam" for v, _, _ in segments)
+    needs_backend_switch = any(v == "sam" for v, _, _ in segments) and any(
+        v != "sam" for v, _, _ in segments
+    )
 
     # Extract voice and instruct for single-segment or uniform-voice messages
     voice = request_voice
@@ -1831,7 +1883,10 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
         and _stop_gen == gen_snap
     )
     if use_streaming:
-        print(f"[req] STREAM msg_id={msg_id}, {len(text)} chars, voice={_voice_label(voice)}", flush=True)
+        print(
+            f"[req] STREAM msg_id={msg_id}, {len(text)} chars, voice={_voice_label(voice)}",
+            flush=True,
+        )
         _gs = gen_snap
         _mid = msg_id
         gs_kwargs = {
@@ -1865,12 +1920,16 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
 
     if needs_backend_switch:
         print(
-            f"[req] MULTI-VOICE msg_id={msg_id}, {len(text)} chars → "
-            f"{len(segments)} seg(s)",
+            f"[req] MULTI-VOICE msg_id={msg_id}, {len(text)} chars → {len(segments)} seg(s)",
             flush=True,
         )
         chunk_audio = _render_segments(
-            segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
+            segments,
+            backend,
+            speed,
+            gen_snap,
+            default_voice=voice,
+            msg_id=msg_id,
         )
         if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
             playback_queue.put((chunk_audio, text, msg_id))
@@ -1878,7 +1937,9 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
         _mark_msg_done(msg_id)
     else:
         text_chunks = chunk_text_server(
-            text, min_size=120, max_size=300,
+            text,
+            min_size=120,
+            max_size=300,
             backend_name=_active_backend_name,
         )
         print(
@@ -1892,7 +1953,12 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
                 break
             chunk_segments = [(None, None, chunk_text)]
             chunk_audio = _render_segments(
-                chunk_segments, backend, speed, gen_snap, default_voice=voice, msg_id=msg_id,
+                chunk_segments,
+                backend,
+                speed,
+                gen_snap,
+                default_voice=voice,
+                msg_id=msg_id,
             )
             if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
                 playback_queue.put((chunk_audio, chunk_text, msg_id))
@@ -1900,8 +1966,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
                 total_audio_secs += chunk_secs
                 _touch_activity()
                 print(
-                    f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued "
-                    f"({chunk_secs:.1f}s)",
+                    f"[req] chunk {ci + 1}/{len(text_chunks)} enqueued ({chunk_secs:.1f}s)",
                     flush=True,
                 )
         _mark_msg_done(msg_id)
@@ -1914,6 +1979,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
 # ---------------------------------------------------------------------------
 # Connection handler
 # ---------------------------------------------------------------------------
+
 
 def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
     """Handle one client connection.
@@ -2062,15 +2128,19 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 class _TimestampWriter:
     """Wrapper that prepends HH:MM:SS to each printed line."""
+
     def __init__(self, stream):
         self._stream = stream
         self._at_line_start = True
+
     def write(self, s):
         if not s:
             return
         from datetime import datetime
+
         parts = s.split("\n")
         for i, part in enumerate(parts):
             if i > 0:
@@ -2081,12 +2151,14 @@ class _TimestampWriter:
                     self._stream.write(datetime.now().strftime("%H:%M:%S "))
                     self._at_line_start = False
                 self._stream.write(part)
+
     def flush(self):
         self._stream.flush()
 
 
 def main() -> None:
     import sys
+
     sys.stdout = _TimestampWriter(sys.stdout)
     sys.stderr = _TimestampWriter(sys.stderr)
 
@@ -2098,6 +2170,7 @@ def main() -> None:
     _model_config: dict = {}
     try:
         import json as _json
+
         with open(_config_path, encoding="utf-8") as _f:
             _cfg = _json.load(_f)
     except FileNotFoundError:

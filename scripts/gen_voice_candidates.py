@@ -7,6 +7,7 @@ Usage:
     cd ~/dev/wednesday-tts
     .venv/bin/python scripts/gen_voice_candidates.py
 """
+
 import os
 
 import mlx.core as mx
@@ -29,19 +30,21 @@ model = load(MODEL_ID)
 
 for seed in SEEDS:
     mx.random.seed(seed)
-    chunks = list(model.generate(
-        text=TEXT,
-        temperature=0.75,
-        repetition_penalty=1.2,
-        top_p=0.85,
-        top_k=30,
-        split_pattern="",
-    ))
+    chunks = list(
+        model.generate(
+            text=TEXT,
+            temperature=0.75,
+            repetition_penalty=1.2,
+            top_p=0.85,
+            top_k=30,
+            split_pattern="",
+        )
+    )
     arrays = [np.array(r.audio, dtype=np.float32).squeeze() for r in chunks]
     audio = np.concatenate(arrays)
     path = f"{OUTDIR}/seed_{seed}.wav"
     sf.write(path, audio, 24000)
-    print(f"Wrote {path} ({len(audio)/24000:.1f}s)")
+    print(f"Wrote {path} ({len(audio) / 24000:.1f}s)")
 
 print("\nAudition with:")
-print(f"  for f in {OUTDIR}/*.wav; do echo \"$f\"; afplay \"$f\"; done")
+print(f'  for f in {OUTDIR}/*.wav; do echo "$f"; afplay "$f"; done')

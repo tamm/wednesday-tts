@@ -6,12 +6,12 @@ The pipeline under test is wednesday_tts.normalize.pipeline.normalize and
 normalize_technical.
 """
 
-
 from wednesday_tts.normalize.pipeline import normalize, normalize_technical
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def norm(text, **kwargs):
     """Shorthand — default content_type is 'markdown'."""
@@ -22,8 +22,8 @@ def norm(text, **kwargs):
 # content_type passthrough and routing
 # ---------------------------------------------------------------------------
 
-class TestContentTypeRouting:
 
+class TestContentTypeRouting:
     def test_normalized_passthrough(self):
         raw = "**bold** `code` https://example.com"
         assert normalize(raw, content_type="normalized") == raw
@@ -63,8 +63,8 @@ class TestContentTypeRouting:
 # Code blocks
 # ---------------------------------------------------------------------------
 
-class TestCodeBlocks:
 
+class TestCodeBlocks:
     def test_fenced_code_block_becomes_spoken(self):
         text = "Run this:\n```\nprint('hello')\n```\ndone."
         result = norm(text)
@@ -92,8 +92,8 @@ class TestCodeBlocks:
 # URLs
 # ---------------------------------------------------------------------------
 
-class TestURLs:
 
+class TestURLs:
     def test_https_url_to_spoken(self):
         result = norm("See https://example.com for details.")
         assert "example dot com" in result
@@ -124,8 +124,8 @@ class TestURLs:
 # Numbers and units
 # ---------------------------------------------------------------------------
 
-class TestNumbersAndUnits:
 
+class TestNumbersAndUnits:
     def test_percentage(self):
         result = norm("Done: 75%")
         assert "percent" in result
@@ -175,8 +175,8 @@ class TestNumbersAndUnits:
 # CamelCase and ALL CAPS
 # ---------------------------------------------------------------------------
 
-class TestCamelCaseAndCaps:
 
+class TestCamelCaseAndCaps:
     def test_camelcase_split(self):
         result = norm("The myVariableName is set.")
         assert "my Variable Name" in result or "my" in result
@@ -198,15 +198,10 @@ class TestCamelCaseAndCaps:
 # Markdown tables
 # ---------------------------------------------------------------------------
 
-class TestMarkdownTables:
 
+class TestMarkdownTables:
     def test_simple_table_spoken(self):
-        text = (
-            "| Name | Value |\n"
-            "| ---- | ----- |\n"
-            "| foo  | 42    |\n"
-            "| bar  | 99    |\n"
-        )
+        text = "| Name | Value |\n| ---- | ----- |\n| foo  | 42    |\n| bar  | 99    |\n"
         result = norm(text)
         assert "|" not in result
         assert "foo" in result
@@ -222,8 +217,8 @@ class TestMarkdownTables:
 # Markdown links
 # ---------------------------------------------------------------------------
 
-class TestMarkdownLinks:
 
+class TestMarkdownLinks:
     def test_link_text_kept_url_dropped(self):
         result = norm("See [the docs](https://example.com/docs) for info.")
         assert "the docs" in result
@@ -238,8 +233,8 @@ class TestMarkdownLinks:
 # Paths
 # ---------------------------------------------------------------------------
 
-class TestPaths:
 
+class TestPaths:
     def test_tilde_home_path(self):
         result = norm("Edit ~/.claude/settings.json")
         assert "home" in result or "tilde" in result or "dot claude" in result
@@ -253,8 +248,8 @@ class TestPaths:
 # Dictionary substitution
 # ---------------------------------------------------------------------------
 
-class TestDictionary:
 
+class TestDictionary:
     def test_api_replaced(self, sample_dictionary):
         result = norm("The API is stable.", dictionary=sample_dictionary)
         assert "Ae pee eye" in result
@@ -268,8 +263,8 @@ class TestDictionary:
 # Escape sequences and special characters
 # ---------------------------------------------------------------------------
 
-class TestSpecialCharacters:
 
+class TestSpecialCharacters:
     def test_em_dash_becomes_comma(self):
         result = norm("It works — sometimes.")
         assert "\u2014" not in result
@@ -294,8 +289,8 @@ class TestSpecialCharacters:
 # Mixed / end-to-end real-world inputs
 # ---------------------------------------------------------------------------
 
-class TestEndToEnd:
 
+class TestEndToEnd:
     def test_typical_claude_response(self, sample_dictionary, sample_filenames_dict):
         text = (
             "## Summary\n\n"
@@ -304,8 +299,7 @@ class TestEndToEnd:
             "- Fixed myBuggyFunction\n"
             "- Updated 2/5 tasks\n"
         )
-        result = norm(text, dictionary=sample_dictionary,
-                      filenames_dict=sample_filenames_dict)
+        result = norm(text, dictionary=sample_dictionary, filenames_dict=sample_filenames_dict)
         assert "##" not in result
         assert "**" not in result
         assert "`" not in result

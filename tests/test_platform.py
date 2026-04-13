@@ -12,6 +12,7 @@ import wednesday_tts.platform as plat
 # spoken_hashes_path()
 # ---------------------------------------------------------------------------
 
+
 class TestSpokenHashesPath:
     def test_returns_string(self):
         result = plat.spoken_hashes_path("abc123")
@@ -34,6 +35,7 @@ class TestSpokenHashesPath:
 # ---------------------------------------------------------------------------
 # suppress_dictation() / unsuppress_dictation()
 # ---------------------------------------------------------------------------
+
 
 class TestDictationSuppression:
     def test_suppress_creates_file(self, tmp_path):
@@ -62,6 +64,7 @@ class TestDictationSuppression:
 # ---------------------------------------------------------------------------
 # record_failure() / clear_failures()
 # ---------------------------------------------------------------------------
+
 
 class TestFailureLog:
     def test_record_failure_appends_timestamp(self, tmp_path):
@@ -105,6 +108,7 @@ class TestFailureLog:
 # ---------------------------------------------------------------------------
 # should_restart_daemon()
 # ---------------------------------------------------------------------------
+
 
 class TestShouldRestartDaemon:
     def test_returns_false_when_no_failure_file(self, tmp_path):
@@ -162,6 +166,7 @@ class TestShouldRestartDaemon:
 # daemon_is_responsive() — Windows branch
 # ---------------------------------------------------------------------------
 
+
 class TestDaemonIsResponsiveWindows:
     def _run(self, urlopen_side_effect=None, urlopen_return=None):
         mock_resp = MagicMock()
@@ -176,9 +181,11 @@ class TestDaemonIsResponsiveWindows:
 
         with patch.object(plat, "IS_WINDOWS", True):
             with patch.object(plat, "SERVICE_URL", "http://localhost:5678"):
-                with patch("urllib.request.urlopen",
-                           return_value=urlopen_return or mock_resp,
-                           side_effect=side_effect):
+                with patch(
+                    "urllib.request.urlopen",
+                    return_value=urlopen_return or mock_resp,
+                    side_effect=side_effect,
+                ):
                     return plat.daemon_is_responsive(timeout=1.0)
 
     def test_returns_true_when_health_responds(self):
@@ -186,6 +193,7 @@ class TestDaemonIsResponsiveWindows:
 
     def test_returns_false_on_exception(self):
         import urllib.error
+
         assert self._run(urlopen_side_effect=urllib.error.URLError("refused")) is False
 
     def test_returns_false_on_os_error(self):
@@ -195,6 +203,7 @@ class TestDaemonIsResponsiveWindows:
 # ---------------------------------------------------------------------------
 # stop_daemon_audio() — Windows branch (fire and forget, must not raise)
 # ---------------------------------------------------------------------------
+
 
 class TestStopDaemonAudioWindows:
     def test_does_not_raise_on_success(self):
@@ -210,10 +219,10 @@ class TestStopDaemonAudioWindows:
 
     def test_does_not_raise_on_error(self):
         import urllib.error
+
         with patch.object(plat, "IS_WINDOWS", True):
             with patch.object(plat, "SERVICE_URL", "http://localhost:5678"):
-                with patch("urllib.request.urlopen",
-                           side_effect=urllib.error.URLError("refused")):
+                with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
                     plat.stop_daemon_audio()  # must not raise
 
 
@@ -221,9 +230,11 @@ class TestStopDaemonAudioWindows:
 # register_signals()
 # ---------------------------------------------------------------------------
 
+
 class TestRegisterSignals:
     def test_registers_sigterm_and_sigint(self):
         import signal as _signal
+
         handler = MagicMock()
         registered = {}
 
@@ -240,6 +251,7 @@ class TestRegisterSignals:
 
     def test_no_sighup_on_windows(self):
         import signal as _signal
+
         registered = {}
 
         def fake_signal(sig, h):
@@ -255,6 +267,7 @@ class TestRegisterSignals:
 # ---------------------------------------------------------------------------
 # Path constants — sanity checks
 # ---------------------------------------------------------------------------
+
 
 class TestPathConstants:
     def test_lock_path_is_string(self):

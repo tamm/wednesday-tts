@@ -135,6 +135,7 @@ class TestRenderSegments:
 
     def test_single_plain_segment(self) -> None:
         from wednesday_tts.server.backends.sam import SAMBackend
+
         sam = SAMBackend()
         sam.load()
         segs = [(None, None, "Hello world")]
@@ -146,6 +147,7 @@ class TestRenderSegments:
     def test_single_voice_override(self) -> None:
         from wednesday_tts.server.backends.sam import SAMBackend
         from wednesday_tts.server.daemon import _voice_cache
+
         sam = SAMBackend()
         sam.load()
         # Use sam as both primary and override (same backend, just testing the path)
@@ -158,6 +160,7 @@ class TestRenderSegments:
     def test_mixed_segments_concatenated(self) -> None:
         from wednesday_tts.server.backends.sam import SAMBackend
         from wednesday_tts.server.daemon import _voice_cache
+
         sam = SAMBackend()
         sam.load()
         _voice_cache["sam"] = sam
@@ -179,12 +182,14 @@ class TestDaemonVoiceCache:
 
     def test_get_override_backend_sam(self) -> None:
         from wednesday_tts.server.daemon import _get_override_backend
+
         backend = _get_override_backend("sam")
         assert backend is not None
         assert backend.sample_rate == 22050
 
     def test_get_override_backend_caches(self) -> None:
         from wednesday_tts.server.daemon import _get_override_backend, _voice_cache
+
         _voice_cache.clear()
         b1 = _get_override_backend("sam")
         b2 = _get_override_backend("sam")
@@ -192,6 +197,5 @@ class TestDaemonVoiceCache:
 
     def test_get_override_backend_unknown(self) -> None:
         from wednesday_tts.server.daemon import _get_override_backend
+
         assert _get_override_backend("nonexistent_backend_xyz") is None
-
-

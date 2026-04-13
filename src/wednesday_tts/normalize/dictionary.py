@@ -15,7 +15,7 @@ def load_dictionary(dict_path, backend="pocket"):
     try:
         if not os.path.exists(dict_path):
             return []
-        with open(dict_path, encoding='utf-8') as f:
+        with open(dict_path, encoding="utf-8") as f:
             entries = json.load(f).get("replacements", [])
     except Exception:
         return []
@@ -25,12 +25,14 @@ def load_dictionary(dict_path, backend="pocket"):
         replacement = entry.get(backend) or entry.get("replacement", "")
         if not replacement:
             continue
-        resolved.append({
-            "pattern": entry.get("pattern", ""),
-            "replacement": replacement,
-            "case_sensitive": entry.get("case_sensitive", True),
-            "literal": entry.get("literal", False),
-        })
+        resolved.append(
+            {
+                "pattern": entry.get("pattern", ""),
+                "replacement": replacement,
+                "case_sensitive": entry.get("case_sensitive", True),
+                "literal": entry.get("literal", False),
+            }
+        )
     return resolved
 
 
@@ -38,7 +40,7 @@ def load_filenames_dict(filenames_path):
     """Load file extension pronunciation dict from tts-filenames.json."""
     try:
         if os.path.exists(filenames_path):
-            with open(filenames_path, encoding='utf-8') as f:
+            with open(filenames_path, encoding="utf-8") as f:
                 return json.load(f).get("extensions", {})
     except Exception:
         pass
@@ -61,5 +63,5 @@ def apply_dictionary(text, replacements):
         if entry.get("literal", False):
             text = re.sub(escaped, replacement, text, flags=flags)
         else:
-            text = re.sub(r'\b' + escaped + r'\b', replacement, text, flags=flags)
+            text = re.sub(r"\b" + escaped + r"\b", replacement, text, flags=flags)
     return text

@@ -51,7 +51,7 @@ def test_load_dictionary_from_file():
             {"pattern": "API", "replacement": "ay pee eye"},
         ]
     }
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         path = f.name
 
@@ -75,7 +75,7 @@ def test_load_dictionary_missing_file():
 
 def test_load_filenames_dict():
     data = {"extensions": {"py": "pie", "js": "jay ess"}}
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         path = f.name
 

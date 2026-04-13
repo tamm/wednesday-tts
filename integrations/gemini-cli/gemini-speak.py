@@ -12,6 +12,7 @@ Dedup is handled server-side by the daemon's ring buffer.
 Environment variables:
     TTS_MUTE=1   Disable TTS (also honoured via /tmp/tts-mute file)
 """
+
 import json
 import os
 import socket
@@ -33,6 +34,7 @@ MUTE_PATH = os.path.join(_TEMP, "tts-mute")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_assistant_text(payload: dict) -> str:
     """Extract assistant text from Gemini CLI hook payload based on event."""
@@ -93,17 +95,20 @@ def _fire_and_forget(text: str, wall_time: float) -> None:
     if not text or len(text.strip()) < 2:
         return
 
-    _send_json({
-        "command": "speak",
-        "text": text,
-        "normalization": "markdown",
-        "timestamp": wall_time,
-    })
+    _send_json(
+        {
+            "command": "speak",
+            "text": text,
+            "normalization": "markdown",
+            "timestamp": wall_time,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     wall_time = time.time()

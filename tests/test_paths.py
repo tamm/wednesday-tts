@@ -24,7 +24,9 @@ def _always_elide():
 
 
 def test_file_extension_py_with_dot(sample_filenames_dict):
-    result = normalize_file_extensions("speak-response.py", sample_filenames_dict, rng=_never_elide())
+    result = normalize_file_extensions(
+        "speak-response.py", sample_filenames_dict, rng=_never_elide()
+    )
     assert "dot pie" in result
 
 
@@ -39,7 +41,9 @@ def test_file_extension_json_with_dot(sample_filenames_dict):
 
 
 def test_file_extension_py_elided(sample_filenames_dict):
-    result = normalize_file_extensions("speak-response.py", sample_filenames_dict, rng=_always_elide())
+    result = normalize_file_extensions(
+        "speak-response.py", sample_filenames_dict, rng=_always_elide()
+    )
     assert result == "speak-response pie"
 
 

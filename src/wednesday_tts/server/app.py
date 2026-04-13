@@ -14,6 +14,7 @@ Run:
     python -m wednesday_tts.server.app
     wednesday-tts          (if installed via pip)
 """
+
 from __future__ import annotations
 
 import json
@@ -135,6 +136,7 @@ def _stat_latency(bucket: str, value_ms: float) -> None:
 # Normalization wiring
 # ---------------------------------------------------------------------------
 
+
 def _load_normalize_deps() -> tuple[list, dict]:
     """Load pronunciation dictionaries from the package data directory."""
 
@@ -150,13 +152,9 @@ def _load_normalize_deps() -> tuple[list, dict]:
     except Exception:
         pass
     # Also look relative to the repo root (dev install)
-    data_candidates.append(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data")
-    )
+    data_candidates.append(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data"))
     # And the legacy hooks location
-    data_candidates.append(
-        os.path.join(os.path.expanduser("~"), ".claude", "hooks")
-    )
+    data_candidates.append(os.path.join(os.path.expanduser("~"), ".claude", "hooks"))
 
     for base in data_candidates:
         base = os.path.normpath(base)
@@ -165,11 +163,14 @@ def _load_normalize_deps() -> tuple[list, dict]:
         if os.path.exists(dict_path):
             try:
                 from wednesday_tts.normalize.dictionary import load_dictionary
+
                 if config is None:
                     load_config()
                 active_model = config.get("active_model", "pocket")
                 dictionary = load_dictionary(dict_path, backend=active_model)
-                _log(f"[normalize] Loaded dictionary from {dict_path} (backend={active_model}, {len(dictionary)} entries)")
+                _log(
+                    f"[normalize] Loaded dictionary from {dict_path} (backend={active_model}, {len(dictionary)} entries)"
+                )
             except Exception as exc:
                 _log(f"[normalize] Failed to load dictionary: {exc}")
         if os.path.exists(filenames_path):
@@ -203,12 +204,15 @@ def run_normalize(text: str, content_type: str = "markdown") -> str:
     from wednesday_tts.normalize.pipeline import normalize  # lazy import
 
     dictionary, filenames_dict = _get_normalize_deps()
-    return normalize(text, content_type=content_type, dictionary=dictionary, filenames_dict=filenames_dict)
+    return normalize(
+        text, content_type=content_type, dictionary=dictionary, filenames_dict=filenames_dict
+    )
 
 
 # ---------------------------------------------------------------------------
 # Config and model loading
 # ---------------------------------------------------------------------------
+
 
 def load_config() -> dict:
     global config
@@ -244,6 +248,7 @@ def get_model():
 
         if model_name == "kokoro":
             from .backends.kokoro import KokoroBackend
+
             backend = KokoroBackend(
                 voice=model_config.get("voice", "af_bella"),
                 speed=model_config.get("speed", 1.3),
@@ -254,6 +259,7 @@ def get_model():
 
         elif model_name == "pocket":
             from .backends.pocket import PocketTTSBackend
+
             backend = PocketTTSBackend(
                 voice=model_config.get("voice", "fantine"),
                 fallback_voice=model_config.get("fallback_voice", "fantine"),
@@ -268,6 +274,7 @@ def get_model():
 
         elif model_name == "soprano":
             from .backends.soprano import SopranoBackend
+
             backend = SopranoBackend(
                 backend=model_config.get("backend", "transformers"),
                 device=model_config.get("device", "cuda"),
@@ -282,6 +289,7 @@ def get_model():
 
         elif model_name == "chatterbox":
             from .backends.chatterbox import ChatterboxBackend
+
             backend = ChatterboxBackend(
                 device=model_config.get("device", "cuda"),
                 voice_clone=model_config.get("voice_clone"),
@@ -291,6 +299,7 @@ def get_model():
 
         elif model_name == "sam":
             from .backends.sam import SAMBackend
+
             backend = SAMBackend(
                 speed=model_config.get("speed", 72),
                 pitch=model_config.get("pitch", 64),
@@ -302,6 +311,7 @@ def get_model():
 
         elif model_name == "qwen3":
             from .backends.qwen3 import Qwen3TTSBackend
+
             backend = Qwen3TTSBackend(
                 model_id=model_config.get(
                     "model_id",
@@ -326,6 +336,7 @@ def get_model():
 # ---------------------------------------------------------------------------
 # Chime
 # ---------------------------------------------------------------------------
+
 
 def play_chime(sentiment: str = "neutral") -> None:
     """Play a brief notification chime in a daemon thread.
@@ -377,6 +388,7 @@ def play_chime(sentiment: str = "neutral") -> None:
     def _play() -> None:
         try:
             import sounddevice as sd  # type: ignore[import]
+
             with sd.OutputStream(samplerate=sr, channels=1) as stream:
                 stream.write(audio_scaled)
         except Exception:
@@ -388,6 +400,7 @@ def play_chime(sentiment: str = "neutral") -> None:
 # ---------------------------------------------------------------------------
 # Speech processing
 # ---------------------------------------------------------------------------
+
 
 def process_speech(text: str) -> None:
     """Generate and play speech for the given text.
@@ -412,7 +425,7 @@ def process_speech(text: str) -> None:
     _ct = _re.match(r"^__ct:(\w+)__", text)
     if _ct:
         content_type = _ct.group(1)
-        text = text[_ct.end():]
+        text = text[_ct.end() :]
 
     try:
         # Normalize if requested
@@ -422,6 +435,7 @@ def process_speech(text: str) -> None:
         backend, model_name, model_config = get_model()
 
         from wednesday_tts.normalize.chunking import chunk_text_server as chunk_text
+
         text_chunks = chunk_text(text, backend_name=model_name)
 
         try:
@@ -479,6 +493,7 @@ def process_speech(text: str) -> None:
         # ── Chatterbox (async generation queue) ────────────────────────────
         elif model_name == "chatterbox":
             import queue as _q
+
             audio_queue: _q.Queue = _q.Queue()
             gen_complete = threading.Event()
 
@@ -516,6 +531,7 @@ def process_speech(text: str) -> None:
 
     except Exception as exc:
         import traceback
+
         _log(f"Error in speech processing: {exc}\n{traceback.format_exc()}")
         _stat_inc("requests_errored")
     else:
@@ -539,6 +555,7 @@ def queue_worker() -> None:
             speech_queue.task_done()
         except Exception as exc:
             import traceback
+
             _log(f"Queue worker error: {exc}\n{traceback.format_exc()}")
             speech_queue.task_done()
 
@@ -546,6 +563,7 @@ def queue_worker() -> None:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -579,6 +597,7 @@ def normalize_endpoint():
         return Response(result, mimetype="text/plain")
     except Exception as exc:
         import traceback
+
         _log(f"[normalize] error: {exc}\n{traceback.format_exc()}")
         return Response(f"Normalization error: {exc}", status=500)
 
@@ -611,9 +630,10 @@ def speak():
 
     # Strip timing stamp sent by hook — never pass to synthesis
     import re as _re_speak
+
     _t = _re_speak.match(r"^__t:[\d.]+__", text)
     if _t:
-        text = text[_t.end():]
+        text = text[_t.end() :]
 
     # Inject content_type for process_speech
     if content_type != "normalized":
@@ -761,12 +781,14 @@ def stats():
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     _stats["service_start_time"] = time.time()
     _log("Wednesday TTS starting...")
 
     # Check port availability
     import socket as _sock
+
     probe = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
     try:
         probe.bind(("127.0.0.1", 5678))
@@ -784,13 +806,16 @@ def main() -> None:
     _log("Queue worker started")
 
     _log("Listening on http://localhost:5678")
-    _log("Endpoints: POST /speak  POST /stop  POST /normalize  GET /health  GET /stats  POST /reload")
+    _log(
+        "Endpoints: POST /speak  POST /stop  POST /normalize  GET /health  GET /stats  POST /reload"
+    )
 
     try:
         get_model()
         _log("Model ready.")
     except Exception as exc:
         import traceback
+
         _log(f"ERROR: Could not pre-load model: {exc}\n{traceback.format_exc()}")
 
     app.run(host="127.0.0.1", port=5678, threaded=True)

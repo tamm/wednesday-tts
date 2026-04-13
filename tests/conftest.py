@@ -13,12 +13,22 @@ def sample_dictionary():
         {"pattern": "JSON", "replacement": "jason", "case_sensitive": True, "literal": False},
         {"pattern": "CLI", "replacement": "see el eye", "case_sensitive": True, "literal": False},
         {"pattern": "npm", "replacement": "en pee em", "case_sensitive": True, "literal": False},
-        {"pattern": "HTTP", "replacement": "aitch tee tee pee", "case_sensitive": True, "literal": False},
+        {
+            "pattern": "HTTP",
+            "replacement": "aitch tee tee pee",
+            "case_sensitive": True,
+            "literal": False,
+        },
         {"pattern": "TTS", "replacement": "teetee ess", "case_sensitive": False, "literal": False},
         {"pattern": "OAuth", "replacement": "o-auth", "case_sensitive": False, "literal": False},
         {"pattern": "macOS", "replacement": "mac O S", "case_sensitive": True, "literal": False},
         {"pattern": "PR", "replacement": "pull request", "case_sensitive": True, "literal": False},
-        {"pattern": "PRs", "replacement": "pull requests", "case_sensitive": True, "literal": False},
+        {
+            "pattern": "PRs",
+            "replacement": "pull requests",
+            "case_sensitive": True,
+            "literal": False,
+        },
     ]
 
 

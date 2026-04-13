@@ -12,7 +12,7 @@ def normalize_all_caps(text):
     handled by the dictionary.
     """
     for caps, normal in CAPS_EXCLAMATIONS.items():
-        text = re.sub(rf'\b{caps}\b', normal, text)
+        text = re.sub(rf"\b{caps}\b", normal, text)
     # 4+ letter ALL CAPS -> Title Case
     text = re.sub(r"\b([A-Z][A-Z']{3,})\b", lambda m: m.group(1).capitalize(), text)
     return text
@@ -24,11 +24,12 @@ def normalize_camelcase(text):
     "myVariableName" -> "my Variable Name"
     Skips ALL_CAPS and single-cap words.
     """
+
     def split_camel(m):
         word = m.group(0)
         if word.upper() == word or word.lower() == word:
             return word
-        return re.sub(r'([a-z])([A-Z])', r'\1 \2', word)
+        return re.sub(r"([a-z])([A-Z])", r"\1 \2", word)
 
-    text = re.sub(r'\b[a-zA-Z]{4,}\b', split_camel, text)
+    text = re.sub(r"\b[a-zA-Z]{4,}\b", split_camel, text)
     return text

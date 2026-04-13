@@ -12,6 +12,7 @@ VPIO runs at 16kHz mono (STT-compatible). feed_audio() resamples from any source
 
 Requires macOS (Darwin). No-ops on other platforms.
 """
+
 from __future__ import annotations
 
 import collections
@@ -34,10 +35,10 @@ _VPIO_SAMPLE_RATE = 16000  # Hz — matches STT pipeline expectation
 # ---------------------------------------------------------------------------
 # CoreAudio constants
 # ---------------------------------------------------------------------------
-kAudioUnitType_Output = 0x6175_6F75           # 'auou'
+kAudioUnitType_Output = 0x6175_6F75  # 'auou'
 kAudioUnitSubType_VoiceProcessingIO = 0x7670_696F  # 'vpio'
-kAudioUnitManufacturer_Apple = 0x6170_706C    # 'appl'
-kAudioFormatLinearPCM = 0x6C70_636D           # 'lpcm'
+kAudioUnitManufacturer_Apple = 0x6170_706C  # 'appl'
+kAudioFormatLinearPCM = 0x6C70_636D  # 'lpcm'
 kAudioFormatFlagIsFloat = 0x1
 kAudioFormatFlagIsPacked = 0x8
 kAudioFormatFlagIsNonInterleaved = 0x20
@@ -46,7 +47,7 @@ kAudioUnitScope_Global = 0
 kAudioUnitScope_Input = 1
 kAudioUnitScope_Output = 2
 
-kInputBus = 1   # element 1 = microphone
+kInputBus = 1  # element 1 = microphone
 kOutputBus = 0  # element 0 = speaker
 
 kAudioOutputUnitProperty_EnableIO = 2003
@@ -62,6 +63,7 @@ kAUVoiceIOOtherAudioDuckingLevelMin = 10
 # ---------------------------------------------------------------------------
 # ctypes structs
 # ---------------------------------------------------------------------------
+
 
 class AudioComponentDescription(ctypes.Structure):
     _fields_ = [
@@ -129,13 +131,13 @@ class AudioBufferList(ctypes.Structure):
 
 
 AURenderCallback = ctypes.CFUNCTYPE(
-    c_int32,                           # OSStatus return
-    c_void_p,                          # inRefCon
-    ctypes.POINTER(c_uint32),          # ioActionFlags
-    ctypes.POINTER(AudioTimeStamp),    # inTimeStamp
-    c_uint32,                          # inBusNumber
-    c_uint32,                          # inNumberFrames
-    ctypes.POINTER(AudioBufferList),   # ioData (NULL for input callbacks)
+    c_int32,  # OSStatus return
+    c_void_p,  # inRefCon
+    ctypes.POINTER(c_uint32),  # ioActionFlags
+    ctypes.POINTER(AudioTimeStamp),  # inTimeStamp
+    c_uint32,  # inBusNumber
+    c_uint32,  # inNumberFrames
+    ctypes.POINTER(AudioBufferList),  # ioData (NULL for input callbacks)
 )
 
 
@@ -158,13 +160,12 @@ class AURenderCallbackStruct(ctypes.Structure):
 # AudioToolbox loader
 # ---------------------------------------------------------------------------
 
+
 def _load_audio_toolbox():
     if platform.system() != "Darwin":
         raise OSError("VoiceProcessingIO is only available on macOS")
 
-    lib = ctypes.cdll.LoadLibrary(
-        "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"
-    )
+    lib = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")
 
     lib.AudioComponentFindNext.restype = c_void_p
     lib.AudioComponentFindNext.argtypes = [c_void_p, ctypes.POINTER(AudioComponentDescription)]
@@ -177,7 +178,12 @@ def _load_audio_toolbox():
 
     lib.AudioUnitSetProperty.restype = c_int32
     lib.AudioUnitSetProperty.argtypes = [
-        c_void_p, c_uint32, c_uint32, c_uint32, c_void_p, c_uint32,
+        c_void_p,
+        c_uint32,
+        c_uint32,
+        c_uint32,
+        c_void_p,
+        c_uint32,
     ]
 
     lib.AudioUnitInitialize.restype = c_int32
@@ -208,6 +214,7 @@ def _load_audio_toolbox():
 # ---------------------------------------------------------------------------
 # VPIOUnit
 # ---------------------------------------------------------------------------
+
 
 class VPIOUnit:
     """CoreAudio VoiceProcessingIO wrapper for the TTS daemon.

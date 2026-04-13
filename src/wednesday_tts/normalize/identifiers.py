@@ -26,14 +26,14 @@ def pattern_descriptor_to_speech(content):
     or '****-****' and describe their structure instead of reading each char.
     Returns spoken string, or None if content doesn't match."""
     stripped = content.strip()
-    sep_match = re.match(r'^([a-zA-Z*#+0-9]+)([ -])([a-zA-Z*#+0-9 -]+)$', stripped)
-    if not sep_match and re.match(r'^[a-zA-Z*#+0-9]+$', stripped):
+    sep_match = re.match(r"^([a-zA-Z*#+0-9]+)([ -])([a-zA-Z*#+0-9 -]+)$", stripped)
+    if not sep_match and re.match(r"^[a-zA-Z*#+0-9]+$", stripped):
         groups = [stripped]
         sep_word = None
     elif sep_match:
         sep_char = sep_match.group(2)
-        sep_word = 'dashes' if sep_char == '-' else None
-        groups = re.split(r'[ -]+', stripped)
+        sep_word = "dashes" if sep_char == "-" else None
+        groups = re.split(r"[ -]+", stripped)
         groups = [g for g in groups if g]
     else:
         return None
@@ -53,18 +53,18 @@ def pattern_descriptor_to_speech(content):
     unique_sizes = set(group_sizes)
 
     if len(groups) == 1:
-        return f'{total} characters'
+        return f"{total} characters"
 
     if len(unique_sizes) == 1:
         size = group_sizes[0]
         count = len(groups)
-        spoken = f'{count} blocks of {size}'
+        spoken = f"{count} blocks of {size}"
         if sep_word:
-            spoken += f', separated by {sep_word}'
+            spoken += f", separated by {sep_word}"
     else:
-        spoken = f'{total} characters'
+        spoken = f"{total} characters"
         if sep_word:
-            spoken += f', separated by {sep_word}'
+            spoken += f", separated by {sep_word}"
     return spoken
 
 
@@ -73,17 +73,19 @@ def identifier_to_speech(m):
     content = m.group(1)
 
     # Prefixed hashes (sha256:abc123...) -> "sha256 hash ending in X Y Z"
-    prefix_match = re.match(r'^(sha\d+|md5|blake2[bs]?):([0-9a-fA-F]{7,})$', content)
+    prefix_match = re.match(r"^(sha\d+|md5|blake2[bs]?):([0-9a-fA-F]{7,})$", content)
     if prefix_match:
         tail = spell_chars(prefix_match.group(2)[-3:])
-        return f'{prefix_match.group(1)} hash ending in {tail}'
+        return f"{prefix_match.group(1)} hash ending in {tail}"
 
     # Hex hashes (git SHAs, content hashes): 7+ hex chars -> "hash ending in X Y Z"
-    if (re.match(r'^[0-9a-fA-F]{7,}$', content)
-            and re.search(r'[0-9]', content)
-            and re.search(r'[a-fA-F]', content)):
+    if (
+        re.match(r"^[0-9a-fA-F]{7,}$", content)
+        and re.search(r"[0-9]", content)
+        and re.search(r"[a-fA-F]", content)
+    ):
         tail = spell_chars(content[-3:])
-        return f'hash ending in {tail}'
+        return f"hash ending in {tail}"
 
     # Repeated-char placeholder patterns
     spoken = pattern_descriptor_to_speech(content)
@@ -91,21 +93,20 @@ def identifier_to_speech(m):
         return spoken
 
     # Snake_case identifiers
-    if '_' in content:
-        parts = [p for p in content.split('_') if p]
+    if "_" in content:
+        parts = [p for p in content.split("_") if p]
         spoken_parts = [
-            expand_identifier_part(p, is_last=(i == len(parts) - 1))
-            for i, p in enumerate(parts)
+            expand_identifier_part(p, is_last=(i == len(parts) - 1)) for i, p in enumerate(parts)
         ]
-        return ' '.join(s for s in spoken_parts if s)
+        return " ".join(s for s in spoken_parts if s)
 
     return content
 
 
 _UUID_RE = re.compile(
-    r'(?<![0-9a-fA-F-])'
-    r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-    r'(?![0-9a-fA-F-])'
+    r"(?<![0-9a-fA-F-])"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"(?![0-9a-fA-F-])"
 )
 
 
@@ -114,9 +115,10 @@ def normalize_uuids(text):
 
     Must run before hex/hash rules, which would mangle the hex segments.
     """
+
     def _uuid_to_speech(m):
         tail = spell_chars(m.group(0)[-3:])
-        return f'UUID ending in {tail}'
+        return f"UUID ending in {tail}"
 
     return _UUID_RE.sub(_uuid_to_speech, text)
 
@@ -126,16 +128,14 @@ def normalize_identifiers(text):
 
     Must run first so we can see underscore-separated names before cleanup.
     """
-    text = re.sub(r'`([^`\n]+)`', identifier_to_speech, text)
+    text = re.sub(r"`([^`\n]+)`", identifier_to_speech, text)
     return text
 
 
 # Matches dotted names like socket.timeout, os.path.join, example.com.
 # Each segment must start with a letter. Excludes digit-only segments (decimals)
 # and excludes matches immediately followed by / (URL paths already handled).
-_DOTTED_NAME_RE = re.compile(
-    r'(?<![.\d/])\b([a-zA-Z]\w*(?:\.[a-zA-Z]\w*)+)\b(?![/])'
-)
+_DOTTED_NAME_RE = re.compile(r"(?<![.\d/])\b([a-zA-Z]\w*(?:\.[a-zA-Z]\w*)+)\b(?![/])")
 
 
 def normalize_dotted_names(text):
@@ -151,7 +151,7 @@ def normalize_dotted_names(text):
     Must run AFTER normalize_urls and normalize_file_extensions so those are
     already consumed, and BEFORE decimals/semver which handle digit-dot-digit.
     """
-    return _DOTTED_NAME_RE.sub(lambda m: m.group(1).replace('.', ' dot '), text)
+    return _DOTTED_NAME_RE.sub(lambda m: m.group(1).replace(".", " dot "), text)
 
 
 def normalize_escape_sequences(text):
@@ -159,9 +159,9 @@ def normalize_escape_sequences(text):
 
     Must run before backslash cleanup eats them.
     """
-    text = re.sub(r'\\n\\n', ' double new line ', text)
-    text = re.sub(r'\\n', ' new line ', text)
-    text = re.sub(r'\\t', ' tab ', text)
+    text = re.sub(r"\\n\\n", " double new line ", text)
+    text = re.sub(r"\\n", " new line ", text)
+    text = re.sub(r"\\t", " tab ", text)
     return text
 
 
@@ -170,20 +170,20 @@ def normalize_hashes(text):
 
     PR #579 -> "number 579", C# -> "see sharp", remaining # -> "hash".
     """
-    text = re.sub(r'#(\d+)', r'number \1', text)
-    text = re.sub(r'\bC#', 'see sharp', text)
-    text = re.sub(r'\bF#', 'eff sharp', text)
+    text = re.sub(r"#(\d+)", r"number \1", text)
+    text = re.sub(r"\bC#", "see sharp", text)
+    text = re.sub(r"\bF#", "eff sharp", text)
 
     def _hash_to_speech(m):
         start = m.start()
         end = m.end()
-        after = text[end] if end < len(text) else '\n'
-        is_heading = after in (' ', '\n')
+        after = text[end] if end < len(text) else "\n"
+        is_heading = after in (" ", "\n")
         if start == 0 and is_heading:
             return m.group(0)
-        if start >= 2 and text[start - 2:start] == '\n\n' and is_heading:
+        if start >= 2 and text[start - 2 : start] == "\n\n" and is_heading:
             return m.group(0)
-        return ' hash '
+        return " hash "
 
-    text = re.sub(r'#{1,}', _hash_to_speech, text)
+    text = re.sub(r"#{1,}", _hash_to_speech, text)
     return text

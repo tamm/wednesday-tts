@@ -14,6 +14,7 @@ import queue
 def _get_daemon():
     """Import daemon module, re-using cached import if already loaded."""
     import wednesday_tts.server.daemon as d
+
     return d
 
 
@@ -56,9 +57,7 @@ class TestStopClearsBargeinPending:
         _call_stop_and_restore_gen(d)
 
         with d._barge_in_lock:
-            assert d._barge_in_pending == [], (
-                "_barge_in_pending must be empty after stop"
-            )
+            assert d._barge_in_pending == [], "_barge_in_pending must be empty after stop"
 
     def test_stop_resets_dropped_once(self):
         """_stop_playback resets _barge_in_dropped_once to False."""

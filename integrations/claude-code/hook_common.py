@@ -5,6 +5,7 @@ hook) import from this module. Keep behaviour that MUST match between the
 two hooks here — especially the primary-session filter that silences
 sub-agents and teammates.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -154,11 +155,17 @@ def log_payload_debug(payload: dict, hook_name: str) -> None:
                 safe[k] = json.loads(s) if not s.endswith("...[truncated]") else s
             except Exception:
                 safe[k] = f"<unserialisable {type(v).__name__}>"
-        line = json.dumps({
-            "t": time.time(),
-            "hook": hook_name,
-            "payload": safe,
-        }, default=str) + "\n"
+        line = (
+            json.dumps(
+                {
+                    "t": time.time(),
+                    "hook": hook_name,
+                    "payload": safe,
+                },
+                default=str,
+            )
+            + "\n"
+        )
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception:
@@ -170,7 +177,9 @@ def compute_voice_hash(cwd: str) -> str:
     try:
         repo = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True,
+            text=True,
+            timeout=2,
         ).stdout.strip()
     except Exception:
         repo = ""
@@ -182,6 +191,7 @@ def compute_pan() -> float:
     """Stereo pan from terminal window position (macOS only). 0.5 centre on failure."""
     try:
         from window_position import compute_pan as _cp  # type: ignore
+
         return _cp()
     except Exception:
         return 0.5
@@ -241,7 +251,6 @@ def _kick_daemon_if_dying() -> None:
         resp = b""
     if resp in (b"dying", b""):
         subprocess.run(
-            ["launchctl", "kickstart", "-k",
-             f"gui/{os.getuid()}/com.tamm.wednesday-tts"],
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.tamm.wednesday-tts"],
             capture_output=True,
         )

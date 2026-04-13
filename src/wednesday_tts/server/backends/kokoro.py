@@ -21,7 +21,9 @@ class KokoroBackend(TTSBackend):
     sample_rate = 24000
     supports_streaming = False
 
-    def __init__(self, voice: str | None = None, speed: float = DEFAULT_SPEED, samplerate: int = 24000) -> None:
+    def __init__(
+        self, voice: str | None = None, speed: float = DEFAULT_SPEED, samplerate: int = 24000
+    ) -> None:
         self._pipeline = None
         self._voice = voice or os.environ.get("KOKORO_VOICE", "af_bella")
         self._speed = speed
@@ -29,9 +31,12 @@ class KokoroBackend(TTSBackend):
 
     def load(self) -> None:
         from kokoro import KPipeline  # type: ignore[import]
+
         self._pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
 
-    def generate(self, text: str, speed: float | None = None, voice: str | None = None) -> np.ndarray | None:
+    def generate(
+        self, text: str, speed: float | None = None, voice: str | None = None
+    ) -> np.ndarray | None:
         if self._pipeline is None:
             raise RuntimeError("KokoroBackend not loaded — call load() first")
 

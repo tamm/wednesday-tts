@@ -8,33 +8,33 @@ from wednesday_tts.normalize.regex_speech import (
 
 
 def test_basic_regex_spoken():
-    result = regex_to_speech(r'\d+')
+    result = regex_to_speech(r"\d+")
     assert "digit" in result
     assert "one or more" in result
 
 
 def test_lookahead():
-    result = regex_to_speech(r'(?=foo)')
+    result = regex_to_speech(r"(?=foo)")
     assert "lookahead" in result
 
 
 def test_lookbehind():
-    result = regex_to_speech(r'(?<!bar)')
+    result = regex_to_speech(r"(?<!bar)")
     assert "negative lookbehind" in result
 
 
 def test_char_class():
-    result = regex_to_speech(r'[a-z]')
+    result = regex_to_speech(r"[a-z]")
     assert "one of" in result
 
 
 def test_quantifier_range():
-    result = regex_to_speech(r'x{2,4}')
+    result = regex_to_speech(r"x{2,4}")
     assert "2 to 4 times" in result
 
 
 def test_word_boundary():
-    result = regex_to_speech(r'\bword\b')
+    result = regex_to_speech(r"\bword\b")
     assert "word-boundary" in result
 
 

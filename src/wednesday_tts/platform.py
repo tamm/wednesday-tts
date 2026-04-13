@@ -8,12 +8,13 @@ can be shared across macOS and Windows without conditional imports.
 macOS:  Unix domain socket IPC, fcntl locking, SIGUSR1 stop, afplay chime
 Windows: HTTP IPC to localhost:5678, msvcrt locking, HTTP stop, beep chime
 """
+
 import os
 import signal
 import sys
 import tempfile
 
-IS_WINDOWS = sys.platform == 'win32'
+IS_WINDOWS = sys.platform == "win32"
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,7 @@ def drain_daemon() -> None:
         return
     import json as _json
     import socket
+
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(600)  # generous: covers longest realistic audio
     try:
@@ -81,6 +83,7 @@ def daemon_is_responsive(timeout: float = 2.0) -> bool:
     """Quick ping to check if daemon is alive."""
     if IS_WINDOWS:
         import urllib.request
+
         try:
             req = urllib.request.Request(f"{SERVICE_URL}/health", method="GET")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -90,10 +93,12 @@ def daemon_is_responsive(timeout: float = 2.0) -> bool:
             return False
     else:
         import socket as _socket
+
         if not os.path.exists(SOCKET_PATH):
             return False
         try:
             import json as _json
+
             sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect(SOCKET_PATH)
@@ -111,10 +116,12 @@ def daemon_is_responsive(timeout: float = 2.0) -> bool:
 
 # ── Stop ─────────────────────────────────────────────────────────────────────
 
+
 def stop_daemon_audio() -> None:
     """Stop daemon audio immediately."""
     if IS_WINDOWS:
         import urllib.request
+
         try:
             req = urllib.request.Request(f"{SERVICE_URL}/stop", data=b"", method="POST")
             urllib.request.urlopen(req, timeout=2)
@@ -134,6 +141,7 @@ def stop_daemon_audio() -> None:
             if os.path.exists(SOCKET_PATH):
                 import json as _json
                 import socket as _socket
+
                 sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
                 sock.settimeout(1.0)
                 sock.connect(SOCKET_PATH)
@@ -146,9 +154,11 @@ def stop_daemon_audio() -> None:
 
 # ── Locking ──────────────────────────────────────────────────────────────────
 
+
 def acquire_lock(timeout: float = 30) -> int | None:
     """Acquire an exclusive file lock. Returns lock_fd on success, None on timeout."""
     import time
+
     start = time.time()
     while time.time() - start < timeout:
         lock_fd = -1
@@ -156,9 +166,11 @@ def acquire_lock(timeout: float = 30) -> int | None:
             lock_fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR)
             if IS_WINDOWS:
                 import msvcrt
+
                 msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return lock_fd
         except OSError:
@@ -178,6 +190,7 @@ def release_lock(lock_fd: int | None) -> None:
     try:
         if IS_WINDOWS:
             import msvcrt
+
             try:
                 os.lseek(lock_fd, 0, os.SEEK_SET)
                 msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
@@ -185,6 +198,7 @@ def release_lock(lock_fd: int | None) -> None:
                 pass
         else:
             import fcntl
+
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
     except Exception:
@@ -195,10 +209,12 @@ def flock_exclusive(f) -> None:
     """Acquire exclusive lock on an open file object (for claim_unspoken)."""
     if IS_WINDOWS:
         import msvcrt
+
         # Lock the first byte of the file
         msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
     else:
         import fcntl
+
         fcntl.flock(f, fcntl.LOCK_EX)
 
 
@@ -206,6 +222,7 @@ def flock_unlock(f) -> None:
     """Release lock on an open file object."""
     if IS_WINDOWS:
         import msvcrt
+
         try:
             f.seek(0)
             msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
@@ -213,6 +230,7 @@ def flock_unlock(f) -> None:
             pass
     else:
         import fcntl
+
         fcntl.flock(f, fcntl.LOCK_UN)
 
 
@@ -231,10 +249,12 @@ def play_chime() -> None:
 
 def _play_chime_mac() -> None:
     import subprocess
+
     try:
         subprocess.Popen(
             ["afplay", CHIME_SOUND_MAC],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except Exception:
         pass
@@ -246,6 +266,7 @@ def _play_chime_windows() -> None:
     try:
         import numpy as np
         import sounddevice as sd
+
         duration = 0.15
         sr = 24000
         t = np.linspace(0, duration, int(sr * duration))
@@ -261,6 +282,7 @@ def _play_chime_windows() -> None:
 
 # ── Signals ──────────────────────────────────────────────────────────────────
 
+
 def register_signals(handler) -> None:
     """Register SIGTERM + SIGINT everywhere, SIGHUP on macOS only."""
     signal.signal(signal.SIGTERM, handler)
@@ -270,6 +292,7 @@ def register_signals(handler) -> None:
 
 
 # ── Dictation suppression ────────────────────────────────────────────────────
+
 
 def suppress_dictation() -> None:
     """Signal the dictation/ASR service to pause mic processing."""
@@ -303,6 +326,7 @@ _WIN_SERVICE_NAME = "WednesdayTTS"
 def record_failure() -> None:
     """Append current timestamp to the failure log."""
     import time
+
     try:
         with open(FAILURE_PATH, "a") as f:
             f.write(f"{time.time()}\n")
@@ -332,6 +356,7 @@ def should_restart_daemon() -> bool:
         if IS_WINDOWS:
             return True  # restart immediately on Windows
         import time
+
         with open(FAILURE_PATH) as f:
             lines = f.readlines()
         if not lines:
@@ -357,13 +382,15 @@ def restart_daemon() -> None:
 
 def _restart_daemon_windows() -> None:
     import subprocess
+
     print("TTS service not responding — attempting restart via Task Scheduler", file=sys.stderr)
 
     try:
         # CREATE_NO_WINDOW prevents a console window flash on Windows
         result = subprocess.run(
             ["schtasks", "/run", "/tn", _WIN_SERVICE_NAME],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if result.returncode == 0:

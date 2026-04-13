@@ -11,6 +11,7 @@ from wednesday_tts.client.api import is_server_running, normalize, speak
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _mock_response(body: bytes = b"ok", status: int = 200) -> MagicMock:
     """Return a mock context-manager that mimics urllib's HTTP response."""
     resp = MagicMock()
@@ -28,6 +29,7 @@ def _url_error() -> urllib.error.URLError:
 # ---------------------------------------------------------------------------
 # speak()
 # ---------------------------------------------------------------------------
+
 
 class TestSpeak:
     def test_returns_true_on_200(self):
@@ -108,6 +110,7 @@ class TestSpeak:
 # normalize()
 # ---------------------------------------------------------------------------
 
+
 class TestNormalize:
     def test_returns_text_on_200(self):
         mock_resp = _mock_response(b"hello world normalized")
@@ -173,6 +176,7 @@ class TestNormalize:
 # ---------------------------------------------------------------------------
 # is_server_running()
 # ---------------------------------------------------------------------------
+
 
 class TestIsServerRunning:
     def test_returns_true_when_health_responds(self):

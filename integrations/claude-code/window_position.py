@@ -22,6 +22,7 @@ Config (in ~/.claude/tts-config.json under "spatial"):
 
 Returns 0.5 (centre) on any failure — silent fallback, never crashes.
 """
+
 import json
 import math
 import os
@@ -48,7 +49,9 @@ def _get_screen_info() -> list[dict]:
     try:
         out = subprocess.run(
             ["osascript", "-l", "JavaScript", "-e", script],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         ).stdout.strip()
     except Exception:
         return []
@@ -86,7 +89,9 @@ end tell
     try:
         out = subprocess.run(
             ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         ).stdout.strip()
     except Exception:
         return None
@@ -111,8 +116,7 @@ def _load_spatial_config() -> dict:
         return {}
 
 
-def _logical_x_to_mm(x: float, screens: list[dict],
-                      mm_per_pt: float, gap_mm: float) -> float:
+def _logical_x_to_mm(x: float, screens: list[dict], mm_per_pt: float, gap_mm: float) -> float:
     """Convert a logical X coordinate to physical mm from the left edge.
 
     Walks through screens left to right, accumulating physical width

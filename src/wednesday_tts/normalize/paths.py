@@ -23,29 +23,53 @@ def normalize_file_extensions(text, filenames_dict, rng=None):
     _rng = rng if rng is not None else _DEFAULT_RNG
 
     _KNOWN_EXTS = set(filenames_dict.keys()) | {
-        'py', 'js', 'ts', 'jsx', 'tsx', 'json', 'jsonl', 'yaml', 'yml',
-        'md', 'txt', 'sh', 'toml', 'csv', 'pdf', 'html', 'css', 'svg',
-        'png', 'jpg', 'mp3', 'mp4', 'wav', 'db', 'sqlite', 'sql', 'log',
-        'lock', 'env', 'plist', 'xml',
+        "py",
+        "js",
+        "ts",
+        "jsx",
+        "tsx",
+        "json",
+        "jsonl",
+        "yaml",
+        "yml",
+        "md",
+        "txt",
+        "sh",
+        "toml",
+        "csv",
+        "pdf",
+        "html",
+        "css",
+        "svg",
+        "png",
+        "jpg",
+        "mp3",
+        "mp4",
+        "wav",
+        "db",
+        "sqlite",
+        "sql",
+        "log",
+        "lock",
+        "env",
+        "plist",
+        "xml",
     }
-    _EXT_PAT = '|'.join(re.escape(e) for e in sorted(_KNOWN_EXTS, key=len, reverse=True))
+    _EXT_PAT = "|".join(re.escape(e) for e in sorted(_KNOWN_EXTS, key=len, reverse=True))
 
     def _ext_to_speech(m):
         ext_spoken = filenames_dict.get(m.group(2).lower(), m.group(2))
-        sep = ' ' if _rng.random() < _DOT_ELIDE_PROB else ' dot '
+        sep = " " if _rng.random() < _DOT_ELIDE_PROB else " dot "
         return m.group(1) + sep + ext_spoken
 
-    text = re.sub(r'\b([a-zA-Z0-9_-]+)\.(' + _EXT_PAT + r')\b', _ext_to_speech, text)
+    text = re.sub(r"\b([a-zA-Z0-9_-]+)\.(" + _EXT_PAT + r")\b", _ext_to_speech, text)
 
     # Bare dotfiles: ".sh", ".py", ".env" — always say "dot", never elide.
     def _bare_ext_to_speech(m):
         ext = m.group(1).lower()
-        return 'dot ' + filenames_dict.get(ext, ext)
+        return "dot " + filenames_dict.get(ext, ext)
 
-    text = re.sub(
-        r'(?<!\w)\.(' + _EXT_PAT + r')\b',
-        _bare_ext_to_speech, text
-    )
+    text = re.sub(r"(?<!\w)\.(" + _EXT_PAT + r")\b", _bare_ext_to_speech, text)
 
     return text
 
@@ -57,24 +81,25 @@ def normalize_tilde_paths(text):
     ~/.claude/hooks/ -> "home slash dot claude slash hooks"
     ~ alone -> "tilde"
     """
+
     def tilde_path_to_speech(m):
-        path = m.group(0).rstrip('/')
-        parts = path.split('/')
+        path = m.group(0).rstrip("/")
+        parts = path.split("/")
         spoken = []
         for p in parts:
-            if p == '~':
-                spoken.append('home')
-            elif p.startswith('.'):
-                spoken.append('dot ' + p[1:])
+            if p == "~":
+                spoken.append("home")
+            elif p.startswith("."):
+                spoken.append("dot " + p[1:])
             else:
                 spoken.append(p)
-        return ' slash '.join(spoken)
+        return " slash ".join(spoken)
 
     # ~/path or bare ~/
-    text = re.sub(r'~/[^\s,;:!?\)]*', tilde_path_to_speech, text)
+    text = re.sub(r"~/[^\s,;:!?\)]*", tilde_path_to_speech, text)
 
     # Bare ~ not followed by /
-    text = re.sub(r'(?<!\w)~(?!/)', 'tilde', text)
+    text = re.sub(r"(?<!\w)~(?!/)", "tilde", text)
     return text
 
 
@@ -83,9 +108,10 @@ def normalize_slash_paths(text):
 
     paths, alternatives like error/status -> "error slash status"
     """
-    def slashes_to_speech(m):
-        path = m.group(0).rstrip('/')
-        return path.replace('/', ' slash ')
 
-    text = re.sub(r'\b\w[\w.-]*(?:/[\w.-]+)+/?', slashes_to_speech, text)
+    def slashes_to_speech(m):
+        path = m.group(0).rstrip("/")
+        return path.replace("/", " slash ")
+
+    text = re.sub(r"\b\w[\w.-]*(?:/[\w.-]+)+/?", slashes_to_speech, text)
     return text

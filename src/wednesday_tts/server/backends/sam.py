@@ -20,7 +20,7 @@ _LOWPASS_ALPHA = 0.55
 # Reverb: short impulse response simulating a small room / speaker cabinet.
 # Delays in samples at 22050 Hz, with exponential decay.
 _REVERB_DELAYS = [441, 893, 1327, 1764]  # ~20ms, 40ms, 60ms, 80ms
-_REVERB_DECAY = 0.3   # gain of first tap (subsequent taps decay further)
+_REVERB_DECAY = 0.3  # gain of first tap (subsequent taps decay further)
 _REVERB_FALLOFF = 0.5  # each tap is this fraction of the previous
 
 
@@ -93,7 +93,9 @@ class SAMBackend(TTSBackend):
         )
         print("[sam] Ready.", flush=True)
 
-    def generate(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> np.ndarray | None:
+    def generate(
+        self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None
+    ) -> np.ndarray | None:
         if self._sam is None:
             raise RuntimeError("SAMBackend not loaded — call load() first")
 

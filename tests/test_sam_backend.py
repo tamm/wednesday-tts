@@ -135,5 +135,6 @@ class TestSAMPostProcessing:
 class TestSAMBackendRegistry:
     def test_registered(self) -> None:
         from wednesday_tts.server.backends import REGISTRY
+
         assert "sam" in REGISTRY
         assert REGISTRY["sam"] is SAMBackend

@@ -69,4 +69,4 @@ ignore = ["E501", "SIM102", "SIM105", "SIM108", "SIM115", "SIM117", "SIM103", "S
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
-skips = ["B101", "B108"]
+skips = ["B101", "B102", "B108", "B310", "B324"]

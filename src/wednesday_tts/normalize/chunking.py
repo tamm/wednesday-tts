@@ -11,8 +11,8 @@ import re
 # Both chunk_text_intelligently and chunk_text_server use this, so the rule
 # is enforced in exactly one place. The string form is used by re.split in
 # chunk_text_server where a capturing group is needed.
-_SENTENCE_END = re.compile(r'(?<!\b[A-Za-z])[.!?]+\s+')
-_SENTENCE_END_CAPTURE = re.compile(r'((?<!\b[A-Za-z])[.!?]+(?:\s+|$))')
+_SENTENCE_END = re.compile(r"(?<!\b[A-Za-z])[.!?]+\s+")
+_SENTENCE_END_CAPTURE = re.compile(r"((?<!\b[A-Za-z])[.!?]+(?:\s+|$))")
 
 
 def _find_sentence_end(text, start, end):
@@ -27,9 +27,15 @@ def _find_sentence_end(text, start, end):
     return last
 
 
-def chunk_text_intelligently(text, first_chunk_min=40, first_chunk_max=150,
-                             second_third_min=80, second_third_max=150,
-                             chunk_min=200, chunk_max=400):
+def chunk_text_intelligently(
+    text,
+    first_chunk_min=40,
+    first_chunk_max=150,
+    second_third_min=80,
+    second_third_max=150,
+    chunk_min=200,
+    chunk_max=400,
+):
     """Split text into chunks optimized for streaming TTS.
 
     First chunk is shorter for fast initial response. Subsequent chunks
@@ -50,13 +56,13 @@ def chunk_text_intelligently(text, first_chunk_min=40, first_chunk_max=150,
             # Colons are deliberately excluded — "Next pending: ..." must not
             # split there, or the listener hears a tiny first chunk and waits
             # an eternity for the next.
-            if text[i] in ',;' and i + 1 < len(text) and text[i + 1] in ' \n\t':
+            if text[i] in ",;" and i + 1 < len(text) and text[i + 1] in " \n\t":
                 clause_breaks.append(i + 1)
         if clause_breaks:
             return clause_breaks[-1]
 
         for i in range(min(end, len(text)) - 1, start - 1, -1):
-            if text[i] in ' \n\t':
+            if text[i] in " \n\t":
                 return i + 1
         return min(end, len(text))
 
@@ -114,8 +120,8 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
     # Each entry is (compiled_pattern, None) for precompiled or re.compile(...).
     # \W(?=\s) is deliberately NOT used — it matches a bare "." as a word
     # character and would re-introduce the "U." split bug.
-    _CLAUSE_BREAK = re.compile(r'[,;]\s+')
-    _WHITESPACE = re.compile(r'\s+')
+    _CLAUSE_BREAK = re.compile(r"[,;]\s+")
+    _WHITESPACE = re.compile(r"\s+")
 
     def _first_break(region, break_patterns):
         for pattern in break_patterns:
@@ -125,7 +131,7 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
         return -1
 
     if len(text) > 60:
-        region = text[60:min(120, len(text))]
+        region = text[60 : min(120, len(text))]
         end = _first_break(region, [_SENTENCE_END, _CLAUSE_BREAK, _WHITESPACE])
         if end > 0:
             split_pos = 60 + end
@@ -133,7 +139,7 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
             rest_text = text[split_pos:].strip()
 
         if not first_chunk and len(text) > 120:
-            region = text[60:min(150, len(text))]
+            region = text[60 : min(150, len(text))]
             end = _first_break(region, [_SENTENCE_END, _CLAUSE_BREAK, _WHITESPACE])
             if end > 0:
                 split_pos = 60 + end
@@ -145,10 +151,10 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
             # (and including) the first real sentence end anywhere in text.
             m = _SENTENCE_END.search(text)
             if m:
-                first_chunk = text[:m.end()].strip()
-                rest_text = text[m.end():].strip()
+                first_chunk = text[: m.end()].strip()
+                rest_text = text[m.end() :].strip()
     elif len(text) > 30:
-        region = text[30:min(60, len(text))]
+        region = text[30 : min(60, len(text))]
         end = _first_break(region, [_SENTENCE_END, _CLAUSE_BREAK])
         if end > 0:
             split_pos = 30 + end
@@ -171,7 +177,7 @@ def chunk_text_server(text, min_size=200, max_size=400, backend_name=None):
         else:
             current_chunk += full_sentence
 
-        if len(current_chunk) >= min_size and punctuation.strip() in ['.', '!', '?']:
+        if len(current_chunk) >= min_size and punctuation.strip() in [".", "!", "?"]:
             chunks.append(current_chunk.strip())
             current_chunk = ""
 

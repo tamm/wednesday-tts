@@ -78,17 +78,19 @@ def main() -> None:
     )
     parser.add_argument("wav", help="Path to reference audio WAV file")
     parser.add_argument(
-        "--text", "-t", required=True,
-        help="Transcript of the reference audio (required for ICL quality)"
+        "--text",
+        "-t",
+        required=True,
+        help="Transcript of the reference audio (required for ICL quality)",
     )
     parser.add_argument(
-        "--output", "-o", default=None,
-        help="Output .safetensors path (default: same name as input with .safetensors)"
+        "--output",
+        "-o",
+        default=None,
+        help="Output .safetensors path (default: same name as input with .safetensors)",
     )
     parser.add_argument(
-        "--model", "-m",
-        default="mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit",
-        help="MLX model ID"
+        "--model", "-m", default="mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit", help="MLX model ID"
     )
     args = parser.parse_args()
 

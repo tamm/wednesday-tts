@@ -432,7 +432,9 @@ class TestProcessSpeechTextPrep:
 
         with (
             patch.object(server_module, "run_normalize", side_effect=fake_normalize),
-            patch.object(server_module, "get_model", return_value=(mock_backend, "pocket", {"speed": 1.0})),
+            patch.object(
+                server_module, "get_model", return_value=(mock_backend, "pocket", {"speed": 1.0})
+            ),
             patch("wednesday_tts.normalize.chunking.chunk_text_server", side_effect=fake_chunk),
             patch("sounddevice.query_devices", return_value={"name": "test"}),
             patch("sounddevice.play"),

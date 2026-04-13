@@ -6,6 +6,7 @@ from wednesday_tts.normalize.homographs import fix_read_homograph
 # Pattern A — passive voice (be-family + read)
 # ---------------------------------------------------------------------------
 
+
 def test_was_read_passive():
     assert fix_read_homograph("it was read aloud") == "it was red aloud"
 
@@ -42,6 +43,7 @@ def test_being_read_passive():
 # Pattern B — perfect aspect (have-family + read)
 # ---------------------------------------------------------------------------
 
+
 def test_has_read_perfect():
     assert fix_read_homograph("she has read it") == "she has red it"
 
@@ -57,6 +59,7 @@ def test_had_read_perfect():
 # ---------------------------------------------------------------------------
 # Pattern C — modal passive (modal + be + read)
 # ---------------------------------------------------------------------------
+
 
 def test_can_be_read():
     assert fix_read_homograph("it can be read here") == "it can be red here"
@@ -98,6 +101,7 @@ def test_must_be_read():
 # Remaining 'read' -> present tense / imperative -> 'reed'
 # ---------------------------------------------------------------------------
 
+
 def test_present_tense_read():
     assert fix_read_homograph("I read every day") == "I reed every day"
 
@@ -122,6 +126,7 @@ def test_capitalised_read_imperative():
 # Hyphenated forms — should NOT be converted (negative lookahead (?!-))
 # ---------------------------------------------------------------------------
 
+
 def test_read_hyphenated_unchanged():
     assert fix_read_homograph("read-only") == "read-only"
 
@@ -138,6 +143,7 @@ def test_have_read_hyphenated_unchanged():
 # Case insensitivity — patterns A/B/C are case-insensitive
 # ---------------------------------------------------------------------------
 
+
 def test_uppercase_was_read():
     assert fix_read_homograph("IT WAS READ") == "IT WAS red"
 
@@ -150,6 +156,7 @@ def test_mixed_case_has_read():
 # Sentences with multiple occurrences
 # ---------------------------------------------------------------------------
 
+
 def test_multiple_reads_in_sentence():
     result = fix_read_homograph("Read the docs after you have read them once")
     # First "Read" is imperative -> "Reed"
@@ -159,5 +166,7 @@ def test_multiple_reads_in_sentence():
 
 
 def test_no_read_passthrough():
-    assert fix_read_homograph("She wrote and edited the document") == \
-        "She wrote and edited the document"
+    assert (
+        fix_read_homograph("She wrote and edited the document")
+        == "She wrote and edited the document"
+    )

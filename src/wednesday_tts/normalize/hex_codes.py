@@ -12,7 +12,7 @@ from wednesday_tts.normalize.constants import DIGIT_WORDS, LETTER_NAMES
 def _speak_hex_char(c: str) -> str:
     """Speak a single hex character (uppercase letter name or digit word)."""
     low = c.lower()
-    if low in 'abcdef':
+    if low in "abcdef":
         return LETTER_NAMES[low].capitalize()
     return DIGIT_WORDS.get(low, c)
 
@@ -26,18 +26,18 @@ def _speak_hex_body(body: str) -> str:
         pairs.append(chars[0])
         i = 1
     while i < len(chars):
-        pairs.append(f'{chars[i]} {chars[i + 1]}')
+        pairs.append(f"{chars[i]} {chars[i + 1]}")
         i += 2
-    return ' '.join(pairs)
+    return " ".join(pairs)
 
 
 def _is_hex_string(s: str) -> bool:
     """Return True if s contains only hex characters and has at least one hex letter."""
-    return bool(re.fullmatch(r'[0-9a-fA-F]+', s)) and bool(re.search(r'[a-fA-F]', s))
+    return bool(re.fullmatch(r"[0-9a-fA-F]+", s)) and bool(re.search(r"[a-fA-F]", s))
 
 
 def _is_all_digits(s: str) -> bool:
-    return bool(re.fullmatch(r'[0-9]+', s))
+    return bool(re.fullmatch(r"[0-9]+", s))
 
 
 def normalize_hex_codes(text: str) -> str:
@@ -49,8 +49,8 @@ def normalize_hex_codes(text: str) -> str:
     """
     # 0x prefix: any hex digits after 0x
     text = re.sub(
-        r'0x([0-9a-fA-F]+)\b',
-        lambda m: f'hex {_speak_hex_body(m.group(1))}',
+        r"0x([0-9a-fA-F]+)\b",
+        lambda m: f"hex {_speak_hex_body(m.group(1))}",
         text,
     )
 
@@ -60,13 +60,13 @@ def normalize_hex_codes(text: str) -> str:
         body = m.group(1)
         if len(body) not in (3, 6):
             return m.group(0)
-        if not re.fullmatch(r'[0-9a-fA-F]+', body):
+        if not re.fullmatch(r"[0-9a-fA-F]+", body):
             return m.group(0)
         # Skip if it looks like a non-hex identifier (contains g-z)
-        if re.search(r'[g-zG-Z]', body):
+        if re.search(r"[g-zG-Z]", body):
             return m.group(0)
-        return f'hash {_speak_hex_body(body)}'
+        return f"hash {_speak_hex_body(body)}"
 
-    text = re.sub(r'#([0-9a-zA-Z]+)\b', hash_replacement, text)
+    text = re.sub(r"#([0-9a-zA-Z]+)\b", hash_replacement, text)
 
     return text

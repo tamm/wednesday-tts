@@ -4,6 +4,7 @@ from wednesday_tts.normalize.ip_addresses import normalize_ip_addresses
 
 # --- Basic addresses ---
 
+
 def test_private_network():
     assert normalize_ip_addresses("192.168.1.1") == "one nine two dot one six eight dot one dot one"
 
@@ -17,7 +18,10 @@ def test_localhost():
 
 
 def test_max_octets():
-    assert normalize_ip_addresses("255.255.255.255") == "two five five dot two five five dot two five five dot two five five"
+    assert (
+        normalize_ip_addresses("255.255.255.255")
+        == "two five five dot two five five dot two five five dot two five five"
+    )
 
 
 def test_all_zeros():
@@ -26,6 +30,7 @@ def test_all_zeros():
 
 # --- In sentence ---
 
+
 def test_in_sentence():
     result = normalize_ip_addresses("Connect to 192.168.1.1 on port 8080")
     assert result == "Connect to one nine two dot one six eight dot one dot one on port 8080"
@@ -33,12 +38,14 @@ def test_in_sentence():
 
 # --- With port suffix ---
 
+
 def test_with_port():
     result = normalize_ip_addresses("192.168.1.1:8080")
     assert result == "one nine two dot one six eight dot one dot one:8080"
 
 
 # --- Not valid IPs ---
+
 
 def test_invalid_octets():
     assert normalize_ip_addresses("999.999.999.999") == "999.999.999.999"

@@ -18,7 +18,6 @@ def _is_audio_file(path: str) -> bool:
     return os.path.isfile(path) and os.path.splitext(path)[1].lower() in _AUDIO_EXTS
 
 
-
 class Qwen3TTSBackend(TTSBackend):
     """Qwen3-TTS via mlx-audio (MLX-native, Apple Silicon optimised).
 
@@ -118,7 +117,10 @@ class Qwen3TTSBackend(TTSBackend):
             self.sample_rate = self._model.sample_rate
 
     def generate(
-        self, text: str, speed: float | None = None, voice: str | None = None,
+        self,
+        text: str,
+        speed: float | None = None,
+        voice: str | None = None,
         instruct: str | None = None,
     ) -> np.ndarray | None:
         if self._model is None:
@@ -126,7 +128,9 @@ class Qwen3TTSBackend(TTSBackend):
 
         use_speed = speed if speed is not None else self._speed
         ref_audio, ref_text, seed = self._resolve_voice(voice)
-        print(f"[qwen3] resolve: voice={voice!r} → ref_audio={ref_audio!r}, seed={seed}", flush=True)
+        print(
+            f"[qwen3] resolve: voice={voice!r} → ref_audio={ref_audio!r}, seed={seed}", flush=True
+        )
         use_instruct = instruct or self._instruct or None
 
         t0 = time.time()
@@ -134,20 +138,23 @@ class Qwen3TTSBackend(TTSBackend):
         try:
             with self._lock:
                 import mlx.core as mx  # type: ignore[import]
+
                 mx.random.seed(seed)
 
-                chunks = list(self._model.generate(
-                    text=text,
-                    speed=use_speed,
-                    temperature=self._temperature,
-                    repetition_penalty=self._repetition_penalty,
-                    top_p=self._top_p,
-                    top_k=self._top_k,
-                    ref_audio=ref_audio,
-                    ref_text=ref_text,
-                    instruct=use_instruct,
-                    split_pattern="",  # we handle chunking in the daemon
-                ))
+                chunks = list(
+                    self._model.generate(
+                        text=text,
+                        speed=use_speed,
+                        temperature=self._temperature,
+                        repetition_penalty=self._repetition_penalty,
+                        top_p=self._top_p,
+                        top_k=self._top_k,
+                        ref_audio=ref_audio,
+                        ref_text=ref_text,
+                        instruct=use_instruct,
+                        split_pattern="",  # we handle chunking in the daemon
+                    )
+                )
 
             if not chunks:
                 print(f"[qwen3] generate returned no chunks for {len(text)} chars", flush=True)
@@ -181,8 +188,13 @@ class Qwen3TTSBackend(TTSBackend):
             return None
 
     def generate_streaming(
-        self, text: str, speed: float | None = None, voice: str | None = None,
-        instruct: str | None = None, playback_queue=None, stop_check=None,
+        self,
+        text: str,
+        speed: float | None = None,
+        voice: str | None = None,
+        instruct: str | None = None,
+        playback_queue=None,
+        stop_check=None,
         msg_id: int = -1,
     ) -> np.ndarray | None:
         """Generate audio with streaming — yield chunks to playback_queue as they arrive.
@@ -205,6 +217,7 @@ class Qwen3TTSBackend(TTSBackend):
         try:
             with self._lock:
                 import mlx.core as mx  # type: ignore[import]
+
                 mx.random.seed(seed)
 
                 for result in self._model.generate(
@@ -223,7 +236,10 @@ class Qwen3TTSBackend(TTSBackend):
                     if stop_check and stop_check():
                         break
                     if n_chunks == 0 and time.time() - t0 > _FIRST_CHUNK_TIMEOUT:
-                        print(f"[qwen3-stream] first-chunk timeout ({_FIRST_CHUNK_TIMEOUT}s)", flush=True)
+                        print(
+                            f"[qwen3-stream] first-chunk timeout ({_FIRST_CHUNK_TIMEOUT}s)",
+                            flush=True,
+                        )
                         break
 
                     arr = np.array(result.audio, dtype=np.float32)

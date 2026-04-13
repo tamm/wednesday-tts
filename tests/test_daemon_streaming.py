@@ -145,9 +145,7 @@ class TestStreamingLockRelease:
         done = threading.Event()
 
         def run_streaming():
-            backend.generate_streaming(
-                text="hello", speed=1.0, stop_check=lambda: stop.is_set()
-            )
+            backend.generate_streaming(text="hello", speed=1.0, stop_check=lambda: stop.is_set())
             done.set()
 
         t = threading.Thread(target=run_streaming, daemon=True)
@@ -202,7 +200,9 @@ class TestDaemonStreamingToQueue:
         daemon._stats["requests_stopped"] = 0
 
         try:
-            msg = json.dumps({"command": "speak", "text": "hello", "normalization": "pre-normalized"})
+            msg = json.dumps(
+                {"command": "speak", "text": "hello", "normalization": "pre-normalized"}
+            )
             mock_conn = MagicMock()
             mock_conn.recv.return_value = msg.encode("utf-8")
 
@@ -213,10 +213,12 @@ class TestDaemonStreamingToQueue:
             # generate_streaming returns None = audio was queued directly
             mock_backend.generate_streaming.return_value = None
 
-            with patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]), \
-                 patch.object(daemon, "run_normalize", return_value="hello"), \
-                 patch.object(daemon, "_dedup_check", return_value=False), \
-                 patch.object(daemon, "_resolve_voice_for_request", return_value=None):
+            with (
+                patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]),
+                patch.object(daemon, "run_normalize", return_value="hello"),
+                patch.object(daemon, "_dedup_check", return_value=False),
+                patch.object(daemon, "_resolve_voice_for_request", return_value=None),
+            ):
                 daemon.handle_client(mock_conn, mock_backend)
 
             assert mock_backend.generate_streaming.call_count >= 1
@@ -237,7 +239,9 @@ class TestDaemonStreamingToQueue:
         daemon._stats["requests_stopped"] = 0
 
         try:
-            msg = json.dumps({"command": "speak", "text": "hello", "normalization": "pre-normalized"})
+            msg = json.dumps(
+                {"command": "speak", "text": "hello", "normalization": "pre-normalized"}
+            )
             mock_conn = MagicMock()
             mock_conn.recv.return_value = msg.encode("utf-8")
 
@@ -249,11 +253,13 @@ class TestDaemonStreamingToQueue:
             mock_audio = np.zeros(100, dtype=np.float32)
             mock_backend.generate_streaming.return_value = mock_audio
 
-            with patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]), \
-                 patch.object(daemon, "run_normalize", return_value="hello"), \
-                 patch.object(daemon, "_dedup_check", return_value=False), \
-                 patch.object(daemon, "_resolve_voice_for_request", return_value=None), \
-                 patch.object(daemon, "playback_queue") as mock_pq:
+            with (
+                patch.object(daemon, "_split_voice_segments", return_value=[(None, None, "hello")]),
+                patch.object(daemon, "run_normalize", return_value="hello"),
+                patch.object(daemon, "_dedup_check", return_value=False),
+                patch.object(daemon, "_resolve_voice_for_request", return_value=None),
+                patch.object(daemon, "playback_queue") as mock_pq,
+            ):
                 daemon.handle_client(mock_conn, mock_backend)
 
             # Audio should have been put into playback_queue
@@ -311,16 +317,19 @@ class TestHungRequestWatchdog:
             daemon._last_activity_time = time.monotonic() - 200
 
             call_count = 0
+
             def fake_sleep(n):
                 nonlocal call_count
                 call_count += 1
                 if call_count > 4:
                     raise StopIteration
 
-            with patch.object(daemon, "playback_queue") as mock_pq, \
-                 patch.object(daemon, "_play_error_chime"), \
-                 patch("os._exit") as mock_exit, \
-                 patch("time.sleep", side_effect=fake_sleep):
+            with (
+                patch.object(daemon, "playback_queue") as mock_pq,
+                patch.object(daemon, "_play_error_chime"),
+                patch("os._exit") as mock_exit,
+                patch("time.sleep", side_effect=fake_sleep),
+            ):
                 mock_pq.empty.return_value = True
                 try:
                     daemon._hung_request_watchdog()
@@ -346,6 +355,7 @@ class TestAudioHealthWorker:
         from wednesday_tts.server import daemon
 
         call_count = 0
+
         def counted_sleep(n):
             nonlocal call_count
             call_count += 1
@@ -354,13 +364,18 @@ class TestAudioHealthWorker:
             raise StopIteration
 
         query_called = threading.Event()
+
         def mock_query_subprocess():
             query_called.set()
             return (0, "Test Device")
 
-        with patch.object(daemon, "_query_default_device_subprocess", side_effect=mock_query_subprocess), \
-             patch.object(daemon, "get_default_output_device", return_value=0), \
-             patch.object(time, "sleep", side_effect=counted_sleep):
+        with (
+            patch.object(
+                daemon, "_query_default_device_subprocess", side_effect=mock_query_subprocess
+            ),
+            patch.object(daemon, "get_default_output_device", return_value=0),
+            patch.object(time, "sleep", side_effect=counted_sleep),
+        ):
             try:
                 daemon._audio_health_worker()
             except StopIteration:
@@ -373,17 +388,20 @@ class TestAudioHealthWorker:
         from wednesday_tts.server import daemon
 
         sleep_count = 0
+
         def counted_sleep(n):
             nonlocal sleep_count
             sleep_count += 1
             if sleep_count > 10:
                 raise StopIteration
 
-        with patch.object(daemon, "_query_default_device_subprocess", return_value=None), \
-             patch.object(daemon, "get_default_output_device", return_value=0), \
-             patch.object(daemon, "_play_error_chime"), \
-             patch("os._exit") as mock_exit, \
-             patch.object(time, "sleep", side_effect=counted_sleep):
+        with (
+            patch.object(daemon, "_query_default_device_subprocess", return_value=None),
+            patch.object(daemon, "get_default_output_device", return_value=0),
+            patch.object(daemon, "_play_error_chime"),
+            patch("os._exit") as mock_exit,
+            patch.object(time, "sleep", side_effect=counted_sleep),
+        ):
             try:
                 daemon._audio_health_worker()
             except StopIteration:
@@ -424,6 +442,7 @@ class TestCascadingFailurePrevention:
         backend._model.generate_audio_stream.return_value = iter([])
 
         done = threading.Event()
+
         def second_request():
             backend.generate_streaming(text="second", speed=1.0)
             done.set()
@@ -458,9 +477,7 @@ class TestPocketCallbackModeFailure:
 
         mock_queue = MagicMock()
         # generate_streaming with a playback_queue should put chunks into it
-        result = backend.generate_streaming(
-            "hello", speed=1.0, playback_queue=mock_queue
-        )
+        result = backend.generate_streaming("hello", speed=1.0, playback_queue=mock_queue)
         # When queuing directly, returns None
         assert result is None
         # The queue should have received at least one chunk

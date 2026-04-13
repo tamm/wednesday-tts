@@ -1,14 +1,13 @@
 """Tests for text chunking — chunk_text_intelligently and chunk_text_server."""
 
-
 from wednesday_tts.normalize.chunking import chunk_text_intelligently, chunk_text_server
 
 # ---------------------------------------------------------------------------
 # chunk_text_intelligently
 # ---------------------------------------------------------------------------
 
-class TestChunkTextIntelligently:
 
+class TestChunkTextIntelligently:
     def test_empty_string_returns_empty(self):
         assert chunk_text_intelligently("") == []
 
@@ -42,10 +41,7 @@ class TestChunkTextIntelligently:
 
     def test_breaks_on_sentence_boundary(self):
         # A clear sentence break should be preferred over mid-sentence
-        text = (
-            "The first sentence ends here. "
-            "X" * 60 + " more text follows after that."
-        )
+        text = "The first sentence ends here. X" * 60 + " more text follows after that."
         result = chunk_text_intelligently(text)
         # First chunk should end at the sentence break, not mid-word
         assert result[0].endswith(".")
@@ -100,8 +96,8 @@ class TestChunkTextIntelligently:
 # chunk_text_server
 # ---------------------------------------------------------------------------
 
-class TestChunkTextServer:
 
+class TestChunkTextServer:
     def test_short_text_returned_as_single_chunk(self):
         text = "Hi."
         result = chunk_text_server(text)
@@ -180,6 +176,7 @@ class TestChunkTextServer:
 # ---------------------------------------------------------------------------
 # Regression: list-label and initials must not split as sentence ends
 # ---------------------------------------------------------------------------
+
 
 class TestNoSplitAtListLabels:
     """The chunker must not treat "A.", "B.", "U.", "S." etc. as sentence

@@ -12,6 +12,7 @@ Shared behaviour (mute, barge-in, sub-agent filter, voice hash, pan,
 socket send) lives in hook_common.py — both speech hooks import from
 there so they can never drift out of sync again.
 """
+
 import json
 import os
 import sys
@@ -57,7 +58,7 @@ def _get_unsent_assistant_texts(transcript_path: str | None) -> list[str]:
         return []
 
     texts = []
-    for msg in messages[last_user_idx + 1:]:
+    for msg in messages[last_user_idx + 1 :]:
         if msg.get("type") != "assistant":
             continue
         content = msg.get("message", {}).get("content", [])
@@ -79,7 +80,7 @@ def _truncate_at_sentence(text: str) -> str:
     trunc = text[:MAX_CHARS]
     last_sentence = max(trunc.rfind(". "), trunc.rfind("! "), trunc.rfind("? "))
     if last_sentence > MIN_SENTENCE_CUT:
-        return text[:last_sentence + 1]
+        return text[: last_sentence + 1]
     last_space = trunc.rfind(" ")
     return text[:last_space] if last_space > 0 else trunc
 
@@ -126,12 +127,16 @@ def main() -> None:
     try:
         send_speak(msg)
     except Exception as exc:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": f"TTS unavailable: {exc}",
-            }
-        }))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "additionalContext": f"TTS unavailable: {exc}",
+                    }
+                }
+            )
+        )
 
     sys.exit(0)
 

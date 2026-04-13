@@ -13,6 +13,7 @@ there so they can never drift out of sync again.
 Environment variables:
     TTS_MUTE=1   Disable TTS (also honoured via /tmp/tts-mute file)
 """
+
 import json
 import os
 import sys
@@ -88,8 +89,9 @@ def main() -> None:
     cwd = payload.get("cwd", "") or os.getcwd()
 
     # Prefer the inline payload field — the transcript file can lag.
-    text = payload.get("last_assistant_message") or \
-        _get_last_assistant_message(payload.get("transcript_path"))
+    text = payload.get("last_assistant_message") or _get_last_assistant_message(
+        payload.get("transcript_path")
+    )
     if not text or len(text.strip()) < 5:
         sys.exit(0)
 

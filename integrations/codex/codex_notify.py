@@ -53,13 +53,15 @@ def _send_to_tts(text: str, pan: float) -> bool:
     if os.path.exists(MUTE_PATH) or os.environ.get("TTS_MUTE"):
         return False
 
-    _send_json({
-        "command": "speak",
-        "text": body,
-        "normalization": "markdown",
-        "pan": pan,
-        "timestamp": time.time(),
-    })
+    _send_json(
+        {
+            "command": "speak",
+            "text": body,
+            "normalization": "markdown",
+            "pan": pan,
+            "timestamp": time.time(),
+        }
+    )
     return True
 
 

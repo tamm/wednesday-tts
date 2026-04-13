@@ -11,21 +11,16 @@ def fix_read_homograph(text):
     ambiguous spelling.
     """
     # Pattern A — passive voice (be-family + read)
-    text = re.sub(
-        r'(?i)\b(was|were|is|are|am|be|been|being)(\s+)read\b(?!-)',
-        r'\1\2red', text
-    )
+    text = re.sub(r"(?i)\b(was|were|is|are|am|be|been|being)(\s+)read\b(?!-)", r"\1\2red", text)
     # Pattern B — perfect aspect (have-family + read)
-    text = re.sub(
-        r'(?i)\b(has|have|had)(\s+)read\b(?!-)',
-        r'\1\2red', text
-    )
+    text = re.sub(r"(?i)\b(has|have|had)(\s+)read\b(?!-)", r"\1\2red", text)
     # Pattern C — modal passive (modal + be + read)
     text = re.sub(
-        r'(?i)\b(can|could|will|would|shall|should|may|might|must)(\s+be\s+)read\b(?!-)',
-        r'\1\2red', text
+        r"(?i)\b(can|could|will|would|shall|should|may|might|must)(\s+be\s+)read\b(?!-)",
+        r"\1\2red",
+        text,
     )
     # All remaining 'read' is present tense / imperative
-    text = re.sub(r'\bread\b(?!-)', 'reed', text)
-    text = re.sub(r'\bRead\b(?!-)', 'Reed', text)
+    text = re.sub(r"\bread\b(?!-)", "reed", text)
+    text = re.sub(r"\bRead\b(?!-)", "Reed", text)
     return text

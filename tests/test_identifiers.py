@@ -111,6 +111,7 @@ def test_heading_hash_preserved():
 
 # --- normalize_uuids ---
 
+
 def test_uuid_standard():
     result = normalize_uuids("c3dec37b-1b8d-4471-84e3-009d5f227794")
     assert "UUID ending in" in result
@@ -127,6 +128,7 @@ def test_uuid_in_log_line():
 def test_uuid_in_backticks_survives_pipeline():
     # normalize_uuids runs before normalize_identifiers; backtick gets stripped after
     from wednesday_tts.normalize.identifiers import normalize_identifiers
+
     text = normalize_uuids("`c3dec37b-1b8d-4471-84e3-009d5f227794`")
     result = normalize_identifiers(text)
     assert "UUID ending in" in result
@@ -139,6 +141,7 @@ def test_non_uuid_hex_not_caught():
 
 
 # --- normalize_dotted_names ---
+
 
 def test_dotted_module_attr():
     assert normalize_dotted_names("socket.timeout") == "socket dot timeout"

@@ -46,15 +46,12 @@ def soundstretch_tempo(audio_arr: np.ndarray, samplerate: int, speed: float) -> 
         out_path = in_path.replace(".wav", "_fast.wav")
 
         if audio_arr.ndim > 1:
-            audio_arr = (
-                audio_arr[0]
-                if audio_arr.shape[0] < audio_arr.shape[1]
-                else audio_arr[:, 0]
-            )
+            audio_arr = audio_arr[0] if audio_arr.shape[0] < audio_arr.shape[1] else audio_arr[:, 0]
         sf.write(in_path, audio_arr, samplerate)
 
         kwargs: dict = {}
         import sys
+
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
@@ -100,13 +97,17 @@ class TTSBackend:
         """Load the model into memory. Called once at startup."""
         raise NotImplementedError
 
-    def generate(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> np.ndarray | None:
+    def generate(
+        self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None
+    ) -> np.ndarray | None:
         """Render text to a float32 audio array. Return None on failure."""
         raise NotImplementedError
 
     # Streaming extension — only required when supports_streaming = True.
 
-    def play_streaming(self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None) -> None:
+    def play_streaming(
+        self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None
+    ) -> None:
         """Stream audio directly to the output device (lowest latency)."""
         raise NotImplementedError
 

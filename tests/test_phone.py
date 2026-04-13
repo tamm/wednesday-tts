@@ -4,12 +4,18 @@ from wednesday_tts.normalize.phone import normalize_phone_numbers
 
 # --- Aussie mobile ---
 
+
 def test_mobile_with_spaces():
-    assert normalize_phone_numbers("0412 345 678") == "oh four one two, three four five, six seven eight"
+    assert (
+        normalize_phone_numbers("0412 345 678")
+        == "oh four one two, three four five, six seven eight"
+    )
 
 
 def test_mobile_compact():
-    assert normalize_phone_numbers("0412345678") == "oh four one two, three four five, six seven eight"
+    assert (
+        normalize_phone_numbers("0412345678") == "oh four one two, three four five, six seven eight"
+    )
 
 
 def test_mobile_alt_grouping():
@@ -19,19 +25,29 @@ def test_mobile_alt_grouping():
 
 # --- Aussie landline ---
 
+
 def test_landline_with_space():
-    assert normalize_phone_numbers("02 9876 5432") == "oh two, nine eight seven six, five four three two"
+    assert (
+        normalize_phone_numbers("02 9876 5432")
+        == "oh two, nine eight seven six, five four three two"
+    )
 
 
 def test_landline_with_parens():
-    assert normalize_phone_numbers("(02) 9876 5432") == "oh two, nine eight seven six, five four three two"
+    assert (
+        normalize_phone_numbers("(02) 9876 5432")
+        == "oh two, nine eight seven six, five four three two"
+    )
 
 
 def test_landline_compact():
-    assert normalize_phone_numbers("0298765432") == "oh two, nine eight seven six, five four three two"
+    assert (
+        normalize_phone_numbers("0298765432") == "oh two, nine eight seven six, five four three two"
+    )
 
 
 # --- International ---
+
 
 def test_international_au():
     result = normalize_phone_numbers("+61 2 9876 5432")
@@ -50,12 +66,15 @@ def test_international_us():
 
 # --- Service numbers ---
 
+
 def test_1300():
     assert normalize_phone_numbers("1300 655 506") == "thirteen hundred, six five five, five oh six"
 
 
 def test_1800():
-    assert normalize_phone_numbers("1800 123 456") == "one eight hundred, one two three, four five six"
+    assert (
+        normalize_phone_numbers("1800 123 456") == "one eight hundred, one two three, four five six"
+    )
 
 
 def test_13_service():
@@ -67,6 +86,7 @@ def test_000():
 
 
 # --- NOT phone numbers ---
+
 
 def test_plain_number_not_phone():
     assert normalize_phone_numbers("there are 63191 items") == "there are 63191 items"
@@ -81,6 +101,7 @@ def test_plain_thousand_not_phone():
 
 
 # --- In sentence context ---
+
 
 def test_phone_in_sentence():
     result = normalize_phone_numbers("Call 0412 345 678 for info")

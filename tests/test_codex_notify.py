@@ -5,12 +5,7 @@ from pathlib import Path
 
 
 def _load_module():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "integrations"
-        / "codex"
-        / "codex_notify.py"
-    )
+    path = Path(__file__).resolve().parents[1] / "integrations" / "codex" / "codex_notify.py"
     spec = importlib.util.spec_from_file_location("codex_notify", path)
     assert spec is not None
     assert spec.loader is not None

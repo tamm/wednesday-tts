@@ -11,16 +11,16 @@ def normalize_urls(text):
     """
 
     def url_to_speech(m):
-        url = m.group(1).rstrip('.,;:!?)>')
-        slash_idx = url.find('/')
+        url = m.group(1).rstrip(".,;:!?)>")
+        slash_idx = url.find("/")
         if slash_idx != -1:
             domain = url[:slash_idx]
-            path = url[slash_idx + 1:]
+            path = url[slash_idx + 1 :]
         else:
-            domain, path = url, ''
-        spoken = domain.replace('.', ' dot ')
+            domain, path = url, ""
+        spoken = domain.replace(".", " dot ")
         if path:
-            spoken += ' slash ' + path.replace('/', ' slash ').replace('.', ' dot ')
+            spoken += " slash " + path.replace("/", " slash ").replace(".", " dot ")
         return spoken
 
     text = re.sub(r'https?://([^\s\)\]>"]+)', url_to_speech, text)

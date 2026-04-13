@@ -5,6 +5,7 @@ Thin HTTP client for the Wednesday TTS service (localhost:5678).
 All functions handle connection errors gracefully: they return False or an
 empty string rather than raising, so callers don't need try/except.
 """
+
 from __future__ import annotations
 
 import urllib.error

@@ -4,11 +4,11 @@ import re
 
 from wednesday_tts.normalize.constants import DIGIT_WORDS
 
-_IPV4_RE = re.compile(r'\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b')
+_IPV4_RE = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
 
 
 def _octet_to_spoken(octet: str) -> str:
-    return ' '.join(DIGIT_WORDS[c] for c in octet)
+    return " ".join(DIGIT_WORDS[c] for c in octet)
 
 
 def _is_valid_ipv4(match: re.Match) -> bool:
@@ -23,10 +23,11 @@ def normalize_ip_addresses(text: str) -> str:
     Validates each octet is 0-255. Leaves port suffixes (e.g. :8080) untouched.
     Must run BEFORE dotted names and BEFORE number-to-words.
     """
+
     def replace(match: re.Match) -> str:
         if not _is_valid_ipv4(match):
             return match.group(0)
         octets = [_octet_to_spoken(match.group(i)) for i in range(1, 5)]
-        return ' dot '.join(octets)
+        return " dot ".join(octets)
 
     return _IPV4_RE.sub(replace, text)

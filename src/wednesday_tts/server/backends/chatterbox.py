@@ -42,6 +42,7 @@ class ChatterboxBackend(TTSBackend):
 
     def load(self) -> None:
         from chatterbox.tts import ChatterboxTTS  # type: ignore[import]
+
         self._model = ChatterboxTTS.from_pretrained(device=self._device)
         self.sample_rate = self._model.sr
 

@@ -6,6 +6,7 @@ from wednesday_tts.normalize.camelcase import normalize_all_caps, normalize_came
 # normalize_camelcase
 # ---------------------------------------------------------------------------
 
+
 def test_simple_camel():
     assert normalize_camelcase("myVariable") == "my Variable"
 
@@ -65,6 +66,7 @@ def test_camel_preserves_other_content():
 # ---------------------------------------------------------------------------
 # normalize_all_caps
 # ---------------------------------------------------------------------------
+
 
 def test_long_caps_to_title():
     assert normalize_all_caps("ERROR") == "Error"
@@ -138,6 +140,7 @@ def test_caps_with_apostrophe():
 # ---------------------------------------------------------------------------
 # HTTP method verb normalisation (3-letter verbs via CAPS_EXCLAMATIONS)
 # ---------------------------------------------------------------------------
+
 
 def test_http_get():
     assert normalize_all_caps("GET /api/users") == "Get /api/users"
