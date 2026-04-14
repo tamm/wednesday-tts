@@ -26,6 +26,9 @@ Thumbs.db
 # Plan — living document, keep updated as work progresses
 PLAN.md
 
+# Codex/OpenAI shim — not project config
+AGENTS.md
+
 # Investigation docs — contain references to private repos / local paths
 docs/troubleshooting-runbook.md
 
