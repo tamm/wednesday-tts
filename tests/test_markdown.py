@@ -116,22 +116,23 @@ def test_inline_code_multiple():
 # --- markdown formatting ---
 
 
-def test_bold_double_asterisk_stripped():
+def test_bold_double_asterisk_promoted_to_underscore():
+    """Bold **x** is promoted to _x_ so the TTS engine speaks it with stress."""
     result = clean_text_for_speech("**important** text")
     assert "**" not in result
-    assert "important" in result
+    assert "_important_" in result
 
 
-def test_bold_double_underscore_stripped():
+def test_bold_double_underscore_promoted_to_underscore():
     result = clean_text_for_speech("__important__ text")
     assert "__" not in result
-    assert "important" in result
+    assert "_important_" in result
 
 
-def test_italic_asterisk_stripped():
+def test_italic_asterisk_promoted_to_underscore():
     result = clean_text_for_speech("*emphasis* here")
     assert "*" not in result
-    assert "emphasis" in result
+    assert "_emphasis_" in result
 
 
 def test_italic_underscore_kept_for_emphasis():

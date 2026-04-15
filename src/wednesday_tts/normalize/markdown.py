@@ -69,11 +69,12 @@ def clean_text_for_speech(text):
     # Inline code: keep content, strip backticks
     text = re.sub(r"`([^`]+)`", r"\1", text)
 
-    # Markdown formatting — strip bold and italic asterisks.
-    # Keep _underscore_ emphasis: the TTS engine uses it for spoken stress.
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)  # bold **
-    text = re.sub(r"__([^_]+)__", r"\1", text)  # bold __
-    text = re.sub(r"\*([^*]+)\*", r"\1", text)  # italic *
+    # Markdown formatting — promote bold/italic to _underscore_ emphasis,
+    # which the TTS engine treats as spoken stress. Bold is stronger than
+    # italic; without a second stress level we map both to the same marker.
+    text = re.sub(r"\*\*([^*]+)\*\*", r"_\1_", text)  # bold **
+    text = re.sub(r"__([^_]+)__", r"_\1_", text)  # bold __
+    text = re.sub(r"\*([^*]+)\*", r"_\1_", text)  # italic *
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)  # headers
     text = re.sub(r"^>\s*", "", text, flags=re.MULTILINE)  # blockquotes
     text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)  # unordered lists
