@@ -129,6 +129,45 @@ class TestSplitVoiceSegments:
         assert segs[0] == (None, None, "Normal.")
         assert segs[2] == (None, None, "Back to normal.")
 
+    # ── Instruct shorthand (no inner ») ────────────────────────────────
+
+    def test_instruct_shorthand_whispered(self) -> None:
+        """««instruct|text»» routes instruct to the request voice, no SAM."""
+        text = "««whispered|the guillemet syntax already exposes instruct»»"
+        segs = _split_voice_segments(text)
+        assert segs == [
+            (None, "whispered", "the guillemet syntax already exposes instruct")
+        ]
+
+    def test_instruct_shorthand_excited(self) -> None:
+        text = "««excited and fast|oi, guillemets ALREADY do instruct, just clunky as!»»"
+        segs = _split_voice_segments(text)
+        assert segs == [
+            (
+                None,
+                "excited and fast",
+                "oi, guillemets ALREADY do instruct, just clunky as!",
+            )
+        ]
+
+    def test_instruct_shorthand_tired(self) -> None:
+        text = "««tired and flat|yeah, guillemets expose instruct already, just awkwardly»»"
+        segs = _split_voice_segments(text)
+        assert segs == [
+            (
+                None,
+                "tired and flat",
+                "yeah, guillemets expose instruct already, just awkwardly",
+            )
+        ]
+
+    def test_instruct_shorthand_does_not_hit_sam(self) -> None:
+        """Regression: the shorthand must NOT fall through to the SAM branch."""
+        text = "««warm|hello there»»"
+        segs = _split_voice_segments(text)
+        assert segs[0][0] is None  # request voice, not 'sam'
+        assert segs[0][1] == "warm"
+
 
 class TestRenderSegments:
     """Test rendering with SAM as a real backend (no mocks needed — it's instant)."""

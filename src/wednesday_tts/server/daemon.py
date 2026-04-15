@@ -199,6 +199,8 @@ def _split_voice_segments(
       - ««voice_name»text»»             → named voice from pool
       - ««voice_name|instruct»text»»    → named voice with instruct
       - ««|instruct»text»»              → request voice with instruct
+      - ««instruct|text»»               → request voice with instruct (shorthand
+                                          when no voice switch is needed; no inner »)
 
     Returns a list of (voice, instruct, text) tuples preserving original order.
     """
@@ -234,6 +236,13 @@ def _split_voice_segments(
                 # Named voice — resolve from pool
                 resolved = _resolve_pool_entry_by_name(voice_id)
                 voice_id = resolved  # dict or None
+        elif "|" in content:
+            # ««instruct|text»» — shorthand for request voice with instruct.
+            # No inner »; the first | splits instruct from spoken text.
+            instruct_part, tagged_text = content.split("|", 1)
+            instruct = instruct_part.strip() or None
+            tagged_text = tagged_text.strip()
+            voice_id = None  # request voice
         else:
             # ««text»» — guillemet voice (SAM by default)
             tagged_text = content.strip()
@@ -394,15 +403,16 @@ def _render_segments(
             render_backend = primary_backend
             render_voice = default_voice
 
+        use_instruct = instruct or default_instruct
         print(
             f"[voice] segment {seg_i}: backend={render_backend.__class__.__name__}, "
-            f"voice={_voice_label(render_voice)}, {len(segment_text)} chars",
+            f"voice={_voice_label(render_voice)}, "
+            f"instruct={use_instruct!r}, {len(segment_text)} chars",
             flush=True,
         )
 
         # Build kwargs — add instruct if the backend supports it
         gen_kwargs: dict = {"speed": speed, "voice": render_voice}
-        use_instruct = instruct or default_instruct
         if use_instruct:
             gen_kwargs["instruct"] = use_instruct
 
@@ -1918,9 +1928,15 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     # ── BATCH render ──────────────────────────────────────────────
     total_audio_secs = 0.0
 
-    if needs_backend_switch:
+    # Per-segment instruct must not be dropped. If any segment carries an
+    # explicit instruct, or if there are multiple segments / a SAM switch,
+    # render segment-by-segment so each segment's instruct reaches the backend.
+    has_segment_instruct = any(i for _, i, _ in segments)
+
+    if needs_backend_switch or has_segment_instruct or len(segments) > 1:
         print(
-            f"[req] MULTI-VOICE msg_id={msg_id}, {len(text)} chars → {len(segments)} seg(s)",
+            f"[req] MULTI-SEG msg_id={msg_id}, {len(text)} chars → {len(segments)} seg(s)"
+            f"{' (instruct present)' if has_segment_instruct else ''}",
             flush=True,
         )
         chunk_audio = _render_segments(
@@ -1929,6 +1945,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
             speed,
             gen_snap,
             default_voice=voice,
+            default_instruct=instruct,
             msg_id=msg_id,
         )
         if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
