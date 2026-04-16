@@ -61,15 +61,16 @@ def _get_unsent_assistant_texts(transcript_path: str | None) -> list[str]:
     for msg in messages[last_user_idx + 1 :]:
         if msg.get("type") != "assistant":
             continue
-        content = msg.get("message", {}).get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if block.get("type") != "text":
-                continue
-            raw = block.get("text", "").strip()
-            if raw:
-                texts.append(raw)
+        content = msg.get("message", {}).get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") != "text":
+                    continue
+                raw = block.get("text", "").strip()
+                if raw:
+                    texts.append(raw)
+        elif isinstance(content, str) and content.strip():
+            texts.append(content.strip())
     return texts
 
 
@@ -103,7 +104,14 @@ def main() -> None:
     cwd = payload.get("cwd", "")
     transcript_path = payload.get("transcript_path")
 
-    texts = _get_unsent_assistant_texts(transcript_path)
+    # Transcript may not be flushed yet when PreToolUse fires.
+    # Poll briefly before giving up.
+    texts: list[str] = []
+    for _attempt in range(6):
+        texts = _get_unsent_assistant_texts(transcript_path)
+        if texts:
+            break
+        time.sleep(0.15)
     if not texts:
         sys.exit(0)
     combined = " ".join(texts).strip()
@@ -117,6 +125,7 @@ def main() -> None:
         "normalization": "markdown",
         "session_id": session_id,
         "timestamp": time.time(),
+        "source": "pre-tool",
     }
     if cwd:
         msg["voice_hash"] = compute_voice_hash(cwd)

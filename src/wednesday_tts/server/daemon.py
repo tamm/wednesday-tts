@@ -386,7 +386,7 @@ def _render_segments(
     target_rate = primary_backend.sample_rate
 
     for seg_i, (voice_name, instruct, segment_text) in enumerate(segments):
-        if _stop_gen != gen_snap or (msg_id > 0 and _skip_msg_id == msg_id):
+        if _stop_gen != gen_snap or (msg_id > 0 and _should_skip_msg(msg_id)):
             break
 
         if voice_name == "sam":
@@ -561,6 +561,12 @@ _playback_current_msg_id: int = (
     -1
 )  # msg_id the playback worker has claimed (set before write starts)
 _skip_msg_id: int = -1  # msg_id that was last skipped; generation threads bail if they match
+_skip_msg_ids: set[int] = set()  # msg_ids to skip (for session flush); checked by generation loop
+
+
+def _should_skip_msg(msg_id: int) -> bool:
+    """Check if a message should be skipped (single skip or session flush)."""
+    return _skip_msg_id == msg_id or msg_id in _skip_msg_ids
 
 # Barge-in queue-and-delay. When the barge-in flag from wednesday-yarn is
 # fresh (user is currently dictating), new speak requests are NOT rejected —
@@ -591,6 +597,21 @@ _msg_done: set[int] = set()  # msg_ids whose chunks are all enqueued
 _msg_done_lock = threading.Lock()
 _msg_done_event = threading.Event()  # poked when a msg finishes enqueuing
 
+# Session tracking: msg_id → session_id. Used by flush_session to skip all
+# queued/in-flight messages from a specific Claude Code session without
+# affecting other sessions. Entries are added in _process_speak_locked and
+# pruned when messages finish playback or are flushed.
+_msg_session: dict[int, str] = {}
+_msg_session_lock = threading.Lock()
+
+# Playback deferred buffer: msg_id → list of queued items. Promoted to
+# module level so _flush_session can drain entries for a specific session.
+# Written by the playback worker thread, read by _flush_session under
+# _speak_pipeline_lock. Thread-safe because _flush_session holds the
+# pipeline lock and the playback worker only touches _playback_deferred
+# while blocked on playback_queue.get() (which _flush_session drains first).
+_playback_deferred: dict[int, list[tuple]] = {}
+
 
 def _mark_msg_done(msg_id: int) -> None:
     """Signal that all chunks for msg_id have been enqueued."""
@@ -606,9 +627,11 @@ def _is_msg_done(msg_id: int) -> bool:
 
 
 def _clear_msg_done(msg_id: int) -> None:
-    """Remove msg_id from the done set (after playback finishes it)."""
+    """Remove msg_id from the done set and session registry (after playback finishes it)."""
     with _msg_done_lock:
         _msg_done.discard(msg_id)
+    with _msg_session_lock:
+        _msg_session.pop(msg_id, None)
 
 
 playback_queue: queue.Queue = queue.Queue()
@@ -648,6 +671,11 @@ def _stop_playback() -> None:
     with _msg_done_lock:
         _msg_done.clear()
     _msg_done_event.set()
+    # Clear session registry and skip sets (full stop = everything gone)
+    with _msg_session_lock:
+        _msg_session.clear()
+    _skip_msg_ids.clear()
+    _playback_deferred.clear()
     _stop_gen += 1
     # Clear barge-in pending list — stop means "forget everything", including
     # any speaks held for post-barge-in replay. All stop paths (socket command,
@@ -712,6 +740,91 @@ def _skip_current() -> None:
     _kill_spatial_stream()
     if _vpio is not None:
         _vpio.clear_buffer()
+
+
+def _flush_session(session_id: str) -> None:
+    """Drain all queued and in-flight chunks belonging to a specific session.
+
+    Used when a Stop/recap hook fires — we want to skip all mid-turn
+    pre-tool-speak messages for that session and jump straight to the
+    final response. Other sessions' audio is untouched.
+
+    Must be called with _speak_pipeline_lock held (caller is
+    _process_speak_locked).
+    """
+    global _skip_gen, _skip_msg_id
+
+    # Find all msg_ids belonging to this session
+    with _msg_session_lock:
+        session_msg_ids = {
+            mid for mid, sid in _msg_session.items() if sid == session_id
+        }
+
+    if not session_msg_ids:
+        return
+
+    # Mark all session msg_ids for skip — generation loops check this set
+    # via _should_skip_msg(). This is session-scoped: other sessions'
+    # in-flight generation is unaffected.
+    _skip_msg_ids.update(session_msg_ids)
+
+    # Skip currently playing chunk if it belongs to this session
+    current_playing = _playback_current_msg_id
+    skipped_playing = False
+    if current_playing in session_msg_ids:
+        _skip_msg_id = current_playing
+        _skip_gen += 1
+        skipped_playing = True
+
+    # Drain queued chunks belonging to this session, keep everything else
+    requeue = []
+    dropped = 0
+    while True:
+        try:
+            item = playback_queue.get_nowait()
+            playback_queue.task_done()
+            if item is None:
+                requeue.append(item)
+            elif isinstance(item, tuple) and len(item) >= 3 and item[2] in session_msg_ids:
+                dropped += 1
+            else:
+                requeue.append(item)
+        except queue.Empty:
+            break
+    for item in requeue:
+        playback_queue.put(item)
+
+    # Drain deferred chunks in the playback worker's buffer
+    _flushed_deferred = 0
+    for mid in list(session_msg_ids):
+        if mid in _playback_deferred:
+            _flushed_deferred += len(_playback_deferred[mid])
+            del _playback_deferred[mid]
+
+    # Clean up session registry for flushed messages
+    with _msg_session_lock:
+        for mid in session_msg_ids:
+            _msg_session.pop(mid, None)
+
+    # Clean up skip set (generation threads already bailed or will bail)
+    _skip_msg_ids.difference_update(session_msg_ids)
+
+    # Clear msg_done tracking for flushed messages
+    with _msg_done_lock:
+        _msg_done.difference_update(session_msg_ids)
+    _msg_done_event.set()
+
+    if skipped_playing:
+        _kill_spatial_stream()
+        if _vpio is not None:
+            _vpio.clear_buffer()
+
+    print(
+        f"[flush] session={session_id[:8]}… flushed {len(session_msg_ids)} msg(s), "
+        f"dropped {dropped} queued + {_flushed_deferred} deferred chunk(s), "
+        f"skipped_playing={skipped_playing}",
+        flush=True,
+    )
 
 
 def _barge_in_flag_mtime() -> float | None:
@@ -1382,7 +1495,7 @@ def playback_worker(backend: TTSBackend) -> None:
     # Message grouping: buffer chunks from other messages so we finish one
     # message completely before starting the next. This prevents the
     # nightmarish interleaving of two speakers alternating every chunk.
-    _deferred: dict[int, list[tuple]] = {}  # msg_id → list of queued items
+    # _playback_deferred is module-level (shared with _flush_session)
     _current_msg: int | None = None  # msg_id we are currently playing
 
     def _next_item():
@@ -1401,23 +1514,23 @@ def playback_worker(backend: TTSBackend) -> None:
         def _advance_to_deferred():
             """Try to advance _current_msg to the next deferred message."""
             nonlocal _current_msg
-            if _deferred:
-                next_id = min(_deferred.keys())
+            if _playback_deferred:
+                next_id = min(_playback_deferred.keys())
                 _current_msg = next_id
-                items = _deferred[next_id]
+                items = _playback_deferred[next_id]
                 if items:
                     return items.pop(0), False
                 else:
-                    del _deferred[next_id]
+                    del _playback_deferred[next_id]
             return None
 
         # First: drain any deferred chunks for the current message
-        if _current_msg is not None and _current_msg in _deferred:
-            items = _deferred[_current_msg]
+        if _current_msg is not None and _current_msg in _playback_deferred:
+            items = _playback_deferred[_current_msg]
             if items:
                 return items.pop(0), False
             else:
-                del _deferred[_current_msg]
+                del _playback_deferred[_current_msg]
 
         # If current message is done, advance to the next deferred message
         if _current_msg is not None and _is_msg_done(_current_msg):
@@ -1441,7 +1554,7 @@ def playback_worker(backend: TTSBackend) -> None:
                     # Also treat as done if queue is empty and no deferred
                     # chunks exist for current msg — the STOP handler may
                     # have cleared _msg_done before we could check it.
-                    if done or (not _deferred.get(_current_msg)):
+                    if done or (not _playback_deferred.get(_current_msg)):
                         _clear_msg_done(_current_msg)
                         _current_msg = None
                         result = _advance_to_deferred()
@@ -1468,7 +1581,7 @@ def playback_worker(backend: TTSBackend) -> None:
                 return raw, True
 
             # Different message — defer it and mark this queue get() as done
-            _deferred.setdefault(chunk_msg_id, []).append(raw)
+            _playback_deferred.setdefault(chunk_msg_id, []).append(raw)
             playback_queue.task_done()
 
             # Check if current message is now done (all chunks enqueued)
@@ -1541,11 +1654,11 @@ def playback_worker(backend: TTSBackend) -> None:
                 vpio_audio = _anti_click(vpio_audio, backend.sample_rate)
                 write_gen_v = _stop_gen
                 write_skip_v = _skip_gen
-                if subtitle_text and _skip_msg_id != _playing_msg_id:
+                if subtitle_text and not _should_skip_msg(_playing_msg_id):
                     dur = len(audio) / backend.sample_rate
                     _send_subtitle(subtitle_text, audio_dur=dur)
                     subtitle_text = None
-                elif not subtitle_text and _skip_msg_id != _playing_msg_id:
+                elif not subtitle_text and not _should_skip_msg(_playing_msg_id):
                     _send_overlay({"type": "playback_started"})
 
                 def _should_bail_vpio() -> bool:
@@ -1586,11 +1699,11 @@ def playback_worker(backend: TTSBackend) -> None:
                     spatial_audio = _anti_click(spatial_audio, backend.sample_rate)
                     write_gen = _stop_gen
                     write_skip = _skip_gen
-                    if subtitle_text and _skip_msg_id != _playing_msg_id:
+                    if subtitle_text and not _should_skip_msg(_playing_msg_id):
                         dur = len(audio) / backend.sample_rate
                         _send_subtitle(subtitle_text, audio_dur=dur)
                         subtitle_text = None
-                    elif not subtitle_text and _skip_msg_id != _playing_msg_id:
+                    elif not subtitle_text and not _should_skip_msg(_playing_msg_id):
                         _send_overlay({"type": "playback_started"})
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
@@ -1672,11 +1785,11 @@ def playback_worker(backend: TTSBackend) -> None:
 
             write_gen = _stop_gen
             write_skip = _skip_gen
-            if subtitle_text and _skip_msg_id != _playing_msg_id:
+            if subtitle_text and not _should_skip_msg(_playing_msg_id):
                 dur = len(item) / backend.sample_rate
                 _send_subtitle(subtitle_text, audio_dur=dur)
                 subtitle_text = None
-            elif not subtitle_text and _skip_msg_id != _playing_msg_id:
+            elif not subtitle_text and not _should_skip_msg(_playing_msg_id):
                 _send_overlay({"type": "playback_started"})
             WRITE_CHUNK = int(device_rate * 0.1)
             flat = audio.reshape(-1)
@@ -1722,7 +1835,7 @@ def playback_worker(backend: TTSBackend) -> None:
             # (not for deferred items which already had task_done() called).
             if _from_queue:
                 playback_queue.task_done()
-            if playback_queue.empty() and not _deferred:
+            if playback_queue.empty() and not _playback_deferred:
                 unsuppress_dictation()
                 _send_overlay_idle()
 
@@ -1770,6 +1883,12 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     text = msg.get("text", "")
     if not text.strip():
         return
+
+    # ── Session flush: skip all queued mid-turn messages for this session ─
+    # The Stop hook sends flush_session=true so the final response pre-empts
+    # any lingering pre-tool-speak snippets without affecting other sessions.
+    if msg.get("flush_session") and msg.get("session_id"):
+        _flush_session(msg["session_id"])
 
     # ── Barge-in hold ────────────────────────────────────────────────────
     # If the user is dictating, hold this speak on the pending list and
@@ -1833,12 +1952,18 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     _msg_id_counter += 1
     msg_id = _msg_id_counter
 
+    # Track which session owns this message (for flush_session)
+    if session_id:
+        with _msg_session_lock:
+            _msg_session[msg_id] = session_id
+
     latency_note = ""
     if timestamp:
         latency_note = f" latency={time.time() - timestamp:.2f}s"
 
+    source = msg.get("source", "unknown")
     print(
-        f"[req] msg_id={msg_id} voice_hash={voice_hash} session={session_id} "
+        f"[req] msg_id={msg_id} source={source} voice_hash={voice_hash} session={session_id} "
         f"→ voice={_voice_label(request_voice)} pan={pan:.2f} "
         f"{len(text)} chars{latency_note}",
         flush=True,
@@ -1902,7 +2027,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
         gs_kwargs = {
             "speed": speed,
             "playback_queue": playback_queue,
-            "stop_check": lambda: _stop_gen != _gs or _skip_msg_id == _mid,
+            "stop_check": lambda: _stop_gen != _gs or _should_skip_msg(_mid),
             "msg_id": msg_id,
         }
         if instruct:
@@ -1918,7 +2043,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
             return
 
         # Streaming path — audio returned directly
-        if _skip_msg_id != msg_id:
+        if not _should_skip_msg(msg_id):
             playback_queue.put((audio, text, msg_id))
             _mark_msg_done(msg_id)
         _stat_inc("audio_seconds_total", len(audio) / backend.sample_rate)
@@ -1948,7 +2073,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
             default_instruct=instruct,
             msg_id=msg_id,
         )
-        if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
+        if chunk_audio is not None and _stop_gen == gen_snap and not _should_skip_msg(msg_id):
             playback_queue.put((chunk_audio, text, msg_id))
             total_audio_secs = len(chunk_audio) / backend.sample_rate
         _mark_msg_done(msg_id)
@@ -1966,7 +2091,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
         )
 
         for ci, chunk_text in enumerate(text_chunks):
-            if _stop_gen != gen_snap or (msg_id > 0 and _skip_msg_id == msg_id):
+            if _stop_gen != gen_snap or (msg_id > 0 and _should_skip_msg(msg_id)):
                 break
             chunk_segments = [(None, None, chunk_text)]
             chunk_audio = _render_segments(
@@ -1977,7 +2102,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
                 default_voice=voice,
                 msg_id=msg_id,
             )
-            if chunk_audio is not None and _stop_gen == gen_snap and _skip_msg_id != msg_id:
+            if chunk_audio is not None and _stop_gen == gen_snap and not _should_skip_msg(msg_id):
                 playback_queue.put((chunk_audio, chunk_text, msg_id))
                 chunk_secs = len(chunk_audio) / backend.sample_rate
                 total_audio_secs += chunk_secs

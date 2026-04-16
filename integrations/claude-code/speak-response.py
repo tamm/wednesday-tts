@@ -101,6 +101,8 @@ def main() -> None:
         "normalization": "markdown",
         "voice_hash": compute_voice_hash(cwd),
         "timestamp": wall_time,
+        "flush_session": True,
+        "source": "stop",
     }
     if session_id:
         msg["session_id"] = session_id

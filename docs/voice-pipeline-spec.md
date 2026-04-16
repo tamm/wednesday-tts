@@ -46,6 +46,11 @@ All communication from hooks to the daemon is a single JSON object sent over the
     "timestamp": {
       "type": "number",
       "description": "Wall-clock epoch (seconds) when the hook fired. Used to measure end-to-end latency from hook trigger to first audio output."
+    },
+    "source": {
+      "type": "string",
+      "enum": ["stop", "pre-tool", "permission"],
+      "description": "Which hook sent this request. stop = end-of-turn Stop hook. pre-tool = PreToolUse mid-turn hook. permission = PermissionRequest hook. Logged on the daemon [req] line for tracing."
     }
   },
   "allOf": [
@@ -247,7 +252,7 @@ Every request gets a `msg_id` (monotonic integer, assigned by daemon on receipt)
 | Point | Tag | What to log |
 |-------|-----|-------------|
 | Hook send | `[hook]` | `voice_hash=H session=S cwd=PATH` |
-| Daemon receive | `[req]` | `msg_id=N voice_hash=H session=S → voice=NAME` |
+| Daemon receive | `[req]` | `msg_id=N source=SRC voice_hash=H session=S → voice=NAME` |
 | Segment parse | `[req]` | `msg_id=N seg=I backend=B voice=NAME chars=C` |
 | Render complete | `[req]` | `msg_id=N seg=I audio=Xs rtf=R` |
 | Enqueue | `[req]` | `msg_id=N seg=I enqueued` |

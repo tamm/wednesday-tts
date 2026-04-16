@@ -197,6 +197,17 @@ def compute_pan() -> float:
         return 0.5
 
 
+def _log_send_error(source: str, phase: str, exc: Exception | None) -> None:
+    """Append a one-line error to the hook debug log. Silent on failure."""
+    try:
+        log_path = os.path.join(_TEMP, "wednesday-tts-hook-debug.log")
+        line = json.dumps({"t": time.time(), "hook": "send_speak", "source": source, "phase": phase, "error": str(exc)}) + "\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 def send_speak(msg: dict, *, kick_on_timeout: bool = False) -> None:
     """Send a JSON speak message to the TTS daemon over the Unix socket.
 
@@ -207,9 +218,11 @@ def send_speak(msg: dict, *, kick_on_timeout: bool = False) -> None:
     payload = (json.dumps(msg) + "\n").encode("utf-8")
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(10 if kick_on_timeout else 1.0)
+    source = msg.get("source", "unknown")
     try:
         s.connect(UNIX_SOCKET_PATH)
-    except (FileNotFoundError, ConnectionRefusedError, OSError):
+    except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
+        _log_send_error(source, "connect", exc)
         try:
             s.close()
         except Exception:
@@ -223,10 +236,11 @@ def send_speak(msg: dict, *, kick_on_timeout: bool = False) -> None:
         except TimeoutError:
             pass
     except TimeoutError:
+        _log_send_error(source, "send-timeout", None)
         if kick_on_timeout:
             _kick_daemon_if_dying()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_send_error(source, "send", exc)
     finally:
         try:
             s.close()
