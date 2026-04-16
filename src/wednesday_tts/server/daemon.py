@@ -1352,6 +1352,18 @@ def _send_overlay(*msgs: dict) -> None:
         pass
 
 
+_CHARS_PER_SEC = 16.0  # empirical median from Pocket backend logs
+
+
+def _estimate_speech_duration(text: str) -> float:
+    """Estimate total speech duration from text length.
+
+    Based on ~16 chars/sec (190 WPM) measured across 66 clean samples
+    from the Pocket backend with current voice pool.
+    """
+    return max(0.5, len(text) / _CHARS_PER_SEC)
+
+
 def _send_subtitle(text: str, audio_dur: float = 0) -> None:
     """Send subtitle + playback_started as an atomic batch.
 
@@ -1655,7 +1667,7 @@ def playback_worker(backend: TTSBackend) -> None:
                 write_gen_v = _stop_gen
                 write_skip_v = _skip_gen
                 if subtitle_text and not _should_skip_msg(_playing_msg_id):
-                    dur = len(audio) / backend.sample_rate
+                    dur = _estimate_speech_duration(subtitle_text)
                     _send_subtitle(subtitle_text, audio_dur=dur)
                     subtitle_text = None
                 elif not subtitle_text and not _should_skip_msg(_playing_msg_id):
@@ -1700,7 +1712,7 @@ def playback_worker(backend: TTSBackend) -> None:
                     write_gen = _stop_gen
                     write_skip = _skip_gen
                     if subtitle_text and not _should_skip_msg(_playing_msg_id):
-                        dur = len(audio) / backend.sample_rate
+                        dur = _estimate_speech_duration(subtitle_text)
                         _send_subtitle(subtitle_text, audio_dur=dur)
                         subtitle_text = None
                     elif not subtitle_text and not _should_skip_msg(_playing_msg_id):
@@ -1786,7 +1798,7 @@ def playback_worker(backend: TTSBackend) -> None:
             write_gen = _stop_gen
             write_skip = _skip_gen
             if subtitle_text and not _should_skip_msg(_playing_msg_id):
-                dur = len(item) / backend.sample_rate
+                dur = _estimate_speech_duration(subtitle_text)
                 _send_subtitle(subtitle_text, audio_dur=dur)
                 subtitle_text = None
             elif not subtitle_text and not _should_skip_msg(_playing_msg_id):

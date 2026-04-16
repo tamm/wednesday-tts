@@ -240,7 +240,8 @@ class PocketTTSBackend(TTSBackend):
                 if arr.ndim > 1:
                     arr = arr.flatten()
                 if arr.size > 0:
-                    playback_queue.put((arr.astype(np.float32), None, msg_id))
+                    sub = text if n_chunks == 0 else None
+                    playback_queue.put((arr.astype(np.float32), sub, msg_id))
                     total_samples += arr.size
                     n_chunks += 1
 
@@ -316,6 +317,7 @@ class PocketTTSBackend(TTSBackend):
         reader_done = threading.Event()
 
         def _read_stretched():
+            _first = True
             try:
                 # Skip the output WAV header (44 bytes)
                 hdr = proc.stdout.read(44)
@@ -332,7 +334,9 @@ class PocketTTSBackend(TTSBackend):
                     # Convert int16 PCM to float32
                     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
                     if samples.size > 0:
-                        playback_queue.put((samples, None, msg_id))
+                        sub = text if _first else None
+                        _first = False
+                        playback_queue.put((samples, sub, msg_id))
             except Exception as exc:
                 print(f"[stream-pipe] reader error: {exc}", flush=True)
             finally:
