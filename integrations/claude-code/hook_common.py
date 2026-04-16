@@ -16,10 +16,10 @@ import subprocess
 import tempfile
 import time
 
-UNIX_SOCKET_PATH = "/tmp/tts-daemon.sock"
+UNIX_SOCKET_PATH = os.environ.get("TTS_SOCKET_PATH", "/tmp/tts-daemon.sock")
 
 _TEMP = tempfile.gettempdir()
-MUTE_PATH = os.path.join(_TEMP, "tts-mute")
+MUTE_PATH = os.environ.get("TTS_MUTE_PATH", os.path.join(_TEMP, "tts-mute"))
 
 
 def is_muted() -> bool:
