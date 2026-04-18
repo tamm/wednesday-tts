@@ -150,6 +150,68 @@ def _play_error_chime() -> None:
             pass
 
 
+# Voice-command recognition chirp — played when a voice-command recogniser
+# fires to give audible acknowledgement that the command was heard.
+# Set "voice_command_chirp" in ~/.claude/tts-config.json to a sound file path.
+# Falls back to a synthesised two-tone chirp if no file is configured or found.
+_VOICE_COMMAND_CHIRP_SR = 24000
+
+
+def _get_voice_command_chirp_path() -> str | None:
+    """Resolve voice-command chirp path from config. Returns None if not set."""
+    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    if os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                chirp = json.load(f).get("voice_command_chirp")
+            if chirp:
+                expanded = os.path.expanduser(chirp)
+                if os.path.isfile(expanded):
+                    return expanded
+        except Exception:
+            pass
+    return None
+
+
+def _play_voice_command_chirp() -> None:
+    """Play the voice-command recognition chirp in a background thread.
+
+    Tries the configured file first (``voice_command_chirp`` in tts-config.json).
+    Falls back to a synthesised two-tone chirp so something always plays even
+    when no sound file is configured.
+    """
+    path = _get_voice_command_chirp_path()
+    if path:
+        try:
+            subprocess.Popen(
+                ["afplay", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception:
+            pass
+
+    # Synthesised fallback: short ascending two-tone chirp (DS9-style feel)
+    def _synth_chirp() -> None:
+        try:
+            sr = _VOICE_COMMAND_CHIRP_SR
+            dur = 0.08  # seconds per tone
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            tone1 = 0.35 * np.sin(2 * np.pi * 1200 * t)
+            tone2 = 0.35 * np.sin(2 * np.pi * 1800 * t)
+            chirp = np.concatenate([tone1, tone2]).astype(np.float32)
+            # Fade out the tail to avoid a click
+            fade_len = int(sr * 0.02)
+            chirp[-fade_len:] *= np.linspace(1.0, 0.0, fade_len)
+            with sd.OutputStream(samplerate=sr, channels=1) as stream:
+                stream.write(chirp.reshape(-1, 1))
+        except Exception:
+            pass
+
+    threading.Thread(target=_synth_chirp, daemon=True).start()
+
+
 # ---------------------------------------------------------------------------
 # Per-request voice override cache
 # ---------------------------------------------------------------------------
@@ -743,17 +805,19 @@ def _skip_current() -> None:
 
 
 def _flush_session(session_id: str) -> None:
-    """Drain all queued and in-flight chunks belonging to a specific session.
+    """Drain queued/in-flight chunks for a session, letting the current chunk finish.
 
-    Used when a Stop/recap hook fires — we want to skip all mid-turn
-    pre-tool-speak messages for that session and jump straight to the
-    final response. Other sessions' audio is untouched.
+    Stop-hook preemption behaviour:
+    - The currently-playing audio chunk is NOT truncated.  One chunk is
+      sub-second, so the natural end happens almost immediately.
+    - All *queued* items belonging to this session are dropped.
+    - In-flight generation threads for this session are told to bail via
+      _skip_msg_ids (so no new chunks are enqueued after we drain).
+    - Other sessions' playback and queue are completely untouched.
 
     Must be called with _speak_pipeline_lock held (caller is
     _process_speak_locked).
     """
-    global _skip_gen, _skip_msg_id
-
     # Find all msg_ids belonging to this session
     with _msg_session_lock:
         session_msg_ids = {
@@ -768,15 +832,15 @@ def _flush_session(session_id: str) -> None:
     # in-flight generation is unaffected.
     _skip_msg_ids.update(session_msg_ids)
 
-    # Skip currently playing chunk if it belongs to this session
+    # Note whether the currently playing chunk belongs to this session, but do
+    # NOT truncate it.  The current chunk is sub-second; letting it finish
+    # avoids a click/pop artefact and sounds more natural before "Oh!" plays.
     current_playing = _playback_current_msg_id
-    skipped_playing = False
-    if current_playing in session_msg_ids:
-        _skip_msg_id = current_playing
-        _skip_gen += 1
-        skipped_playing = True
+    current_belongs = current_playing in session_msg_ids
 
-    # Drain queued chunks belonging to this session, keep everything else
+    # Drain queued chunks belonging to this session, keep everything else.
+    # The currently-playing chunk is not in the queue (it's being written to
+    # the audio device), so this drain only affects future chunks.
     requeue = []
     dropped = 0
     while True:
@@ -801,28 +865,28 @@ def _flush_session(session_id: str) -> None:
             _flushed_deferred += len(_playback_deferred[mid])
             del _playback_deferred[mid]
 
-    # Clean up session registry for flushed messages
+    # Clean up session registry for flushed messages.
+    # If the current chunk belongs to this session, keep its entry briefly so
+    # the playback worker can still call _clear_msg_done when it finishes.
+    # Remove all *other* session msg_ids now; _clear_msg_done handles the rest.
     with _msg_session_lock:
         for mid in session_msg_ids:
-            _msg_session.pop(mid, None)
+            if mid != current_playing or not current_belongs:
+                _msg_session.pop(mid, None)
 
     # Clean up skip set (generation threads already bailed or will bail)
     _skip_msg_ids.difference_update(session_msg_ids)
 
-    # Clear msg_done tracking for flushed messages
+    # Clear msg_done tracking for flushed messages (except current playing)
     with _msg_done_lock:
-        _msg_done.difference_update(session_msg_ids)
+        to_clear = session_msg_ids - ({current_playing} if current_belongs else set())
+        _msg_done.difference_update(to_clear)
     _msg_done_event.set()
-
-    if skipped_playing:
-        _kill_spatial_stream()
-        if _vpio is not None:
-            _vpio.clear_buffer()
 
     print(
         f"[flush] session={session_id[:8]}… flushed {len(session_msg_ids)} msg(s), "
         f"dropped {dropped} queued + {_flushed_deferred} deferred chunk(s), "
-        f"skipped_playing={skipped_playing}",
+        f"current_chunk_preserved={current_belongs}",
         flush=True,
     )
 
@@ -1896,11 +1960,18 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     if not text.strip():
         return
 
-    # ── Session flush: skip all queued mid-turn messages for this session ─
-    # The Stop hook sends flush_session=true so the final response pre-empts
-    # any lingering pre-tool-speak snippets without affecting other sessions.
+    # ── Session flush: stop-hook preemption ──────────────────────────────
+    # The Stop hook sends flush_session=true.  We drain all queued/in-flight
+    # pre-tool-speak chunks for this session WITHOUT truncating the currently
+    # playing chunk (one sub-second chunk plays to natural end).  Then we
+    # prepend "Oh! " so the transition from the last pre-tool chunk to the
+    # final response sounds deliberate rather than abrupt.
     if msg.get("flush_session") and msg.get("session_id"):
         _flush_session(msg["session_id"])
+        # Prepend transition cue.  Capital O, exclamation, single trailing
+        # space — no separate audio asset, just words in the speech stream.
+        text = "Oh! " + text
+        msg = {**msg, "text": text}
 
     # ── Barge-in hold ────────────────────────────────────────────────────
     # If the user is dictating, hold this speak on the pending list and
@@ -2144,6 +2215,7 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         speak       normalise, render audio, play through speakers
         stop        halt current playback and drain queue
         ping        health check
+        chirp       play the voice-command recognition chirp (no TTS pipeline)
         drain       wait for playback queue to empty
         normalize   return cleaned text without generating audio
         stats       return telemetry as JSON
@@ -2167,6 +2239,13 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── PING ──────────────────────────────────────────────────────────
         if command == "ping":
+            conn.send(b"ok")
+            return
+
+        # ── CHIRP — voice-command recognition acknowledgement ─────────────
+        if command == "chirp":
+            print("[cmd] CHIRP received", flush=True)
+            _play_voice_command_chirp()
             conn.send(b"ok")
             return
 

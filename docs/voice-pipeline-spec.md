@@ -16,8 +16,8 @@ All communication from hooks to the daemon is a single JSON object sent over the
   "properties": {
     "command": {
       "type": "string",
-      "enum": ["speak", "stop", "skip", "ping", "drain", "normalize", "stats", "render"],
-      "description": "Required. speak = normalise, render audio, play through speakers. stop = halt current playback and drain the entire queue immediately; new speaks are accepted straight after. skip = drop the remaining chunks of the currently playing message only; later queued messages are preserved, and a 3s grace window rejects incoming speaks (a second skip inside the grace escalates to a full stop). ping = health check, returns 'ok'. drain = block until the playback queue empties. normalize = return cleaned text without generating audio. stats = return telemetry as JSON. render = normalise, render audio, return raw PCM bytes (no playback)."
+      "enum": ["speak", "stop", "skip", "ping", "chirp", "drain", "normalize", "stats", "render"],
+      "description": "Required. speak = normalise, render audio, play through speakers. stop = halt current playback and drain the entire queue immediately; new speaks are accepted straight after. skip = drop the remaining chunks of the currently playing message only; later queued messages are preserved, and a 3s grace window rejects incoming speaks (a second skip inside the grace escalates to a full stop). ping = health check, returns 'ok'. chirp = play the voice-command recognition chirp (DS9-style short sound), bypasses the TTS pipeline entirely, returns 'ok'. drain = block until the playback queue empties. normalize = return cleaned text without generating audio. stats = return telemetry as JSON. render = normalise, render audio, return raw PCM bytes (no playback)."
     },
     "text": {
       "type": "string",
@@ -61,6 +61,27 @@ All communication from hooks to the daemon is a single JSON object sent over the
   ]
 }
 ```
+
+## Chirp — voice-command recognition acknowledgement
+
+The `chirp` command plays a short audible acknowledgement so Tamm knows a voice command was heard. It bypasses the TTS pipeline entirely — no normalisation, no voice selection, no queue.
+
+```json
+{"command": "chirp"}
+```
+
+Response: `ok`
+
+**Sound resolution order:**
+
+1. `voice_command_chirp` key in `~/.claude/tts-config.json` — set this to an absolute or `~`-prefixed path to a sound file (WAV, AIFF, MP3). The DS9 intercom chime at `~/dev/local-env-setup/sounds/chimes/ds9intercom.mp3` is the recommended value.
+2. Synthesised fallback — two ascending tones (1200 Hz → 1800 Hz, 80 ms each) played via sounddevice. Always available even when no sound file is configured.
+
+**Design constraints:**
+
+- Does not interact with the speak queue. The chirp plays immediately in a background process / thread regardless of whether TTS audio is currently playing.
+- Does not go through text normalisation or the voice pool. There is no `text` field.
+- The Yarn-side wiring that calls this verb is a separate task.
 
 ## Barge-in hold
 
@@ -242,6 +263,45 @@ Segments are rendered and played in order. Each segment streams individually if 
 - The next message does not begin until every segment of the current message has finished playing.
 - **STOP**: Cancels the current message immediately. Discards all queued messages. Silence until a new speak request arrives.
 - **SKIP** (SIGUSR1): Cancels the current message immediately. The next queued message begins playing. Use this when the user interrupts but more messages are waiting.
+
+## Stop-hook preemption
+
+When the Stop hook fires at end-of-turn, `speak-response.py` sends a speak request with `flush_session=true`. This signals the daemon to preempt lingering pre-tool-speak chunks and transition cleanly to the final response. The behaviour differs from a bare `stop` command in one critical way: the currently-playing chunk is **not** truncated.
+
+### Sequence
+
+1. **Current chunk plays to natural end.** One audio chunk is sub-second. Truncating it produces a click or pop artefact. The daemon lets it finish.
+2. **Queued pre-tool chunks for this session are dropped.** The daemon drains the playback queue and deferred buffer of all items whose `msg_id` belongs to the flushed session. In-flight generation threads are told to bail via `_skip_msg_ids`.
+3. **"Oh! " prefix is prepended.** Before enqueuing the Stop-hook message, the daemon prepends the literal string `"Oh! "` (capital O, exclamation, single trailing space) to the text. This provides an audible transition cue — the listener hears the currently-playing chunk end naturally, then `"Oh! <final response>"`. No separate audio asset; the prefix is just words in the TTS stream.
+4. **Stop message is enqueued normally.** The prefixed text goes through the standard voice pipeline (normalisation, voice resolution, render, playback).
+
+### Cross-session isolation
+
+The flush is scoped to the `session_id` supplied in the request. Other sessions' currently-playing audio, queued items, and generation threads are completely unaffected. This is non-negotiable: one session's Stop hook must never silence another session.
+
+### Contrast with explicit `stop`
+
+| Mechanism | Current chunk | Queue | Other sessions |
+|-----------|--------------|-------|----------------|
+| `{"command":"stop"}` | Killed immediately | Fully drained (all sessions) | Also killed |
+| Stop-hook flush (`flush_session=true`) | Finishes naturally | Drained for this session only | Untouched |
+| `{"command":"skip"}` | Killed immediately | Same-message chunks dropped | Untouched |
+
+### Wire signal
+
+The Stop hook sends `flush_session: true` in the speak JSON:
+
+```json
+{
+  "command": "speak",
+  "text": "Here is the final answer.",
+  "session_id": "abc123…",
+  "flush_session": true,
+  "source": "stop"
+}
+```
+
+The daemon handles `flush_session` before enqueueing — the text the TTS engine receives is `"Oh! Here is the final answer."`.
 
 ## Logging
 
