@@ -204,7 +204,7 @@ if [[ "${REPLY:-y}" =~ ^[Yy]?$ ]]; then
             "$PLIST_SRC" > "$PLIST_DEST"
         launchctl bootstrap gui/$(id -u) "$PLIST_DEST"
         ok "launchd agent loaded — TTS starts at login"
-        echo "  Logs: /tmp/wednesday-tts.log  /tmp/wednesday-tts.err"
+        echo "  Logs: ~/Library/Logs/Wednesday/tts/daemon.log  ~/Library/Logs/Wednesday/tts/daemon.err"
     elif [[ "$OS" == MINGW* ]] || [[ "$OS" == CYGWIN* ]] || [[ "$OS" == MSYS* ]]; then
         warn "Windows Task Scheduler setup needs an elevated PowerShell."
         echo "  Open PowerShell as Administrator and run:"

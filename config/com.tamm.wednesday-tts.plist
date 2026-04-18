@@ -22,9 +22,9 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/wednesday-tts.log</string>
+    <string>/Users/tamm/Library/Logs/Wednesday/tts/daemon.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/wednesday-tts.err</string>
+    <string>/Users/tamm/Library/Logs/Wednesday/tts/daemon.err</string>
 </dict>
 </plist>

@@ -124,6 +124,6 @@ instead.
 ### Logs
 
 ```
-/tmp/wednesday-tts.log   stdout
-/tmp/wednesday-tts.err   stderr
+~/Library/Logs/Wednesday/tts/daemon.log   stdout
+~/Library/Logs/Wednesday/tts/daemon.err   stderr
 ```

@@ -109,7 +109,7 @@ position = (x, 0, -1)  // negative z = in front of listener
 
 4. **Verify** — check the daemon log for spatial activation:
    ```bash
-   tail -5 /tmp/wednesday-tts.log
+   tail -5 ~/Library/Logs/Wednesday/tts/daemon.log
    # Should show: [playback] BT headphones detected, uid=<name> — using spatial stream
    # And:         [spatial] [SpatialStream] ready rate=24000.0 pan=...
    ```
