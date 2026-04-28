@@ -18,6 +18,7 @@ Backends that support streaming also implement:
 from .base import TTSBackend
 from .chatterbox import ChatterboxBackend
 from .kokoro import KokoroBackend
+from .moss import MossNanoBackend
 from .pocket import PocketTTSBackend
 from .qwen3 import Qwen3TTSBackend
 from .sam import SAMBackend
@@ -30,6 +31,7 @@ REGISTRY: dict[str, type[TTSBackend]] = {
     "soprano": SopranoBackend,
     "chatterbox": ChatterboxBackend,
     "qwen3": Qwen3TTSBackend,
+    "moss": MossNanoBackend,
 }
 
 __all__ = [
@@ -40,5 +42,6 @@ __all__ = [
     "SopranoBackend",
     "ChatterboxBackend",
     "Qwen3TTSBackend",
+    "MossNanoBackend",
     "REGISTRY",
 ]

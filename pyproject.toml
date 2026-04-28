@@ -33,6 +33,20 @@ qwen3 = [
     "sounddevice",
     "numpy",
 ]
+moss = [
+    "onnxruntime>=1.20",
+    "soundfile",
+    "sentencepiece",
+    "numpy",
+    "sounddevice",
+    # Voice cloning (ref-audio path) needs upstream-pinned torch/torchaudio
+    # (==2.7.0). Install upstream via:
+    #   git clone https://github.com/OpenMOSS/MOSS-TTS-Nano ~/dev/MOSS-TTS-Nano
+    #   uv pip install -r ~/dev/MOSS-TTS-Nano/requirements.txt  # skip pynini/wetext
+    # Built-in presets (Junhao, Ava, Bella, …) work without ref-audio.
+    "torch==2.7.0",
+    "torchaudio==2.7.0",
+]
 test = [
     "pytest>=7",
     "pytest-cov",

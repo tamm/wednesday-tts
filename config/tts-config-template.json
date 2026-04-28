@@ -44,6 +44,19 @@
       "pitch": 64,
       "mouth": 128,
       "throat": 128
+    },
+    "moss": {
+      "_comment": "MOSS-TTS-Nano 100M via ONNX runtime. CPU-only, auto-downloads model on first run. Needs upstream repo: git clone https://github.com/OpenMOSS/MOSS-TTS-Nano ~/dev/MOSS-TTS-Nano",
+      "voice": "Junhao",
+      "prompt_audio_path": null,
+      "model_dir": null,
+      "cpu_threads": 4,
+      "max_new_frames": 375,
+      "voice_clone_max_text_tokens": 75,
+      "speed": 1.0,
+      "seed": 7,
+      "enable_wetext": false,
+      "voice_pool": ["Junhao"]
     }
   }
 }

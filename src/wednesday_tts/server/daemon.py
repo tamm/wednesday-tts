@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import queue
+import random
 import re
 import signal
 import socket
@@ -1952,6 +1953,39 @@ def _process_speak(msg: dict, backend: TTSBackend) -> None:
         _process_speak_locked(msg, backend)
 
 
+_FLUSH_CUES = (
+    "",
+    "Oh!",
+    "Right,",
+    "So,",
+    "Anyway,",
+    "Okay —",
+    "Ah,",
+    "Yeah so,",
+    "Look,",
+    "Actually,",
+)
+_FLUSH_EMPTY_RATE = 0.25  # explicit silent-transition probability
+_last_flush_cue: str | None = None
+
+
+def _pick_flush_cue() -> str:
+    """Random cue, no back-to-back duplicates.
+
+    First, an explicit empty-rate roll: ~25% of the time, no transition cue
+    at all. Otherwise, pick a non-empty cue from the pool, avoiding the
+    immediately previous one.
+    """
+    global _last_flush_cue
+    if random.random() < _FLUSH_EMPTY_RATE:
+        _last_flush_cue = ""
+        return ""
+    candidates = [c for c in _FLUSH_CUES if c and c != _last_flush_cue]
+    cue = random.choice(candidates)
+    _last_flush_cue = cue
+    return cue
+
+
 def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     """Inner body of the speak pipeline. Must be called with _speak_pipeline_lock held."""
     global _msg_id_counter, _current_pan, _barge_in_dropped_once
@@ -1968,9 +2002,11 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     # final response sounds deliberate rather than abrupt.
     if msg.get("flush_session") and msg.get("session_id"):
         _flush_session(msg["session_id"])
-        # Prepend transition cue.  Capital O, exclamation, single trailing
-        # space — no separate audio asset, just words in the speech stream.
-        text = "Oh! " + text
+        # Prepend a transition cue so the jump from a pre-tool chunk to the
+        # final response sounds deliberate rather than abrupt. Random pick
+        # from a small pool, avoiding back-to-back repeats.
+        cue = _pick_flush_cue()
+        text = f"{cue} {text}" if cue else text
         msg = {**msg, "text": text}
 
     # ── Barge-in hold ────────────────────────────────────────────────────

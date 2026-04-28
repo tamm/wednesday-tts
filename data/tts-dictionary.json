@@ -68,12 +68,16 @@
     {
       "pattern": "API",
       "pocket": "Ae pee eye",
-      "qwen3": "API"
+      "qwen3": "API",
+      "kokoro": "ay pee eye",
+      "moss": "ay pee eye"
     },
     {
       "pattern": "APIs",
       "pocket": "Ae pee eyes",
-      "qwen3": "APIs"
+      "qwen3": "APIs",
+      "kokoro": "ay pee eyes",
+      "moss": "ay pee eyes"
     },
     {
       "pattern": "URL",
@@ -638,6 +642,9 @@
     {
       "pattern": "safetensors",
       "pocket": "safe tensors",
+      "kokoro": "safe-tensors",
+      "moss": "safe-tensors",
+      "qwen3": "safe-tensors",
       "case_sensitive": false
     },
     {

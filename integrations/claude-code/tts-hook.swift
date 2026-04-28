@@ -96,6 +96,8 @@ func handleStop(payload: [String: Any], sessionId: String, cwd: String, wallTime
         "normalization": "markdown",
         "voice_hash": computeVoiceHash(cwd: cwd),
         "timestamp": wallTime,
+        "flush_session": true,
+        "source": "stop",
     ]
     if !sessionId.isEmpty {
         msg["session_id"] = sessionId
@@ -112,7 +114,15 @@ func handleStop(payload: [String: Any], sessionId: String, cwd: String, wallTime
 
 func handlePreTool(payload: [String: Any], sessionId: String, cwd: String, wallTime: Double) {
     let transcript = payload["transcript_path"] as? String
-    let texts = unsentAssistantTexts(transcript)
+
+    // Transcript may not be flushed yet when PreToolUse fires.
+    // Poll briefly before giving up — matches pre-tool-speak.py.
+    var texts: [String] = []
+    for _ in 0..<6 {
+        texts = unsentAssistantTexts(transcript)
+        if !texts.isEmpty { break }
+        Thread.sleep(forTimeInterval: 0.15)
+    }
     if texts.isEmpty { return }
 
     var combined = texts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -125,6 +135,7 @@ func handlePreTool(payload: [String: Any], sessionId: String, cwd: String, wallT
         "normalization": "markdown",
         "session_id": sessionId.isEmpty ? "unknown" : sessionId,
         "timestamp": wallTime,
+        "source": "pre-tool",
     ]
     if !cwd.isEmpty {
         msg["voice_hash"] = computeVoiceHash(cwd: cwd)
@@ -222,7 +233,6 @@ func transcriptIsTeammate(_ path: String?) -> Bool {
               let obj = try? JSONSerialization.jsonObject(with: ld) as? [String: Any] else { continue }
         if let tn = obj["teamName"] as? String, !tn.isEmpty { return true }
         if let an = obj["agentName"] as? String, !an.isEmpty { return true }
-        if obj["teamName"] != nil || obj["agentName"] != nil { return true }
     }
     return false
 }

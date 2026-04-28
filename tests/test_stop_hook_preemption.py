@@ -6,7 +6,8 @@ must:
 1. Let the currently-playing audio chunk finish naturally (no _skip_gen truncation).
 2. Drain all queued chunks from the same session.
 3. Leave other sessions' playback and queue completely untouched.
-4. Prepend "Oh! " to the Stop-hook message text.
+4. Optionally prepend a flush cue ("Oh!", "Okay —", "Right,", …) to the Stop-hook
+   message text — picked from a pool by `_pick_flush_cue`, sometimes empty.
 
 These tests operate directly on daemon module globals and helper functions —
 no real audio hardware is exercised.
@@ -253,30 +254,29 @@ class TestFlushSessionCrossSessionIsolation:
 
 
 # ---------------------------------------------------------------------------
-# "Oh! " prefix is prepended by _process_speak_locked
+# Flush-cue prefix is prepended by _process_speak_locked
 # ---------------------------------------------------------------------------
 
 
-class TestOhPrefixPrepended:
-    """When flush_session=True, _process_speak_locked must prepend 'Oh! ' to text."""
+class TestFlushCuePrepended:
+    """When flush_session=True, _process_speak_locked may prepend a flush cue."""
 
     def setup_method(self):
         d = _get_daemon()
         _reset_daemon_state(d)
 
-    def test_oh_prefix_prepended_to_stop_hook_text(self):
-        """The TTS engine must receive text starting with 'Oh! '."""
+    def test_flush_cue_prepended_to_stop_hook_text(self):
+        """The TTS engine must receive text starting with one of the flush cues."""
         d = _get_daemon()
         session_id = "sess-oh-1"
         received_texts: list[str] = []
 
-        # Build a mock backend that records what text it receives
         mock_backend = MagicMock()
         mock_backend.supports_streaming = False
 
         def _capture_generate(text, **kwargs):
             received_texts.append(text)
-            return None  # simulate no audio (dedup / empty)
+            return None
 
         mock_backend.generate.side_effect = _capture_generate
 
@@ -288,7 +288,6 @@ class TestOhPrefixPrepended:
             "source": "stop",
         }
 
-        # Patch the expensive bits so we don't need a model loaded
         with (
             patch.object(d, "_flush_session"),
             patch.object(d, "_is_barge_in_fresh", return_value=False),
@@ -300,19 +299,18 @@ class TestOhPrefixPrepended:
             ),
             patch.object(d, "_split_voice_segments", side_effect=lambda t: [(None, None, t)]),
             patch.object(d, "run_normalize", side_effect=lambda t, **kw: t),
+            patch.object(d, "_pick_flush_cue", return_value="Oh!"),
             patch.object(d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}),
         ):
             with d._speak_pipeline_lock:
                 d._process_speak_locked(msg, mock_backend)
 
-        # The text passed into _split_voice_segments (and then _render_segments)
-        # should start with "Oh! "
         assert any(t.startswith("Oh! ") for t in received_texts), (
-            f"Expected text starting with 'Oh! ', got: {received_texts!r}"
+            f"Expected text starting with 'Oh! ' (cue patched), got: {received_texts!r}"
         )
 
-    def test_oh_prefix_literal_value(self):
-        """The prefix must be exactly 'Oh! ' — capital O, exclamation, single space."""
+    def test_flush_cue_literal_value(self):
+        """With cue patched, prefix must be exactly '<cue> ' — single space delimiter."""
         d = _get_daemon()
         session_id = "sess-oh-2"
         split_calls: list[str] = []
@@ -328,21 +326,55 @@ class TestOhPrefixPrepended:
         with (
             patch.object(d, "_flush_session"),
             patch.object(d, "_is_barge_in_fresh", return_value=False),
-            patch.object(d, "_dedup_check", return_value=True),  # early-exit after we capture text
+            patch.object(d, "_dedup_check", return_value=True),
             patch.object(
                 d,
                 "_split_voice_segments",
                 side_effect=lambda t: (split_calls.append(t), [(None, None, t)])[1],
             ),
             patch.object(d, "run_normalize", side_effect=lambda t, **kw: t),
+            patch.object(d, "_pick_flush_cue", return_value="Okay —"),
             patch.object(d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}),
         ):
             with d._speak_pipeline_lock:
                 d._process_speak_locked(msg, MagicMock())
 
         assert split_calls, "Expected _split_voice_segments to be called"
-        assert split_calls[0] == "Oh! Done.", (
-            f"Expected 'Oh! Done.', got: {split_calls[0]!r}"
+        assert split_calls[0] == "Okay — Done.", (
+            f"Expected 'Okay — Done.', got: {split_calls[0]!r}"
+        )
+
+    def test_empty_cue_means_no_prefix(self):
+        """When _pick_flush_cue returns '', the text is passed through unchanged."""
+        d = _get_daemon()
+        split_calls: list[str] = []
+
+        msg = {
+            "command": "speak",
+            "text": "Done.",
+            "session_id": "sess-oh-3",
+            "flush_session": True,
+            "source": "stop",
+        }
+
+        with (
+            patch.object(d, "_flush_session"),
+            patch.object(d, "_is_barge_in_fresh", return_value=False),
+            patch.object(d, "_dedup_check", return_value=True),
+            patch.object(
+                d,
+                "_split_voice_segments",
+                side_effect=lambda t: (split_calls.append(t), [(None, None, t)])[1],
+            ),
+            patch.object(d, "run_normalize", side_effect=lambda t, **kw: t),
+            patch.object(d, "_pick_flush_cue", return_value=""),
+            patch.object(d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}),
+        ):
+            with d._speak_pipeline_lock:
+                d._process_speak_locked(msg, MagicMock())
+
+        assert split_calls == ["Done."], (
+            f"Expected unchanged 'Done.', got: {split_calls!r}"
         )
 
     def test_no_prefix_without_flush_session(self):
