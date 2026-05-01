@@ -119,4 +119,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"wednesday-tts speak-response: unhandled error: {exc}", file=sys.stderr)
+        sys.exit(0)

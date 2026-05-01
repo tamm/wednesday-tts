@@ -67,13 +67,34 @@ def _send_to_tts(text: str, pan: float) -> bool:
 
 def _extract_message(payload: dict) -> str | None:
     event_type = payload.get("type")
-    if event_type not in {"agent-turn-complete", "turn-complete"}:
+    if event_type in {"agent-turn-complete", "turn-complete"}:
+        message = payload.get("last-assistant-message") or payload.get("last_assistant_message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+
+    # Newer Codex notify payloads resemble the opencode event surface:
+    # `session.idle` with the final assistant message nested under data.message.
+    if event_type != "session.idle":
         return None
 
-    message = payload.get("last-assistant-message") or payload.get("last_assistant_message")
-    if not isinstance(message, str) or not message.strip():
+    message = payload.get("data", {}).get("message")
+    if not isinstance(message, dict):
         return None
-    return message.strip()
+
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+
+    return None
 
 
 def main() -> int:

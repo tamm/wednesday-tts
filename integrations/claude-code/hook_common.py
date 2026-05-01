@@ -27,6 +27,28 @@ def is_muted() -> bool:
     return os.path.exists(MUTE_PATH) or bool(os.environ.get("TTS_MUTE"))
 
 
+def _log_subagent_decision(payload: dict, result: bool, reason: str) -> None:
+    """Log is_subagent() decision to debug log so we can trace teammate false-negatives."""
+    try:
+        log_path = os.path.join(_TEMP, "wednesday-tts-hook-debug.log")
+        line = json.dumps({
+            "t": time.time(),
+            "hook": "is_subagent",
+            "result": result,
+            "reason": reason,
+            "session_id": payload.get("session_id"),
+            "agent_id": payload.get("agent_id"),
+            "agent_type": payload.get("agent_type"),
+            "team_name": payload.get("team_name"),
+            "teammate_name": payload.get("teammate_name"),
+            "transcript_path": payload.get("transcript_path"),
+        }) + "\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 def is_subagent(payload: dict) -> bool:
     """True if the Claude Code payload indicates a sub-agent or teammate turn.
 
@@ -58,12 +80,25 @@ def is_subagent(payload: dict) -> bool:
         or payload.get("team_name")
         or payload.get("teammate_name")
     ):
+        _log_subagent_decision(payload, True, "payload_fields")
         return True
-    if _transcript_is_teammate(payload.get("transcript_path")):
+    # Courier-team sentinel: courier-team-detect.sh (SessionStart) drops this
+    # file if the session's kickoff prompt carried a `Courier-team:` tag.
+    # Tamm can unmute a specific teammate by removing the sentinel.
+    session_id = payload.get("session_id")
+    if session_id and os.path.exists(f"/tmp/courier-teammate-{session_id}"):
+        _log_subagent_decision(payload, True, "courier_sentinel")
         return True
+    # Check registry first — populated at team creation, reliable even on first tool call
     session_id = payload.get("session_id")
     if session_id and _session_is_non_lead_teammate(session_id):
+        _log_subagent_decision(payload, True, "session_registry")
         return True
+    # Transcript check last — may be empty on first tool call of a new teammate session
+    if _transcript_is_teammate(payload.get("transcript_path")):
+        _log_subagent_decision(payload, True, "transcript")
+        return True
+    _log_subagent_decision(payload, False, "not_subagent")
     return False
 
 
