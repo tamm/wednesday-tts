@@ -56,6 +56,10 @@ class KokoroBackend(TTSBackend):
 
         use_speed = speed if speed is not None else self._speed
         use_voice = voice or self._voice
+        # Voice may arrive as a pool-entry dict {"name": ..., "voice": "af_heart"}.
+        # Kokoro's KPipeline only accepts the string ID.
+        if isinstance(use_voice, dict):
+            use_voice = use_voice.get("voice") or self._voice
 
         t0 = time.time()
         chunks: list[np.ndarray] = []
