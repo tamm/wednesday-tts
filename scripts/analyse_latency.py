@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """Parse ~/Library/Logs/Wednesday/tts/daemon.log and emit TTS latency tables.
 
-Tracks each msg_id from request acceptance → first synth output → playback start.
+Tracks each msg_id from hook fire → daemon accept → synth done → playback
+start, then renders a markdown table per backend covering the full pipeline.
 
-Per-utterance columns (deltas in seconds, all relative to req_accept):
-    req_accept       — when the daemon picked up the request (`[req] msg_id=N ... latency=Xs`)
-    synth_done_dt    — `[moss]` / `[qwen3]` / `[stream*]` "generated Xs audio in Ys" emit time
-    playback_dt      — first `[spatial] ready` after the req
-    audio_s          — duration of synthesised audio
-    rtf              — synth elapsed / audio_s (extracted from the moss/qwen3 line, else computed)
-    backend          — moss | qwen3 | pocket | sam | other
-    voice            — voice or preset name
-    chars            — request char count
-    source           — pre-tool | stop | user | etc.
+Stages tracked per utterance (all in seconds):
+    hook_to_daemon   — hook timestamp → daemon picked up request
+                       (the daemon's `latency=Xs` field, which is wall(req) − wall(hook))
+    synth_dt         — req accept → "generated Xs audio in Ys" line
+    synth_elapsed    — backend's own reported synth time
+    play_dt          — req accept → first `[spatial] ready` / portaudio open
+    total_to_play    — hook_to_daemon + play_dt (HEADLINE: hook fire → audio out)
+    audio_s          — duration of generated audio
+    rtf              — synth_elapsed / audio_s (lower = faster than realtime)
 
-Summary table: count / mean / p50 / p90 / p99 / max for each delta column,
-broken down by backend.
+Summary tables (markdown) per backend: mean / p50 / p90 / p99 / max for
+every metric, plus a "last N per backend" detail table.
 
 Usage:
     uv run python scripts/analyse_latency.py [--log PATH] [--since HH:MM]
                                              [--last N] [--backend BACKEND]
+                                             [--no-detail]
 """
 
 from __future__ import annotations
@@ -173,74 +174,137 @@ def percentile(values: list[float], p: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
-def render_per_utt(utts: list[Utt]) -> str:
-    out = []
-    out.append(
-        f"{'msg':>4} {'backend':<8} {'voice':<18} {'src':<10} {'chars':>5}  "
-        f"{'req_lat':>7} {'synth_dt':>8} {'audio':>6} {'rtf':>5} {'play_dt':>7}"
-    )
-    out.append("-" * 92)
+def _synth_dt(u: Utt) -> float | None:
+    return t_delta_s(u.req_ts, u.synth_done_ts) if u.synth_done_ts else None
+
+
+def _play_dt(u: Utt) -> float | None:
+    return t_delta_s(u.req_ts, u.playback_ts) if u.playback_ts else None
+
+
+def _total_to_play(u: Utt) -> float | None:
+    p = _play_dt(u)
+    return None if p is None else u.req_latency + p
+
+
+METRICS: list[tuple[str, callable]] = [
+    ("hook_to_daemon", lambda u: u.req_latency),
+    ("synth_dt",       _synth_dt),
+    ("synth_elapsed",  lambda u: u.synth_elapsed),
+    ("play_dt",        _play_dt),
+    ("total_to_play",  _total_to_play),
+    ("audio_s",        lambda u: u.audio_s),
+    ("rtf",            lambda u: u.rtf),
+]
+
+
+def _md_row(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def render_per_utt(utts: list[Utt], per_backend_last: int | None) -> str:
+    """Markdown detail table; if per_backend_last is set, show last N per backend."""
+    if per_backend_last:
+        by_backend: dict[str, list[Utt]] = {}
+        for u in utts:
+            by_backend.setdefault(u.backend, []).append(u)
+        rows: list[Utt] = []
+        for backend in sorted(by_backend):
+            rows.extend(by_backend[backend][-per_backend_last:])
+        utts = rows
+
+    headers = [
+        "msg", "backend", "voice", "src", "chars",
+        "hook→daemon", "synth_dt", "play_dt", "total→play",
+        "audio_s", "rtf",
+    ]
+    out = [_md_row(headers), _md_row(["---"] * len(headers))]
     for u in utts:
-        synth_dt = (
-            t_delta_s(u.req_ts, u.synth_done_ts) if u.synth_done_ts else None
-        )
-        play_dt = t_delta_s(u.req_ts, u.playback_ts) if u.playback_ts else None
-        out.append(
-            f"{u.msg_id:>4} {u.backend:<8} {voice_short(u.voice):<18} {u.source[:10]:<10} "
-            f"{u.chars:>5}  {u.req_latency:>7.2f} "
-            f"{fmt_delta(synth_dt)} {fmt_delta(u.audio_s):>6} {fmt_rtf(u.rtf)} "
-            f"{fmt_delta(play_dt):>7}"
-        )
+        out.append(_md_row([
+            str(u.msg_id),
+            u.backend,
+            voice_short(u.voice),
+            u.source[:12],
+            str(u.chars),
+            f"{u.req_latency:.2f}s",
+            fmt_delta(_synth_dt(u)).strip() + "s" if _synth_dt(u) is not None else "—",
+            fmt_delta(_play_dt(u)).strip() + "s" if _play_dt(u) is not None else "—",
+            fmt_delta(_total_to_play(u)).strip() + "s" if _total_to_play(u) is not None else "—",
+            f"{u.audio_s:.2f}s" if u.audio_s is not None else "—",
+            f"{u.rtf:.2f}" if u.rtf is not None else "—",
+        ]))
     return "\n".join(out)
 
 
 def render_summary(utts: list[Utt]) -> str:
+    """Sequential pipeline table: backend on the left, stages flowing
+    left-to-right (hook fire → daemon accept → synth done → playback start).
+    One row per backend × stat (mean/p50/p90/p99/max).
+    """
     by_backend: dict[str, list[Utt]] = {}
     for u in utts:
         by_backend.setdefault(u.backend, []).append(u)
 
-    lines = []
-    lines.append(
-        f"{'backend':<10} {'n':>4}  "
-        f"{'metric':<14} {'mean':>7} {'p50':>7} {'p90':>7} {'p99':>7} {'max':>7}"
-    )
-    lines.append("-" * 75)
-    metrics = [
-        ("req_latency", lambda u: u.req_latency),
-        ("synth_dt", lambda u: t_delta_s(u.req_ts, u.synth_done_ts) if u.synth_done_ts else None),
-        ("synth_elapsed", lambda u: u.synth_elapsed),
-        ("audio_s", lambda u: u.audio_s),
-        ("rtf", lambda u: u.rtf),
-        ("play_dt", lambda u: t_delta_s(u.req_ts, u.playback_ts) if u.playback_ts else None),
+    stages = [
+        ("hook→daemon",      lambda u: u.req_latency),
+        ("→synth_done",      _synth_dt),
+        ("→playback",        _play_dt),
+        ("hook→playback",    _total_to_play),
     ]
-    for backend in sorted(by_backend):
+    extras = [
+        ("synth_elapsed",    lambda u: u.synth_elapsed),
+        ("audio_s",          lambda u: u.audio_s),
+        ("rtf",              lambda u: u.rtf),
+    ]
+    stat_labels = ["mean", "p50", "p90", "p99", "max"]
+
+    def _stats(vals: list[float]) -> list[float | None]:
+        if not vals:
+            return [None] * 5
+        return [
+            statistics.fmean(vals),
+            percentile(vals, 0.50),
+            percentile(vals, 0.90),
+            percentile(vals, 0.99),
+            max(vals),
+        ]
+
+    def _fmt(v: float | None, unit: str) -> str:
+        return "—" if v is None else f"{v:.2f}{unit}"
+
+    headers = ["stat", "backend", "n"] + [s[0] for s in stages] + [e[0] for e in extras]
+    out: list[str] = [_md_row(headers), _md_row(["---"] * len(headers))]
+
+    backends = sorted(by_backend)
+    # Pre-compute every metric's stats per backend
+    per_backend_stats: dict[str, dict[str, list[float | None]]] = {}
+    for backend in backends:
         group = by_backend[backend]
-        n = len(group)
-        first_metric = True
-        for label, fn in metrics:
-            vals = [v for v in (fn(u) for u in group) if v is not None]
-            if not vals:
-                continue
-            row = f"{backend if first_metric else '':<10} {n if first_metric else '':>4}  "
-            row += f"{label:<14} "
-            row += (
-                f"{statistics.fmean(vals):>7.2f} "
-                f"{percentile(vals, 0.50):>7.2f} "
-                f"{percentile(vals, 0.90):>7.2f} "
-                f"{percentile(vals, 0.99):>7.2f} "
-                f"{max(vals):>7.2f}"
-            )
-            lines.append(row)
-            first_metric = False
-        lines.append("")
-    return "\n".join(lines)
+        d: dict[str, list[float | None]] = {}
+        for label, fn in stages + extras:
+            vs = [v for v in (fn(u) for u in group) if v is not None]
+            d[label] = _stats(vs)
+        per_backend_stats[backend] = d
+
+    for i, stat in enumerate(stat_labels):
+        for j, backend in enumerate(backends):
+            n = len(by_backend[backend])
+            row = [stat if j == 0 else "", backend, str(n)]
+            for label, _ in stages:
+                row.append(_fmt(per_backend_stats[backend][label][i], "s"))
+            for label, _ in extras:
+                unit = "" if label == "rtf" else "s"
+                row.append(_fmt(per_backend_stats[backend][label][i], unit))
+            out.append(_md_row(row))
+
+    return "\n".join(out)
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--log", type=Path, default=DEFAULT_LOG)
     p.add_argument("--since", help="HH:MM, filter to log entries from this time of day")
-    p.add_argument("--last", type=int, help="Only consider the last N utterances")
+    p.add_argument("--last", type=int, default=5, help="Show last N utterances per backend in the detail table (default 5)")
     p.add_argument("--backend", help="Filter to a specific backend (moss, qwen3, pocket, ...)")
     p.add_argument("--no-detail", action="store_true", help="Skip per-utterance table")
     args = p.parse_args(argv)
@@ -259,16 +323,16 @@ def main(argv: list[str] | None = None) -> int:
     utts = parse_log(lines, since=since)
     if args.backend:
         utts = [u for u in utts if u.backend == args.backend]
-    if args.last:
-        utts = utts[-args.last :]
 
     if not utts:
         print("no utterances found")
         return 0
 
     if not args.no_detail:
-        print(render_per_utt(utts))
+        print(f"### Last {args.last} per backend\n")
+        print(render_per_utt(utts, per_backend_last=args.last))
         print()
+    print("### Summary")
     print(render_summary(utts))
     return 0
 
