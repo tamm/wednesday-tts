@@ -94,8 +94,10 @@ class PocketTTSBackend(TTSBackend):
             raise RuntimeError("PocketTTSBackend not loaded — call load() first")
 
         use_speed = speed if speed is not None else self._speed
+        use_voice = voice or self._voice_name
         voice_state = self._get_voice_state(voice) if voice else self._voice_state
 
+        t0 = time.monotonic()
         with self._lock:
             audio = self._model.generate_audio(voice_state, text)
 
@@ -107,6 +109,15 @@ class PocketTTSBackend(TTSBackend):
 
         if abs(use_speed - 1.0) > 0.01:
             arr = soundstretch_tempo(arr, self.sample_rate, use_speed)
+
+        elapsed = time.monotonic() - t0
+        duration = arr.size / self.sample_rate if self.sample_rate else 0.0
+        rtf = f"{elapsed / duration:.2f}" if duration > 0 else "n/a"
+        print(
+            f"[pocket] generated {duration:.1f}s audio in {elapsed:.1f}s "
+            f"(RTF {rtf}, voice={use_voice})",
+            flush=True,
+        )
         return arr
 
     def generate_streaming(
@@ -136,6 +147,7 @@ class PocketTTSBackend(TTSBackend):
             raise RuntimeError("PocketTTSBackend not loaded — call load() first")
 
         use_speed = speed if speed is not None else self._speed
+        use_voice = voice or self._voice_name
         needs_speed = abs(use_speed - 1.0) > 0.01
         _FIRST_CHUNK_TIMEOUT = 8.0  # bail if no audio within 8s (model wedged)
         voice_state = self._get_voice_state(voice) if voice else self._voice_state
@@ -150,6 +162,7 @@ class PocketTTSBackend(TTSBackend):
                     stop_check,
                     _FIRST_CHUNK_TIMEOUT,
                     voice_state=voice_state,
+                    voice_name=use_voice,
                     msg_id=msg_id,
                 )
             # speed ~= 1.0: queue raw chunks directly, no soundstretch
@@ -159,6 +172,7 @@ class PocketTTSBackend(TTSBackend):
                 stop_check,
                 _FIRST_CHUNK_TIMEOUT,
                 voice_state=voice_state,
+                voice_name=use_voice,
                 msg_id=msg_id,
             )
 
@@ -195,8 +209,11 @@ class PocketTTSBackend(TTSBackend):
 
         gen_elapsed = time.monotonic() - gen_start
         total_samples = sum(c.size for c in chunks)
+        duration = total_samples / self.sample_rate if self.sample_rate else 0.0
+        rtf = f"{gen_elapsed / duration:.2f}" if duration > 0 else "n/a"
         print(
-            f"[stream] {len(chunks)} chunks, {total_samples / self.sample_rate:.1f}s audio in {gen_elapsed:.1f}s",
+            f"[pocket-stream] {len(chunks)} chunks, generated {duration:.1f}s audio in {gen_elapsed:.1f}s "
+            f"(RTF {rtf}, voice={use_voice})",
             flush=True,
         )
 
@@ -212,6 +229,7 @@ class PocketTTSBackend(TTSBackend):
         stop_check,
         first_chunk_timeout: float,
         voice_state=None,
+        voice_name: str = "",
         msg_id: int = -1,
     ) -> None:
         """Stream model chunks directly into playback_queue (no soundstretch)."""
@@ -219,6 +237,7 @@ class PocketTTSBackend(TTSBackend):
         total_samples = 0
         n_chunks = 0
         vs = voice_state or self._voice_state
+        use_voice = voice_name or self._voice_name
 
         with self._lock:
             for audio_chunk in self._model.generate_audio_stream(
@@ -230,7 +249,7 @@ class PocketTTSBackend(TTSBackend):
                     break
                 if n_chunks == 0 and time.monotonic() - gen_start > first_chunk_timeout:
                     print(
-                        f"[stream-direct] first-chunk timeout ({first_chunk_timeout}s) — model may be wedged",
+                        f"[pocket-stream-direct] first-chunk timeout ({first_chunk_timeout}s) — model may be wedged",
                         flush=True,
                     )
                     break
@@ -246,8 +265,11 @@ class PocketTTSBackend(TTSBackend):
                     n_chunks += 1
 
         gen_elapsed = time.monotonic() - gen_start
+        duration = total_samples / self.sample_rate if self.sample_rate else 0.0
+        rtf = f"{gen_elapsed / duration:.2f}" if duration > 0 else "n/a"
         print(
-            f"[stream-direct] {n_chunks} chunks, {total_samples / self.sample_rate:.1f}s audio in {gen_elapsed:.1f}s",
+            f"[pocket-stream-direct] {n_chunks} chunks, generated {duration:.1f}s audio in {gen_elapsed:.1f}s "
+            f"(RTF {rtf}, voice={use_voice})",
             flush=True,
         )
         return None
@@ -260,6 +282,7 @@ class PocketTTSBackend(TTSBackend):
         stop_check,
         first_chunk_timeout: float,
         voice_state=None,
+        voice_name: str = "",
         msg_id: int = -1,
     ) -> None:
         """Stream model output through soundstretch pipe, queue stretched chunks.
@@ -273,11 +296,12 @@ class PocketTTSBackend(TTSBackend):
         """
         ss = shutil.which("soundstretch")
         if not ss:
-            print("[stream-pipe] soundstretch not found, falling back to batch", flush=True)
+            print("[pocket-stream-pipe] soundstretch not found, falling back to batch", flush=True)
             return self.generate_streaming(
                 text, speed, playback_queue=None, stop_check=stop_check, voice_state=voice_state
             )
 
+        use_voice = voice_name or self._voice_name
         tempo_pct = (speed - 1.0) * 100
         proc = subprocess.Popen(
             [ss, "stdin", "stdout", f"-tempo={tempo_pct:+.0f}", "-speech"],
@@ -338,7 +362,7 @@ class PocketTTSBackend(TTSBackend):
                         _first = False
                         playback_queue.put((samples, sub, msg_id))
             except Exception as exc:
-                print(f"[stream-pipe] reader error: {exc}", flush=True)
+                print(f"[pocket-stream-pipe] reader error: {exc}", flush=True)
             finally:
                 reader_done.set()
 
@@ -363,7 +387,7 @@ class PocketTTSBackend(TTSBackend):
                         break
                     if n_chunks == 0 and time.monotonic() - gen_start > first_chunk_timeout:
                         print(
-                            f"[stream-pipe] first-chunk timeout ({first_chunk_timeout}s) — model may be wedged",
+                            f"[pocket-stream-pipe] first-chunk timeout ({first_chunk_timeout}s) — model may be wedged",
                             flush=True,
                         )
                         break
@@ -383,13 +407,13 @@ class PocketTTSBackend(TTSBackend):
                         proc.stdin.write(pcm.tobytes())
                         proc.stdin.flush()
                     except BrokenPipeError:
-                        print("[stream-pipe] soundstretch pipe broke", flush=True)
+                        print("[pocket-stream-pipe] soundstretch pipe broke", flush=True)
                         break
                     total_samples += arr.size
                     n_chunks += 1
 
         except Exception as exc:
-            print(f"[stream-pipe] writer error: {exc}", flush=True)
+            print(f"[pocket-stream-pipe] writer error: {exc}", flush=True)
         finally:
             try:
                 proc.stdin.close()
@@ -397,8 +421,11 @@ class PocketTTSBackend(TTSBackend):
                 pass
 
         gen_elapsed = time.monotonic() - gen_start
+        duration = total_samples / sr if sr else 0.0
+        rtf = f"{gen_elapsed / duration:.2f}" if duration > 0 else "n/a"
         print(
-            f"[stream-pipe] generated {total_samples / sr:.1f}s audio in {gen_elapsed:.1f}s, waiting for stretch",
+            f"[pocket-stream-pipe] {n_chunks} chunks, generated {duration:.1f}s audio in {gen_elapsed:.1f}s "
+            f"(RTF {rtf}, voice={use_voice}, waiting for stretch)",
             flush=True,
         )
 

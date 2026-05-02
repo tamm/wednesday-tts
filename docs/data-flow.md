@@ -1,69 +1,104 @@
 # TTS Data Flow
 
-Full path from user interaction to audio output.
+This document follows the current primary path: Claude Code hooks talking to
+the macOS Unix-socket daemon.
 
-## User submits a prompt
+## Stop Hook Flow
 
-- `UserPromptSubmit` hook fires
-  - `stop-tts.sh` runs — sends `STOP` to daemon socket to kill any in-progress audio
+1. `integrations/claude-code/speak-response.py` receives the Claude payload.
+2. It exits early if muted or if the payload belongs to a sub-agent / teammate.
+3. It reads `last_assistant_message`, falling back to the transcript when
+   needed.
+4. It sends:
 
-## Claude writes text before a tool call
+```json
+{
+  "command": "speak",
+  "text": "...",
+  "normalization": "markdown",
+  "voice_hash": "........",
+  "session_id": "...",
+  "timestamp": 123.456,
+  "source": "stop",
+  "flush_session": true
+}
+```
 
-- `PreToolUse` hook fires (`pre-tool-speak.py`)
-  - Reads transcript JSONL from disk
-  - Finds assistant text blocks since last user message
-  - Dedup check via `/tmp/tts-spoken-<session_id>` hashes
-  - Sends unclaimed text to daemon: `SEQ:0:1.0:markdown::<text>\n` over Unix socket
-  - Daemon receives on accept loop, spawns `handle_client` thread
-    - Parses SEQ fields: seq_num, speed, content_type, timestamp, text
-    - Runs `run_normalize()` (markdown → spoken text)
-    - Checks `use_streaming` — True when SEQ==0, no mixed voices, backend supports it
-    - **Streaming path**: spawns `_stream_to_queue` thread
-      - Calls `backend.stream_chunks(text, speed)`
-        - Holds `self._lock` for entire generation
-        - Calls `self._model.generate_audio_stream()` — yields raw numpy chunks
-        - Each chunk runs through `soundstretch_tempo()` subprocess (per-chunk — known problem)
-        - Yields float32 arrays
-      - Each chunk → `playback_queue.put(chunk)`
-      - `first_chunk_event.set()` on first chunk
-    - Main handler waits up to 8s for `first_chunk_event`
-      - If timeout: falls back to batch render via `_render_segments()`
-      - If success: advances `_next_seq`, sends `ok` back to hook
-    - **Batch fallback path**: `_render_segments()` → `backend.generate()` → single `soundstretch_tempo()` call → `playback_queue.put(audio)`
-  - `playback_worker` thread (always running):
-    - `playback_queue.get()` — blocks until chunk available
-    - `_try_play(item, sample_rate)`
-      - `get_default_output_device()` — calls `sd._terminate()` / `sd._initialize()` to rescan PortAudio
-      - `sd.play(item, samplerate, device)`
-      - Polls `sd.get_stream().active` every 50ms until done or 5s watchdog
-    - Picks up next chunk from queue
+5. `daemon.py` acks immediately, then processes the request.
 
-## Claude finishes its turn
+## Pre-Tool Flow
 
-- `Stop` hook fires (`speak-response.py`)
-  - Reads `last_assistant_message` from hook payload (or transcript fallback)
-  - Dedup check via same `/tmp/tts-spoken-<session_id>` hashes
-  - Same send path: `SEQ:0:1.0:markdown:<wall_time>:<text>\n` to daemon socket
-  - Same daemon handling as above
+1. `integrations/claude-code/pre-tool-speak.py` receives the Claude payload.
+2. It exits early if muted or not the primary session.
+3. It reads assistant text blocks after the latest user message from the
+   transcript.
+4. It concatenates and truncates them when necessary.
+5. It sends a `speak` JSON message with `source: "pre-tool"`.
 
-## User cancels audio (Ctrl+Option+X)
+Unlike older versions, this hook does not maintain its own per-session spoken
+hash file. Dedup is now handled server-side in the daemon.
 
-- Hammerspoon hotkey runs `stop-tts.sh`
-  - Sends `STOP` to daemon socket
-  - Daemon: `_stop_playback()`
-    - `sd.stop()` — kills current PortAudio playback
-    - `backend.abort_stream()` — sets `_active_stream = None`
-    - Drains `playback_queue`
-    - Increments `_stop_gen` — in-flight streaming threads see mismatch and bail
+## Daemon Speak Pipeline
 
-## Background threads in daemon
+Once the daemon receives `{"command":"speak", ...}`:
 
-- `_audio_health_worker` — every 30s opens/closes a test OutputStream to probe PortAudio. KNOWN HAZARD: `CloseStream` can hang in CoreAudio, blocking signal handling and freezing the accept loop.
-- `_hung_request_watchdog` — every 10s checks if requests have been in-flight > 120s, exits for launchd restart.
+1. It optionally flushes older queued audio for the same session when
+   `flush_session` is set.
+2. It checks barge-in hold state.
+3. It assigns a new `msg_id`.
+4. It resolves the request voice from `session_id`, `voice_hash`, and config.
+5. It parses guillemet tags into segments.
+6. It normalizes segment text unless `pre-normalized`.
+7. It dedups recently spoken text.
+8. It chooses render mode:
+   - direct-play streaming
+   - queue streaming
+   - batch / multi-segment
+9. It logs the request and downstream synth/playback markers.
 
-## Known issues (6 Mar 2026)
+## Barge-In Flow
 
-1. `_audio_health_worker` deadlocked the daemon — `CloseStream` hung inside CoreAudio, froze the main accept loop via signal handling.
-2. `stream_chunks()` calls `soundstretch_tempo()` per chunk — subprocess per chunk causes audible gaps between segments.
-3. `_try_play()` calls `get_default_output_device()` which does `sd._terminate()`/`sd._initialize()` on EVERY chunk — PortAudio reinit between chunks adds latency.
-4. `stream_chunks()` holds `self._lock` for the entire generation — STOP can't start a new request until generation finishes.
+When `/tmp/wednesday-yarn-barge-in` is fresh:
+
+1. The daemon holds new `speak` requests in `_barge_in_pending`.
+2. The first held request of the cycle skips the currently playing message.
+3. The barge-in worker polls for the flag to clear.
+4. Once clear, held requests replay in arrival order.
+5. If a full `stop` happens first, held requests are cleared instead.
+
+## Auxiliary Commands
+
+### `stop`
+
+- sent by `scripts/stop-tts.sh`
+- drains queue and clears held barge-in requests
+
+### `skip`
+
+- also available via `scripts/stop-tts.sh skip`
+- drops the current message and its remaining queued chunks
+
+### `chirp`
+
+- plays the configured voice-command acknowledgement chime
+- bypasses normalization, voice selection, and the TTS render pipeline
+
+### `normalize`
+
+- returns normalized text without playback
+
+### `stats`
+
+- returns daemon summary telemetry as JSON
+
+## Analytics Flow
+
+The log parser at `scripts/analyse_latency.py` is the supported analytics path.
+
+It correlates:
+
+- hook-to-daemon latency from `[req]`
+- synth completion from backend log lines
+- playback start from `[playback]`, `[spatial]`, or backend-specific first-audio
+
+If a backend changes its log markers, update this script in the same change.

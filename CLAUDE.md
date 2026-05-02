@@ -51,6 +51,22 @@ Do NOT push if either fails. Do NOT bypass with `--no-verify`. Do NOT stub or sk
 
 `docs/normalization/rule-*.md` — each has an Examples table. Use these as test case sources.
 
+## Analytics — one script, do not reinvent
+
+`scripts/analyse_latency.py` is the **single** analytics tool for TTS pipeline timings. It parses `/tmp/wednesday-tts.log` and produces a per-backend comparison table covering every stage we measure: `hook→daemon`, `→synth_done`, `→playback`, `hook→playback`, `TTFS`, `synth_elapsed`, `audio_s`, `RTF`.
+
+Backends recognised: `pocket`, `vibevoice`, `kokoro`, `qwen3`, `moss`, `sam`, `chatterbox`, `soprano` (plus legacy `[stream*]` lines from older pocket builds).
+
+**Do not create a new analytics script.** If a backend or stage isn't being captured, extend `analyse_latency.py` — add a regex, wire it into `parse_log`, surface it in `render_summary`. Do not spawn `tts_rtf_stats.py`, `tts_metrics.py`, or any sibling. One script, one source of truth.
+
+Usage:
+
+```bash
+uv run python scripts/analyse_latency.py            # full log, summary table
+uv run python scripts/analyse_latency.py --since 13:00
+uv run python scripts/analyse_latency.py --backend vibevoice --no-detail
+```
+
 ## Spatial audio
 
 `docs/spatial-audio.md` — feature plan for positional stereo panning based on terminal window location.

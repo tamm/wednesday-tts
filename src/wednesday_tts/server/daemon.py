@@ -1715,6 +1715,7 @@ def playback_worker(backend: TTSBackend) -> None:
 
         # Unpack (audio, subtitle_text, msg_id) tuple or bare array
         global _playing_msg_id, _playback_current_msg_id, _last_overlay_msg_id
+        prev_playing_msg_id = _playing_msg_id
         if isinstance(item, tuple):
             if len(item) >= 3:
                 item, subtitle_text, _playing_msg_id = item[0], item[1], item[2]
@@ -1723,6 +1724,20 @@ def playback_worker(backend: TTSBackend) -> None:
                 item, subtitle_text = item[0], item[1]
         else:
             subtitle_text = None
+
+        # Per-message first-chunk marker. Fires once per msg_id, just before
+        # the first chunk is written to the audio device. Gives analyse_latency
+        # a reliable TTFS signal for every backend (not just vibevoice, which
+        # has its own first-audio= line).
+        if (
+            _playing_msg_id is not None
+            and _playing_msg_id >= 0
+            and _playing_msg_id != prev_playing_msg_id
+        ):
+            print(
+                f"[playback] first-chunk msg_id={_playing_msg_id}",
+                flush=True,
+            )
 
         _chunk_t0 = time.monotonic()
         _playback_heartbeat = time.monotonic()
@@ -2547,7 +2562,7 @@ class _TimestampWriter:
                 self._at_line_start = True
             if part:
                 if self._at_line_start:
-                    self._stream.write(datetime.now().strftime("%H:%M:%S "))
+                    self._stream.write(datetime.now().strftime("%H:%M:%S.%f")[:-3] + " ")
                     self._at_line_start = False
                 self._stream.write(part)
 
@@ -2620,6 +2635,12 @@ def main() -> None:
         for _gen_key in ("temperature", "top_p", "top_k", "repetition_penalty"):
             if _model_config.get(_gen_key) is not None:
                 _kwargs[_gen_key] = _model_config[_gen_key]
+        # Streaming / DIRECT-PLAY config (mirrors vibevoice).
+        if _model_config.get("streaming") is not None:
+            _kwargs["streaming"] = bool(_model_config["streaming"])
+        for _num_key in ("prebuffer_sec", "ringbuffer_sec"):
+            if _model_config.get(_num_key) is not None:
+                _kwargs[_num_key] = _model_config[_num_key]
 
     elif backend_name == "vibevoice":
         for _key in ("model_path", "voice", "voices_dir", "device"):
@@ -2635,6 +2656,49 @@ def main() -> None:
             if _model_config.get(_num_key) is not None:
                 _kwargs[_num_key] = _model_config[_num_key]
 
+    elif backend_name == "chatterbox":
+        for _key in ("device", "voice_clone"):
+            if _model_config.get(_key):
+                _kwargs[_key] = _model_config[_key]
+        for _num_key in ("exaggeration", "cfg_weight"):
+            if _model_config.get(_num_key) is not None:
+                _kwargs[_num_key] = _model_config[_num_key]
+        if _model_config.get("turbo") is not None:
+            _kwargs["turbo"] = _model_config["turbo"]
+
+    elif backend_name == "moss":
+        for _key in ("voice", "prompt_audio_path", "model_dir"):
+            if _model_config.get(_key):
+                _kwargs[_key] = _model_config[_key]
+        for _num_key in (
+            "cpu_threads",
+            "max_new_frames",
+            "voice_clone_max_text_tokens",
+            "speed",
+            "seed",
+            "text_temperature",
+            "text_top_p",
+            "text_top_k",
+            "audio_temperature",
+            "audio_top_p",
+            "audio_top_k",
+            "audio_repetition_penalty",
+        ):
+            if _model_config.get(_num_key) is not None:
+                _kwargs[_num_key] = _model_config[_num_key]
+        if _model_config.get("enable_wetext") is not None:
+            _kwargs["enable_wetext"] = _model_config["enable_wetext"]
+
+    elif backend_name == "kokoro":
+        for _key in ("voice", "lang_code", "repo_id"):
+            if _model_config.get(_key):
+                _kwargs[_key] = _model_config[_key]
+        for _num_key in ("speed", "samplerate", "prebuffer_sec", "ringbuffer_sec"):
+            if _model_config.get(_num_key) is not None:
+                _kwargs[_num_key] = _model_config[_num_key]
+        if _model_config.get("fast_first_chunk") is not None:
+            _kwargs["fast_first_chunk"] = bool(_model_config["fast_first_chunk"])
+
     global _active_backend, _active_backend_name
     backend = backend_cls(**_kwargs)
     _active_backend = backend
@@ -2643,7 +2707,9 @@ def main() -> None:
     try:
         backend.load()
     except Exception as exc:
+        import traceback
         print(f"FATAL: failed to load {backend_name}: {exc}", flush=True)
+        print(traceback.format_exc(), flush=True)
         raise SystemExit(2)
     print(f"Ready! [{backend_name}] Listening on {SOCKET_PATH}", flush=True)
 

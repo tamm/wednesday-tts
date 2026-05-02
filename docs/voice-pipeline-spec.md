@@ -1,339 +1,278 @@
 # Voice Pipeline Spec
 
-Source of truth for how voice selection works, end to end.
+Source of truth for how a `speak` request becomes a voiced utterance in the
+macOS daemon.
 
-## Wire Protocol
+## Scope
 
-All communication from hooks to the daemon is a single JSON object sent over the Unix socket at `/tmp/tts-daemon.sock`, newline-terminated. No custom syntax. Just JSON.
+This spec covers:
 
-### Message Schema
+- daemon wire protocol
+- request-level voice resolution
+- inline guillemet voice switching
+- hook responsibilities
+- stop / skip / barge-in behaviour
 
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "required": ["command"],
-  "properties": {
-    "command": {
-      "type": "string",
-      "enum": ["speak", "stop", "skip", "ping", "chirp", "drain", "normalize", "stats", "render"],
-      "description": "Required. speak = normalise, render audio, play through speakers. stop = halt current playback and drain the entire queue immediately; new speaks are accepted straight after. skip = drop the remaining chunks of the currently playing message only; later queued messages are preserved, and a 3s grace window rejects incoming speaks (a second skip inside the grace escalates to a full stop). ping = health check, returns 'ok'. chirp = play the voice-command recognition chirp (DS9-style short sound), bypasses the TTS pipeline entirely, returns 'ok'. drain = block until the playback queue empties. normalize = return cleaned text without generating audio. stats = return telemetry as JSON. render = normalise, render audio, return raw PCM bytes (no playback)."
-    },
-    "text": {
-      "type": "string",
-      "description": "The text to speak, normalise, or render. May contain ««guillemet»» tags for inline voice switches. Required when command is speak, normalize, or render."
-    },
-    "normalization": {
-      "type": "string",
-      "enum": ["markdown", "pre-normalized"],
-      "description": "Controls text cleanup before synthesis. Omit for standard normalization (numbers, abbreviations, symbols). 'markdown' = strip markdown formatting (headers, links, code fences, bold, etc.) then standard normalization. 'pre-normalized' = text is already clean, skip all normalization."
-    },
-    "voice_hash": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{8}$",
-      "description": "8-char hex hash used to deterministically select a voice from the pool. The daemon maps it via int(hash, 16) % pool_size. The hook can derive this from anything stable — repo root, cwd, etc. Omit to use the model's default voice."
-    },
-    "session_id": {
-      "type": "string",
-      "description": "Caller's session UUID (e.g. from Claude Code). Included in all log lines for this request so you can trace a voice issue back to a specific session."
-    },
-    "pan": {
-      "type": "number",
-      "minimum": 0.0,
-      "maximum": 1.0,
-      "description": "Stereo pan position computed from terminal window location. 0.0 = hard left, 0.5 = centre, 1.0 = hard right. Omit for centre."
-    },
-    "timestamp": {
-      "type": "number",
-      "description": "Wall-clock epoch (seconds) when the hook fired. Used to measure end-to-end latency from hook trigger to first audio output."
-    },
-    "source": {
-      "type": "string",
-      "enum": ["stop", "pre-tool", "permission"],
-      "description": "Which hook sent this request. stop = end-of-turn Stop hook. pre-tool = PreToolUse mid-turn hook. permission = PermissionRequest hook. Logged on the daemon [req] line for tracing."
-    }
-  },
-  "allOf": [
-    {
-      "if": { "properties": { "command": { "enum": ["speak", "normalize", "render"] } } },
-      "then": { "required": ["text"] }
-    }
-  ]
-}
-```
+It does not try to describe every backend's synthesis internals. See
+`docs/voice-system-spec.md` for backend-specific voice details.
 
-## Chirp — voice-command recognition acknowledgement
+## Transport
 
-The `chirp` command plays a short audible acknowledgement so Tamm knows a voice command was heard. It bypasses the TTS pipeline entirely — no normalisation, no voice selection, no queue.
+Hooks and local integrations talk to the daemon over:
 
-```json
-{"command": "chirp"}
-```
+- socket path: `/tmp/tts-daemon.sock`
+- framing: one JSON object per line
+- reply style: short ack payload such as `ok`, `error`, or command-specific data
 
-Response: `ok`
+## Command Schema
 
-**Sound resolution order:**
+Current daemon commands:
 
-1. `voice_command_chirp` key in `~/.claude/tts-config.json` — set this to an absolute or `~`-prefixed path to a sound file (WAV, AIFF, MP3). The DS9 intercom chime at `~/dev/local-env-setup/sounds/chimes/ds9intercom.mp3` is the recommended value.
-2. Synthesised fallback — two ascending tones (1200 Hz → 1800 Hz, 80 ms each) played via sounddevice. Always available even when no sound file is configured.
+- `speak`
+- `stop`
+- `skip`
+- `ping`
+- `chirp`
+- `drain`
+- `normalize`
+- `stats`
+- `render`
 
-**Design constraints:**
-
-- Does not interact with the speak queue. The chirp plays immediately in a background process / thread regardless of whether TTS audio is currently playing.
-- Does not go through text normalisation or the voice pool. There is no `text` field.
-- The Yarn-side wiring that calls this verb is a separate task.
-
-## Barge-in hold
-
-When the user is dictating to wednesday-yarn (voice input), yarn touches `/tmp/wednesday-yarn-barge-in` to signal "be quiet, I'm talking". The daemon reads this flag directly — hooks are NOT involved in barge-in detection, they always send their speak requests and let the daemon decide.
-
-The daemon's behaviour while the flag is fresh:
-
-1. **Drop what's currently playing.** The very first speak request arriving while the flag is fresh triggers a one-shot `skip` on whatever message is mid-playback. This zero-delay drop gives the user an audible break the instant they start talking. If nothing is playing yet, the cycle still starts — subsequent arrivals are held, not talked over.
-2. **Hold, do not drop, new speak requests.** Every speak request arriving during the window is appended to an in-memory pending list. `{"command":"speak",...}` clients still get an immediate `ok` ack — the daemon has the text, it's just holding it until the user finishes.
-3. **Flag re-touches extend the window.** `_BARGE_IN_WINDOW_SECS` (3 seconds) is measured from the most recent flag mtime, not from first touch. Yarn touches the flag roughly once per second while dictation is active, so the window floats with the user.
-4. **Replay in arrival order.** When the flag has not been touched for the window duration AND the daemon is not already mid-replay, `_barge_in_worker` drains the pending list under lock and re-enters `_process_speak` for each held message. Audio flows through the normal pipeline.
-5. **Hard ceiling.** `_BARGE_IN_MAX_AGE_SECS` (30 seconds) is the absolute ceiling. If the flag has not been touched in 30 seconds the daemon treats it as stale (crashed dictation source) and removes it. This is the only fail-safe that prevents a wedged yarn from permanently muting TTS.
-6. **Pending-list cap.** `_BARGE_IN_MAX_PENDING` (16 messages) caps the hold list. If the user dictates long enough that more than 16 messages pile up, the oldest is dropped with a log line. Stale held speaks are worse than silence.
-
-**Two ways barge-in ends:**
-1. **Window timeout (normal case):** the flag has not been touched for `_BARGE_IN_WINDOW_SECS` (3 s). `_barge_in_worker` drains `_barge_in_pending` by **replaying** each held speak in arrival order through `_process_speak`. The user paused talking, now hears queued replies.
-2. **User submits a prompt (`UserPromptSubmit` hook fires):** `stop-tts.sh` sends `{"command":"stop"}` to the daemon. The daemon stops current playback AND clears `_barge_in_pending` AND resets `_barge_in_dropped_once`. Held speaks are **dropped, not replayed**. The user submitted a finished prompt and expects fresh responses, not stale audio from before the submit.
-
-**Semantics compared to stop and skip:**
-- `stop` (explicit user "shut up": SIGUSR1, stop-tts.sh, `{"command":"stop"}`): drain the playback queue entirely AND clear `_barge_in_pending` AND reset `_barge_in_dropped_once`. No grace window. Subsequent speaks play normally. Stop is a deliberate "silence now, forget everything" action — including any audio held for post-barge-in replay.
-- `skip` (`{"command":"skip"}`): drop the current message's chunks by msg_id. Later queued messages are preserved. No grace window. This is "I've heard enough of this one, move on".
-- Barge-in is the ONLY mechanism with a hold window, and it queues rather than rejects.
-
-**What the pipeline must preserve:** no voice is ever lost during normal dictation. If the user dictates, pauses, and Claude has produced replies during that window, the user hears them in order once they stop talking — provided they have not submitted a new prompt. Voices are dropped when: the pending cap is exceeded (continuous 16+ replies during one uninterrupted dictation), the 30-second staleness ceiling fires (yarn crash), or the user submits a prompt (stop command received during a barge-in window).
-
-## Voice Pool
-
-The voice pool lives in `~/.claude/tts-config.json` under the active model's config. It is an array of voice entries.
-
-### Voice Entry Schema
-
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "required": ["name", "voice"],
-  "properties": {
-    "name": {
-      "type": "string",
-      "description": "Unique human-readable identifier. Used in logs and for named voice references in guillemet tags."
-    },
-    "voice": {
-      "type": "string",
-      "description": "Path to voice file (wav, safetensors) or a predefined backend name (e.g. 'alba')."
-    },
-    "voice_text": {
-      "type": "string",
-      "description": "Reference transcript for voice cloning backends. Omit if not needed."
-    }
-  }
-}
-```
-
-### Default Voice
-
-The model config must include a `default_voice` field using the same schema as a pool entry:
-
-```json
-{
-  "default_voice": {
-    "name": "default",
-    "voice": "/Users/tammsjodin/Music/voices/qwen3/default.wav",
-    "voice_text": "When the sunlight strikes random raindrops..."
-  }
-}
-```
-
-This is the voice used when no pool entry can be resolved. It is a voice entry, not a bare path.
-
-### Guillemet Voice
-
-The model config can optionally include a `guillemet_voice` field to control what `««text»»` (no voice specifier) uses:
-
-```json
-{
-  "guillemet_voice": "sam"
-}
-```
-
-If set to `"sam"`, uses the SAM backend (default). Otherwise, it follows the same voice entry schema as pool entries and uses the primary backend. Omit to default to SAM.
-
-### Voice Resolution
-
-The daemon is the **sole decision point** for voice selection. Hooks do not read the voice pool they just send enough information to make decisions.
-
-Resolution order:
-
-1. If `session_id` is provided → `int(sha256(session_id)[:8], 16) % len(pool)` → use that pool entry.
-2. Else if `voice_hash` is provided → `int(voice_hash, 16) % len(pool)` → use that pool entry.
-3. If neither is available, or pool is empty → use the model's **default voice**.
-4. If resolution fails for any reason → use the model's default voice.
-
-Never fall back to SAM. SAM is not a fallback — it is a special-purpose voice for inline switching only.
-
-If the model backend itself fails (crash, missing model, GPU error), the final escape hatch on macOS is the system `say` command. Something is always better than silence.
-
-## Inline Voice Switching (Guillemet Tags)
-
-Guillemet tags `««...»»` allow mid-sentence voice changes within a message. They are for fun/effect — a retro robot voice for a word, a different character voice for a quote. They are **not** the mechanism for choosing the message's primary voice.
-
-### Syntax
-
-| Pattern | Meaning |
-|---------|---------|
-| Plain text (no tags) | Speak with the **request voice** (resolved from session_id, voice_hash, or default). |
-| `««voice_name»text»»` | Speak `text` in the named voice on the primary backend. |
-| `««voice_name\|instruct»text»»` | Named voice with instruct text (e.g. `««alba\|whisper»boo»»`). |
-| `««\|instruct»text»»` | Instruct only, no voice switch. Uses the request voice with the given instruct (e.g. `««\|excited»great news»»`). |
-| `««text»»` | Speak `text` in the **guillemet voice** (see below). Defaults to SAM (retro 1982 formant synth). |
-
-## Pipeline
-
-### Terminology
-
-- **Message**: One complete request from a hook. One assistant response = one message. Identified by `msg_id`.
-- **Segment**: A contiguous piece of text within a message that shares a single voice. A message with no guillemet tags has one segment. A message like `"Hello ««world»» goodbye"` has three segments (plain, guillemet, plain).
-- **Chunk**: A piece of audio within a segment. Streaming backends produce multiple chunks per segment for lower latency. Batch backends produce one chunk per segment.
-
-Message > Segment > Chunk. Playback order follows this hierarchy strictly.
-
-### Step 1: Hook fires
-
-Two hooks can trigger speech:
-
-- `speak-response.py` — Stop hook, runs at end of assistant turn.
-- `pre-tool-speak.py` — PreToolUse hook, speaks mid-turn text blocks before each tool call.
-
-Shared behaviour that MUST match between the two hooks lives in `integrations/claude-code/hook_common.py`: the mute check, the primary-session filter, voice hashing, stereo pan, and the Unix-socket sender. Both hooks import from there so they cannot drift out of sync. When adding a new speech-producing hook, import the same helpers; do not reimplement them.
-
-The hooks do NOT implement barge-in detection. Barge-in (user-is-dictating) is handled entirely by the daemon — see "Barge-in hold" below. Hooks always send; the daemon decides whether to play now, hold, or drop.
-
-**Both hooks MUST apply the same primary-session filter.** A Claude Code assistant message from a teammate or sub-agent must never reach the daemon.
-
-The hook:
-
-1. Extracts `cwd`, `session_id` from the Claude Code payload.
-2. Filters out sub-agent and teammate messages. Per the Claude Code hooks docs (https://code.claude.com/docs/en/hooks.md, https://code.claude.com/docs/en/agent-teams.md, https://code.claude.com/docs/en/sub-agents.md), the Stop and PreToolUse payloads flag non-primary turns with: `agent_id` + `agent_type` (Task-tool sub-agent) or `team_name` + `teammate_name` (agent-team teammate). If ANY of `agent_id`, `agent_type`, `team_name`, `teammate_name` is present, the hook exits without sending anything. As a second layer of defence, the hook also consults `~/.claude/teams/*/config.json`: if the payload's `session_id` is listed in any team and is not that team's `leadSessionId`, it is treated as a teammate. This is a hard rule: sub-agent / teammate turns must be silent. Both `speak-response.py` and `pre-tool-speak.py` perform this check as their first action after parsing the payload. Do NOT remove or narrow this check. Do NOT guess field names — they come from the official Claude Code docs.
-3. Extracts the assistant message text from the payload.
-4. Computes `voice_hash`: SHA-256 of the git repo root (or cwd if not in a repo), truncated to 8 hex chars.
-5. Computes `pan`: stereo position from the terminal window's screen location (macOS only, falls back to centre).
-6. Records `timestamp` for latency tracking.
-7. Sends a JSON object to the daemon socket with all of the above.
-
-### Step 2: Daemon receives request
-
-1. Parse JSON. Extract `session_id`, `voice_hash`, `text`, etc.
-2. Assign a `msg_id` (monotonic integer). One request = one message = one `msg_id`. Used everywhere: rendering, queueing, playback, logging.
-3. Resolve voice from `session_id` or `voice_hash` (see Voice Resolution above). Log it.
-4. This resolved voice is the **request voice** for the entire message.
-
-Messages are processed and played strictly one at a time. A message is all segments and all chunks from a single request. If a new request arrives while a previous message is still rendering or playing, it waits. The listener never hears audio from two messages interleaved.
-
-### Step 3: Parse inline voice switches
-
-Before normalisation, parse guillemet tags in the text:
-
-1. Split text into segments: plain text segments and tagged segments.
-2. Plain text segments get the request voice.
-3. Tagged segments get their specified voice (SAM if no voice specifier, named voice otherwise).
-4. Each segment knows its voice and backend before normalisation begins.
-
-### Step 4: Normalise
-
-Run each segment's text through the normalisation pipeline (unless `normalization` is `"pre-normalized"`). Voice identifiers are never normalised.
-
-### Step 5: Render
-
-For each segment:
-- Plain/named voice segments → primary backend with assigned voice.
-- SAM segments → SAM backend.
-
-Segments are rendered and played in order. Each segment streams individually if the backend supports it — a mixed-voice message is just a sequence of segments, each with its own voice and backend.
-
-### Step 6: Playback
-
-- Segments play in order: segment 0 finishes completely before segment 1 starts.
-- Within a streaming segment, chunks play in generation order.
-- No segment or chunk is skipped or reordered.
-- The next message does not begin until every segment of the current message has finished playing.
-- **STOP**: Cancels the current message immediately. Discards all queued messages. Silence until a new speak request arrives.
-- **SKIP** (SIGUSR1): Cancels the current message immediately. The next queued message begins playing. Use this when the user interrupts but more messages are waiting.
-
-## Stop-hook preemption
-
-When the Stop hook fires at end-of-turn, `speak-response.py` sends a speak request with `flush_session=true`. This signals the daemon to preempt lingering pre-tool-speak chunks and transition cleanly to the final response. The behaviour differs from a bare `stop` command in one critical way: the currently-playing chunk is **not** truncated.
-
-### Sequence
-
-1. **Current chunk plays to natural end.** One audio chunk is sub-second. Truncating it produces a click or pop artefact. The daemon lets it finish.
-2. **Queued pre-tool chunks for this session are dropped.** The daemon drains the playback queue and deferred buffer of all items whose `msg_id` belongs to the flushed session. In-flight generation threads are told to bail via `_skip_msg_ids`.
-3. **"Oh! " prefix is prepended.** Before enqueuing the Stop-hook message, the daemon prepends the literal string `"Oh! "` (capital O, exclamation, single trailing space) to the text. This provides an audible transition cue — the listener hears the currently-playing chunk end naturally, then `"Oh! <final response>"`. No separate audio asset; the prefix is just words in the TTS stream.
-4. **Stop message is enqueued normally.** The prefixed text goes through the standard voice pipeline (normalisation, voice resolution, render, playback).
-
-### Cross-session isolation
-
-The flush is scoped to the `session_id` supplied in the request. Other sessions' currently-playing audio, queued items, and generation threads are completely unaffected. This is non-negotiable: one session's Stop hook must never silence another session.
-
-### Contrast with explicit `stop`
-
-| Mechanism | Current chunk | Queue | Other sessions |
-|-----------|--------------|-------|----------------|
-| `{"command":"stop"}` | Killed immediately | Fully drained (all sessions) | Also killed |
-| Stop-hook flush (`flush_session=true`) | Finishes naturally | Drained for this session only | Untouched |
-| `{"command":"skip"}` | Killed immediately | Same-message chunks dropped | Untouched |
-
-### Wire signal
-
-The Stop hook sends `flush_session: true` in the speak JSON:
+Canonical `speak` shape:
 
 ```json
 {
   "command": "speak",
-  "text": "Here is the final answer.",
-  "session_id": "abc123…",
-  "flush_session": true,
-  "source": "stop"
+  "text": "Hello there",
+  "normalization": "markdown",
+  "voice_hash": "7f2c1a90",
+  "session_id": "session-uuid",
+  "timestamp": 1777600000.123,
+  "source": "stop",
+  "pan": 0.52,
+  "flush_session": true
 }
 ```
 
-The daemon handles `flush_session` before enqueueing — the text the TTS engine receives is `"Oh! Here is the final answer."`.
+Field notes:
 
-## Logging
+- `text`
+  - required for `speak`, `normalize`, and `render`
+- `normalization`
+  - `markdown`
+  - `plain`
+  - `pre-normalized`
+- `voice_hash`
+  - optional stable 8-char hex hash from the caller's repo / cwd
+- `session_id`
+  - optional, but preferred
+- `timestamp`
+  - optional wall-clock time used for hook-to-daemon latency logging
+- `source`
+  - usually `stop` or `pre-tool`
+- `pan`
+  - optional stereo position from `0.0` to `1.0`
+- `flush_session`
+  - stop-hook preemption hint; used to flush older queued audio from the same
+    Claude session before reading the final response
 
-Every request gets a `msg_id` (monotonic integer, assigned by daemon on receipt).
+## Hook Responsibilities
 
-### Log Points
+Shared hook behaviour lives in `integrations/claude-code/hook_common.py`.
 
-| Point | Tag | What to log |
-|-------|-----|-------------|
-| Hook send | `[hook]` | `voice_hash=H session=S cwd=PATH` |
-| Daemon receive | `[req]` | `msg_id=N source=SRC voice_hash=H session=S → voice=NAME` |
-| Segment parse | `[req]` | `msg_id=N seg=I backend=B voice=NAME chars=C` |
-| Render complete | `[req]` | `msg_id=N seg=I audio=Xs rtf=R` |
-| Enqueue | `[req]` | `msg_id=N seg=I enqueued` |
-| Playback start | `[play]` | `msg_id=N seg=I start` |
-| Playback done | `[play]` | `msg_id=N seg=I done` |
-| Message done | `[play]` | `msg_id=N all segments played` |
+Hooks are intentionally thin. They should:
 
-**Privacy note:** For now, text content appears in logs for debugging convenience. Long-term, replace text with a hash of what was spoken.
+1. Read the Claude Code payload.
+2. Exit early if muted.
+3. Exit early for sub-agents and teammates.
+4. Extract assistant text.
+5. Compute `voice_hash` from repo root or cwd.
+6. Compute `pan` when available.
+7. Send JSON to the daemon and exit.
 
-**Session/agent IDs** are included at receive time so you can trace which session produced which voice.
+Hooks should not:
 
-## What NOT to do
+- pick voices directly from the config pool
+- normalize text themselves
+- implement barge-in
+- duplicate daemon dedup logic
 
-| Rule | Why |
-|------|-----|
-| Do not embed voice selection in the text body | Conflates message voice with inline switching. Caused the dict-as-string bug where voice dicts were serialised into guillemet tags and re-parsed. |
-| Do not fall back to SAM on resolution failure | SAM is a novelty voice for inline fun, not a fallback. Default voice exists for a reason. |
-| Do not read the voice pool in the hook | One reader (daemon), one decision point. Hook sends a hash, daemon resolves. Prevents pool-size mismatches. |
-| Do not use `str(dict)` as a voice identifier | Voice entries are dicts in memory, passed by reference. Never serialise them to strings for matching or transport. |
-| Do not send sequence numbers from hooks | Chunking and ordering are internal daemon concerns. Hooks send whole messages. |
-| Do not use custom string-delimited wire formats | Colons, pipes, and other delimiters appear in normal text and break parsing. JSON is the wire format, full stop. |
-| Do not resolve the voice more than once per request | Resolve at receive time, pass the resolved entry through the pipeline. Re-resolution caused the same hash to produce different results when config was re-read mid-request. |
-| Do not normalise voice identifiers | Parse guillemet tags before normalisation. Voice names and paths must not go through the text normaliser. |
-| Do not use `int(time.time())` as any kind of identifier | Wall-clock time is not monotonic and collides across concurrent requests. Use monotonic counters or UUIDs. |
+## Request-Level Voice Resolution
+
+The daemon resolves one request voice before inline tags are applied.
+
+Resolution order:
+
+1. If `session_id` is present and the active model has a `voice_pool`:
+   - `sha256(session_id)[:8]`
+   - modulo pool length
+2. Else if `voice_hash` is present and the active model has a `voice_pool`:
+   - `int(voice_hash, 16) % len(pool)`
+3. Else use `default_voice` from the active model config
+4. Else use the backend's native default
+
+The daemon logs the decision on `[voice]` lines and then emits a `[req]` line
+with the resolved request voice.
+
+## Voice Pool Format
+
+The current daemon expects voice-pool entries to be objects, not bare strings.
+
+Typical shape:
+
+```json
+{
+  "active_model": "qwen3",
+  "models": {
+    "qwen3": {
+      "voice_pool": [
+        {
+          "name": "warm-a",
+          "voice": "/path/to/ref-a.wav",
+          "voice_text": "Reference transcript"
+        },
+        {
+          "name": "warm-b",
+          "voice": "/path/to/ref-b.wav",
+          "voice_text": "Reference transcript"
+        }
+      ],
+      "default_voice": {
+        "name": "default",
+        "voice": "/path/to/default.wav",
+        "voice_text": "Reference transcript"
+      },
+      "guillemet_voice": "sam"
+    }
+  }
+}
+```
+
+If `default_voice` is absent but the active model config has a top-level
+`voice`, the daemon synthesizes a default entry from that value.
+
+## Guillemet Syntax
+
+Inline voice switching is parsed before normalization.
+
+Supported forms:
+
+- `««text»»`
+  - guillemet voice
+  - defaults to `sam`
+  - may use `guillemet_voice` from config instead
+- `««voice_name»text»»`
+  - named pool voice or configured fallback default
+- `««voice_name|instruct»text»»`
+  - named voice plus backend-specific instruct style
+- `««|instruct»text»»`
+  - request voice plus instruct
+- `««instruct|text»»`
+  - shorthand for request voice plus instruct
+
+Important behaviour:
+
+- Plain text segments use the resolved request voice.
+- `sam` is special-cased as a backend switch, not a pool name lookup.
+- Named guillemet voices resolve by `name` in `voice_pool`.
+- Unknown named guillemet voices fall back to `default_voice`, not SAM.
+
+## Segment Rendering
+
+The daemon splits text into `(voice, instruct, text)` segments.
+
+Then:
+
+1. Normalizes each segment's text unless `pre-normalized`
+2. Dedups the reassembled spoken text
+3. Chooses one of three render modes
+
+### Direct-play streaming
+
+Used when:
+
+- backend supports streaming
+- backend supports direct-play
+- there is no SAM / mixed-backend switch
+
+Current practical case: `vibevoice`.
+
+### Queue streaming
+
+Used when:
+
+- backend supports streaming
+- backend does not use direct-play for this request
+- there is no SAM / mixed-backend switch
+
+Current practical case: `pocket`, and `vibevoice` when it returns queued
+buffers rather than owning playback directly.
+
+### Batch / multi-segment render
+
+Used when:
+
+- there are multiple segments
+- a SAM override is involved
+- per-segment `instruct` needs to be preserved
+- the backend does not stream
+
+The daemon renders each segment, resamples to the primary backend's sample
+rate if needed, and cross-fades segment boundaries.
+
+## Stop, Skip, and Flush
+
+### `stop`
+
+- drains the playback queue
+- clears pending barge-in speaks
+- clears session tracking
+- bumps `_stop_gen` so in-flight generation bails
+
+Meaning: forget everything and go silent now.
+
+### `skip`
+
+- skips the current message
+- drains queued chunks for that same `msg_id`
+- preserves later messages
+
+Meaning: move on from this utterance, not the whole queue.
+
+### `flush_session`
+
+Stop-hook preemption path for a Claude session.
+
+- drops queued and in-flight future chunks from the same `session_id`
+- does not hard-cut the chunk already being written
+- prepends a short transition cue to the final response
+
+Meaning: replace stale pre-tool audio for this session with the final answer.
+
+## Barge-In Hold
+
+While `/tmp/wednesday-yarn-barge-in` is fresh:
+
+- incoming `speak` requests are held, not rejected
+- the first held request in the cycle skips the currently playing message
+- later held requests stay queued in memory
+
+When the flag clears:
+
+- held requests replay in arrival order through the normal pipeline
+
+When a full `stop` happens during barge-in:
+
+- held requests are discarded
+
+## Logging Contract
+
+At minimum, a normal request should produce:
+
+- one `[req]` line
+- one or more backend synth lines
+- one `[playback] first-chunk` line for queue-driven playback or the backend's
+  first-audio equivalent for direct-play
+
+`scripts/analyse_latency.py` depends on this log shape. If you change the
+markers, update that script in the same change.

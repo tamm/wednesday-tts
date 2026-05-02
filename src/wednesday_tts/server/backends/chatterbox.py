@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 
@@ -33,17 +34,56 @@ class ChatterboxBackend(TTSBackend):
         voice_clone: str | None = None,
         exaggeration: float = 0.3,
         cfg_weight: float = 0.3,
+        turbo: bool = False,
     ) -> None:
         self._device = device or os.environ.get("CHATTERBOX_DEVICE", "cuda")
         self._voice_clone = voice_clone or os.environ.get("CHATTERBOX_VOICE_CLONE", "")
         self._exaggeration = exaggeration
         self._cfg_weight = cfg_weight
+        self._turbo = turbo
         self._model = None
 
     def load(self) -> None:
-        from chatterbox.tts import ChatterboxTTS  # type: ignore[import]
+        # Apple Silicon path: chatterbox has hardcoded .cuda() / map_location
+        # calls that crash on mps. The fix (per the Jimmi42 HF Space) is:
+        #   1. Patch torch.load to default map_location='cpu' so weight files
+        #      with cuda tensors don't try to materialise on cuda.
+        #   2. Load the whole model on cpu via from_pretrained("cpu").
+        #   3. Move the actual sub-modules (t3, s3gen, ve) to mps afterwards.
+        # On non-mps (cuda or plain cpu), skip the patch and load directly.
+        import torch
 
-        self._model = ChatterboxTTS.from_pretrained(device=self._device)
+        if self._device == "mps":
+            original_torch_load = torch.load
+
+            def _patched_torch_load(f, map_location=None, **kwargs):
+                if map_location is None:
+                    map_location = "cpu"
+                return original_torch_load(f, map_location=map_location, **kwargs)
+
+            torch.load = _patched_torch_load
+            try:
+                if self._turbo:
+                    from chatterbox.tts_turbo import ChatterboxTurboTTS  # type: ignore[import]
+                    self._model = ChatterboxTurboTTS.from_pretrained(device="cpu")
+                else:
+                    from chatterbox.tts import ChatterboxTTS  # type: ignore[import]
+                    self._model = ChatterboxTTS.from_pretrained(device="cpu")
+            finally:
+                torch.load = original_torch_load
+
+            for attr in ("t3", "s3gen", "ve"):
+                module = getattr(self._model, attr, None)
+                if module is not None:
+                    setattr(self._model, attr, module.to("mps"))
+        else:
+            if self._turbo:
+                from chatterbox.tts_turbo import ChatterboxTurboTTS  # type: ignore[import]
+                self._model = ChatterboxTurboTTS.from_pretrained(device=self._device)
+            else:
+                from chatterbox.tts import ChatterboxTTS  # type: ignore[import]
+                self._model = ChatterboxTTS.from_pretrained(device=self._device)
+
         self.sample_rate = self._model.sr
 
     def generate(
@@ -69,6 +109,7 @@ class ChatterboxBackend(TTSBackend):
         use_fast = chars_preceding < self._FAST_ZONE_CHARS
         use_voice = voice or self._voice_clone
 
+        t0 = time.monotonic()
         try:
             kwargs: dict = {}
             if use_voice and os.path.exists(use_voice):
@@ -84,6 +125,19 @@ class ChatterboxBackend(TTSBackend):
 
             if abs(use_speed - 1.0) > 0.01:
                 arr = soundstretch_tempo(arr, self.sample_rate, use_speed)
+
+            elapsed = time.monotonic() - t0
+            duration = arr.size / self.sample_rate if self.sample_rate else 0.0
+            rtf = f"{elapsed / duration:.2f}" if duration > 0 else "n/a"
+            voice_label = (
+                os.path.basename(use_voice).rsplit(".", 1)[0] if use_voice else "default"
+            )
+            tag = "chatterbox-turbo" if self._turbo else "chatterbox"
+            print(
+                f"[{tag}] generated {duration:.1f}s audio in {elapsed:.1f}s "
+                f"(RTF {rtf}, voice={voice_label}, fast={use_fast})",
+                flush=True,
+            )
             return arr
         except Exception as exc:
             print(f"[chatterbox] generate error: {exc}")

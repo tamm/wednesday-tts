@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 
@@ -92,6 +93,7 @@ class SopranoBackend(TTSBackend):
         if self._model is None:
             raise RuntimeError("SopranoBackend not loaded — call load() first")
 
+        t0 = time.monotonic()
         try:
             # Soprano doesn't support multiple voices in this version,
             # so we ignore the voice parameter but accept it for API compatibility.
@@ -102,7 +104,18 @@ class SopranoBackend(TTSBackend):
                 repetition_penalty=self._repetition_penalty,
             )
             audio: np.ndarray = wav.cpu().numpy()
-            return audio if audio.size > 0 else None
+            if audio.size == 0:
+                return None
+
+            elapsed = time.monotonic() - t0
+            duration = audio.size / self.sample_rate if self.sample_rate else 0.0
+            rtf = f"{elapsed / duration:.2f}" if duration > 0 else "n/a"
+            print(
+                f"[soprano] generated {duration:.1f}s audio in {elapsed:.1f}s "
+                f"(RTF {rtf}, voice=soprano)",
+                flush=True,
+            )
+            return audio
         except Exception as exc:
             print(f"[soprano] generate error: {exc}")
             return None

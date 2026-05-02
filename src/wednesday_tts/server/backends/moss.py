@@ -110,6 +110,11 @@ class MossNanoBackend(TTSBackend):
         gd["audio_top_k"] = int(self._audio_top_k)
         gd["audio_repetition_penalty"] = float(self._audio_repetition_penalty)
 
+        try:
+            self.sample_rate = int(self._runtime.codec_meta["codec_config"]["sample_rate"])
+        except (KeyError, TypeError, ValueError):
+            pass
+
     def _resolve_voice(self, voice: str | None) -> tuple[str, str | None]:
         """Return (preset_name, prompt_audio_path).
 

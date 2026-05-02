@@ -1,61 +1,102 @@
 # Playback Spec
 
-## Principles
+This document describes the current playback behaviour in `daemon.py`.
 
-1. **One player, one queue.** `playback_worker` is the ONLY code that touches the audio device. It calls `sd.play()` for each item in the queue. Nothing else opens OutputStreams.
+## Current Model
 
-2. **Full audio clips only.** Every item in the playback queue is a complete numpy array — one whole utterance. No tiny streaming chunks. The model can use streaming inference internally to render faster, but the result is accumulated into one array before queueing.
+Playback is no longer a single universal path.
 
-3. **Session-based ordering.** Each caller (Claude Code session, other client) has a session ID. Messages from the same session play in FIFO order. Sessions take turns — once a session starts playing, it plays all its queued messages before the next session gets a go.
+There are two supported modes:
 
-4. **STOP semantics.** STOP means "shut up now" — it clears the queue and stops current playback. STOP is sent ONLY on:
-   - UserPromptSubmit (user typed something new)
-   - Hook cancellation (user interrupted)
+1. Queue-driven playback
+2. Direct-play backend streaming
 
-   STOP is NOT sent between pre-tool and stop hooks within the same turn.
+## Queue-Driven Playback
 
-## Hook lifecycle (one Claude Code turn)
+This is the default daemon path for batch output and queue-streaming backends.
 
-```
-User submits prompt
-  → UserPromptSubmit hook fires → sends STOP (kill previous audio)
+Key properties:
 
-Claude thinks, writes text, calls a tool
-  → PreToolUse hook fires → sends SEQ with session_id
-    → daemon renders audio (batch or accumulated stream)
-    → daemon queues the full audio array
-    → playback_worker plays it
+- `playback_worker()` consumes `playback_queue`
+- queued items are tagged with `msg_id`
+- playback order is message-preserving
+- session flush can remove queued work for one Claude session
+- `skip` can remove queued work for one message
 
-Claude calls another tool
-  → PreToolUse hook fires again → sends SEQ with session_id
-    → dedup catches repeated text, skips
-    → new text gets rendered and queued
+The worker maintains a long-lived output stream where possible and reopens it
+when device changes or stream failures demand it.
 
-Claude finishes turn
-  → Stop hook fires → sends SEQ with session_id
-    → dedup catches repeated text, skips
-    → any new text gets rendered and queued after current playback
-```
+### Spatial Audio
 
-## Multiple callers
+When the default output is a supported Bluetooth target, queue-driven playback
+may route through the `SpatialStream` helper binary instead of plain PortAudio.
 
-```
-Session A queues msg 1, msg 2
-Session B queues msg 3
-Session A queues msg 4
+When spatial mode is not available, the daemon falls back to standard stereo
+playback with the request `pan` value.
 
-Playback order: msg 1, msg 2, msg 4, msg 3
-(Session A started first, plays all its queued items, then B gets a turn)
-```
+## Direct-Play Streaming
 
-## Wire protocol
+Some streaming backends can opt into direct-play for the lowest latency.
 
-No changes to the wire format. Session ID is already in the SEQ command or can be added as a field. The daemon tracks which session is "active" and prioritises its queue.
+Current practical case:
 
-## What this means for the code
+- `vibevoice`
 
-- `stream_chunks()` in pocket.py: still useful for fast inference, but the daemon accumulates all chunks into one array before queueing. No per-chunk queueing.
-- `play_streaming()` in pocket.py: dead code. Remove it.
-- `playback_worker` in daemon.py: stays as-is. One `sd.play()` per complete audio array.
-- No OutputStreams opened anywhere except inside `playback_worker` (via `sd.play()`).
-- The streaming OutputStream experiment (callback-based) is scrapped.
+Properties:
+
+- backend owns the low-latency output stream
+- daemon still owns request lifecycle, stop checks, logging, and device-change
+  signalling
+- this path bypasses `playback_queue`
+
+This is an explicit exception to the older queue-only playback architecture.
+
+## Ordering Rules
+
+The ordering unit is the message, identified by `msg_id`.
+
+- queued chunks from the same message stay together
+- `skip` removes the current message's remaining chunks
+- `flush_session` removes queued and in-flight future work for one
+  `session_id`
+- `stop` forgets everything
+
+For queue-streaming backends, chunks may arrive incrementally, but they are
+still associated with one `msg_id` and controlled at the message level.
+
+## Stop Semantics
+
+### `stop`
+
+Meaning:
+
+- silence now
+- drain queue
+- clear held barge-in requests
+- clear session tracking
+
+### `skip`
+
+Meaning:
+
+- stop reading this message
+- preserve later messages
+
+### `flush_session`
+
+Meaning:
+
+- replace older queued audio from the same Claude session with the final
+  response
+- do not click-cut the already-started chunk
+
+## Logging Expectations
+
+Queue-driven playback should emit:
+
+- `[playback] first-chunk msg_id=...`
+- stream-open or spatial readiness logs when relevant
+
+Direct-play backends should emit equivalent first-audio and completion markers
+with the same `msg_id` if possible. That is the preferred direction for
+keeping analytics consistent across backends.

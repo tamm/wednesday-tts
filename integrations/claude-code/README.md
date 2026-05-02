@@ -1,59 +1,51 @@
 # Claude Code Hooks for Wednesday TTS
 
-Two hooks wire Claude Code's response events into the Wednesday TTS server.
+These hooks are thin clients for the macOS daemon in
+`src/wednesday_tts/server/daemon.py`.
 
 ## Hooks
 
-### speak-response.py
+### `speak-response.py`
 
-Fires on the `Stop` event — the end of each assistant turn. It reads the
-assistant's final response, runs it through the normalization pipeline, and
-sends the cleaned text to the TTS server to be spoken.
+- Claude Code `Stop` hook
+- speaks the final assistant response for the turn
+- sets `flush_session=true` so stale pre-tool audio from the same session gets
+  flushed before the final response is read
 
-This hook handles the bulk of the work: markdown stripping, code block
-truncation, table flattening, URL and path expansion, number pronunciation,
-and CamelCase splitting.
+### `pre-tool-speak.py`
 
-### pre-tool-speak.py
+- Claude Code `PreToolUse` hook
+- speaks assistant text emitted before a tool call
+- extracts assistant text blocks from the transcript and sends them to the
+  daemon
 
-Fires on `PreToolUse` — before every tool call within a turn. Claude often
-writes a sentence before invoking a tool ("Let me check that."). Because the
-`Stop` hook only fires at the end of a full turn, those mid-turn sentences
-would otherwise be skipped. This hook tracks which assistant text blocks have
-already been spoken (via a per-session hash file in `/tmp`) and speaks any
-that haven't been read out yet.
+## Shared Behaviour
 
-## Prerequisites
+Both hooks import `hook_common.py` for:
 
-The Wednesday TTS server must be running before any output will be spoken:
+- mute handling
+- sub-agent / teammate suppression
+- repo-based `voice_hash`
+- stereo `pan`
+- Unix-socket send logic
 
-```
-wednesday-tts
-```
+This is intentional. If hook behaviour must match, put it there instead of
+copying logic into each hook.
 
-or on Windows, via Task Scheduler / a terminal:
+## Transport
 
-```
-python -m wednesday_tts.server.app
-```
+Primary path on macOS:
 
-The server listens on `localhost:5678`. Both hooks POST to `/speak` on that
-address. If the server is not running, hooks fail silently — Claude Code
-continues normally, just without audio.
+- Unix socket: `/tmp/tts-daemon.sock`
+- payload: newline-terminated JSON
+
+The hooks do not POST to `localhost:5678`. That HTTP path is for the Windows
+service and the legacy Python client.
 
 ## Install
 
-Run the install script from this directory:
-
 ```bash
 bash integrations/claude-code/install.sh
-```
-
-Or create the symlinks manually:
-
-```bash
-ln -sf "$(pwd)/integrations/claude-code/speak-response.py" ~/.claude/hooks/speak-response.py
-ln -sf "$(pwd)/integrations/claude-code/pre-tool-speak.py" ~/.claude/hooks/pre-tool-speak.py
 ```
 
 Then register the hooks in `~/.claude/settings.json`:
@@ -67,63 +59,41 @@ Then register the hooks in `~/.claude/settings.json`:
 }
 ```
 
-## Uninstall
+## Runtime Expectations
+
+The daemon must be running:
 
 ```bash
-rm ~/.claude/hooks/speak-response.py
-rm ~/.claude/hooks/pre-tool-speak.py
+python -m wednesday_tts.server.daemon
 ```
 
-Remove the corresponding entries from `~/.claude/settings.json`.
+On macOS, launchd is the normal way to keep it running.
 
-## macOS (launchd)
+## launchd
 
-On macOS the server can be managed as a launchd user agent so it starts
-automatically at login.
-
-### Setup
-
-Copy the plist template from the repo:
-
-```bash
-cp config/com.tamm.wednesday-tts.plist ~/Library/LaunchAgents/com.tamm.wednesday-tts.plist
-```
-
-Edit the copy and replace both placeholders:
-
-- `REPLACE_WITH_VENV_PATH` — absolute path to the `.venv` directory inside
-  the repo, e.g. `/Users/yourname/dev/wednesday-tts/.venv`
-- `REPLACE_WITH_REPO_PATH` — absolute path to the repo root, e.g.
-  `/Users/yourname/dev/wednesday-tts`
-
-### Start
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.tamm.wednesday-tts.plist
-```
-
-### Stop
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.tamm.wednesday-tts.plist
-```
-
-### Restart
+Install the plist from `config/com.tamm.wednesday-tts.plist`, then restart with:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.tamm.wednesday-tts
 ```
 
-### Socket vs HTTP
+## Debugging
 
-On macOS the daemon uses a Unix socket at `/tmp/tts-daemon.sock`, not HTTP.
-The Claude Code hooks connect via that socket automatically. The `localhost:5678`
-HTTP interface is a Windows/Linux path; on macOS the socket transport is used
-instead.
+Useful files:
 
-### Logs
+- daemon socket: `/tmp/tts-daemon.sock`
+- daemon pid: `/tmp/tts-daemon.pid`
+- hook debug log: `/tmp/wednesday-tts-hook-debug.log`
 
-```
-~/Library/Logs/Wednesday/tts/daemon.log   stdout
-~/Library/Logs/Wednesday/tts/daemon.err   stderr
+Useful commands:
+
+```bash
+bash scripts/stop-tts.sh
+python - <<'PY'
+import json, socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect('/tmp/tts-daemon.sock')
+s.sendall((json.dumps({"command":"ping"}) + "\n").encode())
+print(s.recv(64).decode())
+PY
 ```

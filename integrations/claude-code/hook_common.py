@@ -207,6 +207,18 @@ def log_payload_debug(payload: dict, hook_name: str) -> None:
         pass
 
 
+def log_hook_event(hook_name: str, event: str, **fields) -> None:
+    """Append a small structured debug event for hook control-flow tracing."""
+    try:
+        log_path = os.path.join(_TEMP, "wednesday-tts-hook-debug.log")
+        entry = {"t": time.time(), "hook": hook_name, "event": event}
+        entry.update(fields)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception:
+        pass
+
+
 def compute_voice_hash(cwd: str) -> str:
     """SHA-256 of the git repo root (or cwd if not in a repo), first 8 hex chars."""
     try:

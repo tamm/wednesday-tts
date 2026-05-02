@@ -1,125 +1,212 @@
 # Wednesday TTS Architecture
 
-## System Overview
+This document describes the current runtime architecture in this repo.
+It is intentionally implementation-first: if this conflicts with an older
+note elsewhere, trust the code under `src/wednesday_tts/server/`.
 
-```
-Claude Code hook  -->  Unix socket daemon  -->  TTS backend  -->  playback queue  -->  audio device
-(speak-response.py)    (daemon.py)              (pocket.py)       (playback_worker)    (sounddevice)
-(pre-tool-speak.py)
-```
+## Runtime Topology
 
-Two hooks trigger speech:
+There are two service entrypoints:
 
-- **speak-response.py** (Stop event) — speaks the final assistant message after a full turn
-- **pre-tool-speak.py** (PreToolUse event) — speaks mid-turn assistant text before each tool call
+- `src/wednesday_tts/server/daemon.py`
+  - Primary macOS runtime.
+  - Unix socket server at `/tmp/tts-daemon.sock`.
+  - Used by the Claude Code hooks and the Gemini CLI integration.
+  - Owns the current queueing, barge-in, direct-play, spatial audio, and
+    per-request voice-selection logic.
+- `src/wednesday_tts/server/app.py`
+  - Windows-oriented Flask HTTP service on `http://localhost:5678`.
+  - Exposes `/speak`, `/stop`, `/normalize`, `/health`, `/stats`, `/reload`.
+  - Still useful for the Python client and Windows service installs, but it is
+    not the authoritative implementation for the current Claude Code path.
 
-Both hooks connect to the daemon via a Unix socket at `/tmp/tts-daemon.sock`, send a command, and exit. The daemon keeps the TTS model loaded in memory and handles all audio output.
+For day-to-day repo work, treat the Unix-socket daemon as the main system.
 
-## The Playback Queue
+## End-to-End Flow
 
-A singleton `queue.Queue` sits between audio generation and audio output.
+macOS / Claude Code:
 
-- Any thread can call `playback_queue.put(audio_array)` to enqueue audio
-- Only one thread — `playback_worker` — reads from the queue and calls `sd.play()`
-- This is the fundamental rule: **playback_worker is the ONLY code that calls sd.play()**. No other code plays audio directly.
+1. A Claude Code hook fires.
+2. The hook filters out teammate and sub-agent sessions.
+3. The hook computes `voice_hash`, optional `pan`, and `timestamp`.
+4. The hook sends a newline-terminated JSON message to `/tmp/tts-daemon.sock`.
+5. `daemon.py` acknowledges immediately with `ok`.
+6. The daemon resolves the request voice, parses guillemet tags, normalizes
+   text, dedups recent repeats, renders audio, and either:
+   - queues audio for the playback worker, or
+   - lets a direct-play backend own playback itself.
 
-Why: PortAudio cannot handle multiple concurrent streams. Two things calling `sd.play()` at the same time produces garbled audio (two voices overlapping) or PortAudio errors. The queue serialises all audio output through a single path.
+Windows / HTTP:
 
-## Batch Path
+1. A client posts raw text to `/speak`.
+2. `app.py` optionally normalizes it.
+3. The active backend renders audio.
+4. The service plays audio locally.
 
-The default path for most requests:
+## Wire Protocol
 
-1. `handle_client()` receives text via the socket
-2. Text is normalised (markdown to speakable text)
-3. `_render_segments()` calls `backend.generate()` to produce a numpy audio array
-4. The array is enqueued via `playback_queue.put(audio)`
-5. `playback_worker` dequeues it and calls `_try_play()` which calls `sd.play()`
+The daemon protocol is JSON over a Unix domain socket, newline-terminated.
 
-This path is reliable. `sd.play()` is non-blocking and `_try_play()` has its own watchdog (deadline-based timeout, PortAudio reinit on failure, one retry).
+Core commands:
 
-## Streaming Path
+- `speak`
+- `stop`
+- `skip`
+- `ping`
+- `chirp`
+- `drain`
+- `normalize`
+- `stats`
+- `render`
 
-Used for SEQ:0 requests when the backend supports streaming (`supports_streaming = True`). Provides lower time-to-first-sound by playing audio chunks as they are generated rather than waiting for the full utterance.
+See `docs/voice-pipeline-spec.md` for the request schema and command semantics.
 
-Current implementation (pocket.py `play_streaming()`):
+## Playback Model
 
-1. Opens a callback-mode `sd.OutputStream`
-2. The TTS model yields audio chunks via `generate_audio_stream()`
-3. Each chunk is upsampled to device rate and put into an internal `audio_buf` queue
-4. A PortAudio callback pulls from `audio_buf` and writes to the hardware
+There are now two playback paths in the daemon:
 
-**Problem**: `play_streaming()` bypasses the playback queue entirely. It opens its own OutputStream and plays audio directly. This means:
+### Queue-driven playback
 
-- If `playback_worker` is also playing something, two audio streams overlap (garbled audio)
-- The `_streaming_lock` exists to prevent concurrent streams, but it doesn't coordinate with `playback_worker`
-- The daemon waits for streaming to finish before allowing `playback_worker` to play the next item, but this coordination is fragile
+Used by batch backends and queue-streaming backends.
 
-**The fix (planned)**: streaming must route generated chunks through the playback queue, not play them directly. `playback_worker` remains the single audio output path.
+- `playback_worker()` owns the long-lived audio output path.
+- Items in `playback_queue` are tuples of `(audio_array, text, msg_id)`.
+- The worker preserves message ordering and watches for device changes.
+- PortAudio stereo playback is the default fallback.
+- On supported Bluetooth outputs, the daemon can route through the
+  SpatialStream helper for head-tracked / spatialized playback.
 
-## SEQ Ordering
+### Direct-play streaming
 
-Hooks send requests with sequence numbers: `SEQ:N:speed:text`. The daemon ensures playback order matches sequence order even when requests arrive or render out of order.
+Used by backends that opt into `supports_direct_play`.
 
-Mechanism:
+- The backend opens and manages its own low-latency output stream.
+- This is currently how `vibevoice` gets its lowest-latency path.
+- The daemon still owns request-level control: stop checks, device-change
+  signalling, msg IDs, logging, and barge-in / skip decisions.
 
-- `_next_seq` tracks which sequence number the playback queue expects next
-- When a chunk with `seq=N` finishes rendering, it waits on `_order_cond` until `_next_seq == N`
-- Once its turn arrives, it enqueues audio and increments `_next_seq`
-- `_order_cond.notify_all()` wakes other waiting threads
-- A 5-second timeout prevents deadlock if a chunk is lost
+This means the old rule "only playback_worker ever touches the audio device"
+is no longer universally true. It is still true for queue-driven playback, but
+VibeVoice's direct-play path is an explicit exception in the current design.
 
-Currently, hooks only send SEQ:0 (single chunk per response). The mechanism supports multi-chunk delivery if needed in future.
+## Voice Selection
 
-`_stop_gen` is a generation counter incremented on STOP. In-flight renders compare against their snapshot to bail out early when the user interrupts.
+Request-level voice selection happens in the daemon, not in the hooks.
 
-## Voice Switching
+Resolution order:
 
-Text can contain inline voice tags: `««words»»` (SAM voice)
+1. `session_id` hashed into the active backend's `voice_pool`
+2. `voice_hash` hashed into the active backend's `voice_pool`
+3. `default_voice` from config
+4. backend-native default
 
-Processing:
+Inline guillemet tags are then applied on top of that request voice.
 
-1. `_split_voice_segments()` parses text into `(voice_name, text)` tuples
-2. Plain text gets `voice_name=None` (uses the primary backend)
-3. Tagged text gets the specified voice name
-4. `_render_segments()` renders each segment with the appropriate backend
-5. Override backends are lazy-loaded and cached in `_voice_cache`
-6. All segments are resampled to the primary backend's sample rate and concatenated
+Current supported tag shapes:
 
-Mixed-voice messages always use the batch path (streaming is disabled for them) because segments from different backends must be stitched together.
+- `<<text>>` conceptually, written with guillemets: `««text»»`
+  - Uses `guillemet_voice` if configured, otherwise SAM.
+- `««voice_name»text»»`
+- `««voice_name|instruct»text»»`
+- `««|instruct»text»»`
+- `««instruct|text»»`
 
-## STOP Handling
+See `docs/voice-pipeline-spec.md` and `docs/voice-system-spec.md`.
 
-`_stop_playback()`:
+## Barge-In
 
-1. Calls `sd.stop()` to halt current audio
-2. Calls `backend.abort_stream()` if streaming is active
-3. Drains the playback queue
-4. Increments `_stop_gen` and resets `_next_seq` to 0
-5. Notifies all threads waiting on `_order_cond`
+The daemon owns barge-in hold logic.
 
-Triggered by: STOP command via socket, SIGUSR1 signal (from `stop-tts.sh`).
+- Fresh flag path: `/tmp/wednesday-yarn-barge-in`
+- Window: 3 seconds from latest touch
+- Hard stale cutoff: 30 seconds
+- Pending hold cap: 16 speak requests
 
-## Background Threads
+Behaviour:
 
-The daemon runs several background threads:
+- If the user is dictating, new `speak` requests are held.
+- The first held request in a barge-in cycle drops the current playing
+  message via `skip`.
+- Once the flag clears, held speaks replay in arrival order.
+- A full `stop` clears the pending hold list instead of replaying it.
 
-| Thread | Purpose |
-|--------|---------|
-| `playback_worker` | Dequeues audio and calls `sd.play()` — the singleton audio output |
-| `_audio_health_worker` | Probes PortAudio periodically, disables streaming or exits on failure |
-| `_hung_request_watchdog` | Detects generate() hangs via in-flight request count staleness |
-| Per-request handler threads | One per socket connection, runs `handle_client()` |
+## Backends
 
-## Daemon Lifecycle
+Backends registered today:
 
-Managed by launchd (`com.tamm.wednesday-tts`). On startup:
+- `pocket`
+- `vibevoice`
+- `kokoro`
+- `qwen3`
+- `moss`
+- `sam`
+- `soprano`
+- `chatterbox`
 
-1. Load TTS backend and model into memory
-2. Write PID to `/tmp/tts-daemon.pid`
-3. Bind Unix socket at `/tmp/tts-daemon.sock`
-4. Start `playback_worker`, `_audio_health_worker`, `_hung_request_watchdog`
-5. Accept connections in a loop, spawning handler threads
+Important practical differences:
 
-On exit: drain playback queue, close socket, remove socket and PID files.
+- `pocket`
+  - streaming-capable
+  - queue-streaming path
+  - default backend for most local use
+- `vibevoice`
+  - streaming-capable
+  - queue-streaming and direct-play support
+  - best latency when direct-play is viable
+- `qwen3`
+  - no streaming in the daemon path
+  - supports voice-clone-style reference audio and `instruct`
+- `sam`
+  - special inline robot voice and fallback-friendly override backend
 
-Launchd restarts the daemon automatically on crash or `os._exit(1)`.
+## Observability
+
+Current observability is log-first.
+
+- Main analytics script: `scripts/analyse_latency.py`
+- Primary daemon log patterns:
+  - `[req]`
+  - `[voice]`
+  - `[playback]`
+  - `[spatial]`
+  - backend-specific synth lines such as `[pocket]`, `[pocket-stream-*]`,
+    `[vibevoice-play]`, `[qwen3]`, `[moss]`, `[kokoro]`
+
+The analytics script is the single source of truth for latency summaries.
+If a backend adds a new log shape, extend that script instead of creating a
+parallel metrics parser.
+
+## Logging Consistency Gaps
+
+Current gaps worth fixing:
+
+- Backends do not all emit the same start / first-audio / done markers.
+- Some backend logs include `voice=` and `RTF`; some only partially do.
+- Direct-play and queue-driven paths do not produce identical playback-stage
+  logs.
+- Request metadata is rich on `[req]` lines but less consistent on downstream
+  synth / playback lines.
+
+## Recommended Logging Direction
+
+The smallest high-value cleanup would be:
+
+1. Standardize three lifecycle markers for every backend:
+   - `backend-start`
+   - `backend-first-audio`
+   - `backend-done`
+2. Always include:
+   - `msg_id`
+   - backend name
+   - `voice`
+   - `session_id` or short session token when available
+   - `source`
+   - `audio_s`
+   - `elapsed_s`
+   - `rtf` when derivable
+3. Keep `[req]` as the request envelope line and add backend-specific follow-up
+   lines keyed by the same `msg_id`.
+4. Update `scripts/analyse_latency.py` whenever a backend log contract changes.
+
+That gets you much more comparable backend analytics without introducing a new
+telemetry subsystem.

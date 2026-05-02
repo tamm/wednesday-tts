@@ -512,6 +512,13 @@ class VibeVoiceBackend(TTSBackend):
             silence = np.zeros(n, dtype=np.float32)
             _ring_write(silence, None)
 
+        # Synth wall-clock: from first generator chunk to last, plus total
+        # generated audio in samples. Lets us report a synth-only RTF that
+        # actually reflects model speed (separate from playback wall time).
+        synth_t_first: list[float] = []
+        synth_t_last: list[float] = []
+        synth_audio_samples: list[int] = [0]
+
         def _drain_streamer() -> None:
             nonlocal gen_done, fill_ema_sec, total_injected_sec
             chunk_idx = 0
@@ -529,6 +536,10 @@ class VibeVoiceBackend(TTSBackend):
                     pause_off = _chunk_pause_offset(arr32, sr)
                     now = time.time()
                     gen_ms = (now - last_chunk_end) * 1000.0
+                    if not synth_t_first:
+                        synth_t_first.append(now)
+                    synth_t_last[:] = [now]
+                    synth_audio_samples[0] += arr32.size
                     _ring_write(arr32, pause_off)
                     with cond:
                         fill_sec = _available() / sr
@@ -706,15 +717,27 @@ class VibeVoiceBackend(TTSBackend):
         elapsed = time.time() - t0
         # write_idx is now an absolute sample count (no wrap), so this is exact.
         played_sec = write_idx / sr if write_idx else 0.0
-        rtf = f"{elapsed / played_sec:.2f}" if played_sec > 0 else "n/a"
+        gen_audio_sec = synth_audio_samples[0] / sr if synth_audio_samples[0] else 0.0
+        # synth_elapsed = drain wall time across all yielded chunks (model only).
+        if synth_t_first and synth_t_last:
+            synth_elapsed = synth_t_last[0] - synth_t_first[0]
+        else:
+            synth_elapsed = 0.0
+        synth_rtf = (
+            f"{synth_elapsed / gen_audio_sec:.2f}" if gen_audio_sec > 0 else "n/a"
+        )
+        play_rtf = f"{elapsed / played_sec:.2f}" if played_sec > 0 else "n/a"
         underrun_ms = underrun_samples * 1000.0 / sr
         # Summarise frame-size distribution (PortAudio's block sizes).
         frames_summary = ", ".join(
             f"{n}x{cnt}" for n, cnt in sorted(cb_frames_seen.items())
         ) or "(none)"
+        # Field names: `rtf` = synth-only (matches batch RTF semantics);
+        # `play_rtf` = wall/playback ratio (~1.0 for streaming, kept for parity).
         print(
             f"[vibevoice-play] done elapsed={elapsed:.1f}s audio={played_sec:.1f}s "
-            f"rtf={rtf} injected={total_injected_sec:.2f}s "
+            f"synth_elapsed={synth_elapsed:.2f}s rtf={synth_rtf} play_rtf={play_rtf} "
+            f"injected={total_injected_sec:.2f}s "
             f"underruns={underrun_events} ({underrun_ms:.0f}ms) "
             f"cb_blocks=[{frames_summary}] anomalies={len(cb_log)} "
             f"voice={os.path.basename(voice_path)} ok={ok}",

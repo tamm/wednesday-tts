@@ -1,203 +1,151 @@
 <div align="center">
-  <img src="docs/logo.png" alt="Wednesday TTS" width="180" />
   <h1>Wednesday TTS</h1>
-  <p>Text normalization and speech synthesis for Claude Code.<br>
-  Raw markdown in → natural spoken audio out.</p>
+  <p>Text normalization and speech synthesis for Claude Code and local tooling.</p>
 </div>
 
----
+## What Is Here
 
-## Quickstart
+Wednesday TTS is two things in one repo:
+
+- a substantial text-normalization pipeline for technical / markdown-heavy text
+- a multi-backend TTS runtime with Claude Code hook integrations
+
+The current primary runtime is the macOS Unix-socket daemon in
+`src/wednesday_tts/server/daemon.py`. The Windows Flask service in
+`src/wednesday_tts/server/app.py` still exists and is useful, but most of the
+recent TTS-system work has landed in the daemon path.
+
+## Current Backends
+
+Registered backends:
+
+- `pocket`
+- `vibevoice`
+- `kokoro`
+- `qwen3`
+- `moss`
+- `sam`
+- `soprano`
+- `chatterbox`
+
+Practical notes:
+
+- `pocket`
+  - default local backend
+  - streaming-capable
+  - works with predefined names and voice prompt paths
+- `vibevoice`
+  - streaming-capable
+  - supports the repo's newest low-latency playback work
+- `sam`
+  - retro formant synth
+  - default inline `««text»»` robot voice unless overridden
+
+## Runtime Split
+
+### macOS / Claude Code path
+
+```text
+Claude hook
+  -> JSON over /tmp/tts-daemon.sock
+  -> daemon.py
+  -> normalize / voice-resolve / render
+  -> playback queue or direct-play backend
+```
+
+### Windows / HTTP path
+
+```text
+HTTP client
+  -> localhost:5678
+  -> app.py
+  -> render + play
+```
+
+## Key Docs
+
+- `docs/architecture.md`
+  - overall runtime topology
+- `docs/voice-pipeline-spec.md`
+  - daemon wire protocol and request lifecycle
+- `docs/voice-system-spec.md`
+  - backend-specific voice behaviour
+- `docs/playback-spec.md`
+  - queue playback vs direct-play
+- `docs/data-flow.md`
+  - hook-to-daemon path
+- `docs/observability.md`
+  - analytics and logging guidance
+- `docs/normalization/README.md`
+  - normalization rule library
+
+## Observability
+
+Primary analytics script:
 
 ```bash
-git clone https://github.com/tamm/wednesday-tts
-cd wednesday-tts
-bash quickstart.sh
+uv run python scripts/analyse_latency.py
 ```
 
-The script detects Python, creates a venv, installs Pocket TTS with the bundled DWP Aussie
-male voice, writes `~/.claude/tts-config.json`, and offers to wire up the Claude Code hooks
-and auto-start.
+This is the single supported latency-analysis tool. Extend it when backend log
+shapes change.
 
-**Requires a HuggingFace login** to download the Pocket TTS model weights:
+Current analytics coverage includes the backends recognised by the parser:
 
-```bash
-hf auth login
-```
+- `pocket`
+- `vibevoice`
+- `kokoro`
+- `qwen3`
+- `moss`
+- `sam`
+- `chatterbox`
+- `soprano`
 
-Requires Python 3.10+. Works on macOS, Linux, and Windows (Git Bash / MSYS2).
+## Logging Consistency Direction
 
----
+The repo already has a decent analytics base now. The main remaining weakness
+is inconsistency in backend log shape.
 
-## How it works
+Recommended next step:
 
-```
-Claude response
-  → thin hook         integrations/claude-code/speak-response.py
-  → POST /speak       localhost:5678
-  → normalize         src/wednesday_tts/normalize/pipeline.py
-  → synthesize        src/wednesday_tts/server/backends/
-  → audio plays
-```
+1. Standardize per-backend `start`, `first-audio`, and `done` markers.
+2. Include `msg_id`, backend, `voice`, `source`, `audio_s`, `elapsed_s`, and
+   `rtf` wherever possible.
+3. Keep `scripts/analyse_latency.py` as the single parser instead of spawning
+   new ad hoc stats tools.
 
----
+## Install Notes
 
-## Backends
+### Pocket
 
-| Backend | Quality | Speed | GPU | Install extra | Notes |
-|---------|---------|-------|-----|---------------|-------|
-| **Pocket** | Neural, voice-cloned | Fast, streaming | No | `.[pocket]` | Default. DWP Aussie voice bundled |
-| **Kokoro** | Neural, built-in voices | Fast | No | `.[kokoro]` | Good quality, many voices |
-| **SAM** | Retro 8-bit formant | Instant | No | `.[sam]` | 1982 Commodore 64 synth. Pure Python, zero deps. Gloriously robotic |
-| **Soprano** | Neural transformer | Slow | Yes | manual | High quality, needs CUDA |
-| **Chatterbox** | Neural, voice-cloned | Slow | Yes | manual | Voice cloning, needs CUDA |
+Read `CLAUDE.md` before changing the pocket backend. Predefined pocket voice
+names should be passed straight to `get_state_for_audio_prompt(...)`.
 
----
+### VibeVoice
 
-## Voice switching
-
-You can switch to SAM voice mid-sentence using `««...»»` guillemet tags in any text sent to the daemon:
-
-```
-Normal speech here. ««I am now a robot from 1982.»» And back to normal.
-```
-
-The daemon renders each segment with its respective backend, resamples to a common sample rate, and stitches the audio together seamlessly. Override backends are lazy-loaded on first use and cached.
-
-From the Python client API:
-
-```python
-from wednesday_tts.client.api import speak, voice_tag
-
-# Whole message in SAM
-speak("Exterminate", voice="sam")
-
-# Build mixed text manually
-text = f"Hello. {voice_tag('I am a robot', 'sam')} Goodbye."
-speak(text)
-```
-
-In raw daemon protocol (hooks):
-
-```
-SEQ:0:1.0:markdown::Normal text. ««Robot text.»» More normal.
-```
-
----
-
-## Manual setup
-
-<details>
-<summary>If you prefer to set up by hand</summary>
-
-**Venv + install**
-
-```bash
-# Pocket TTS — default, uses bundled DWP voice
-uv venv --python 3.12
-uv pip install -e ".[pocket]"
-
-# Kokoro — built-in named voices, no voice file needed
-uv pip install -e ".[kokoro]"
-
-# SAM — retro robot voice, pure Python, no model files
-uv pip install -e ".[sam]"
-
-# Multiple backends + dev tools
-uv pip install -e ".[pocket,sam,dev]"
-```
-
-**Config**
-
-```bash
-cp config/tts-config-template.json ~/.claude/tts-config.json
-```
-
-| Key              | Value                                                                 |
-| ---------------- | --------------------------------------------------------------------- |
-| `active_model`   | `pocket` (default), `kokoro`, or `sam`                                |
-| `voice` (pocket) | Path to a `.safetensors` file — bundled DWP voice is at `voices/dwp/` |
-| `voice` (kokoro) | Built-in name e.g. `af_bella`                                         |
-| `speed` (sam)    | 1–255 (default 72). Higher = slower. Also: `pitch`, `mouth`, `throat` |
-
-**Run the server**
-
-```bash
-.venv/bin/python -m wednesday_tts.server.app    # macOS / Linux
-.venv/Scripts/python -m wednesday_tts.server.app  # Windows
-```
-
-Server listens on `localhost:5678`.
-
-**Auto-start**
-
-- Windows: elevated PowerShell → `scripts/install-tts-service.ps1`
-- macOS: `bash quickstart.sh` handles launchd, or see `config/com.tamm.wednesday-tts.plist`
-
-**Claude Code hooks**
-
-```bash
-bash integrations/claude-code/install.sh
-```
-
-Then add to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "Stop": [{ "command": "python ~/.claude/hooks/speak-response.py" }],
-    "PreToolUse": [{ "command": "python ~/.claude/hooks/pre-tool-speak.py" }]
-  }
-}
-```
-
-See [`integrations/claude-code/README.md`](integrations/claude-code/README.md) for full details.
-
-</details>
-
----
-
-## Voice setup
-
-The DWP Aussie male voice is bundled at `voices/dwp/`. The quickstart uses it automatically.
-
-To use a different voice, point `voice` in `~/.claude/tts-config.json` at any `.safetensors` file.
-
----
+VibeVoice is not on PyPI. Install it from a local clone and point it at the
+upstream `.pt` voice prompts. See `CLAUDE.md` and `docs/architecture.md` for
+the current assumptions.
 
 ## Testing
 
 ```bash
-.venv/Scripts/python -m pytest   # Windows
-.venv/bin/python -m pytest       # macOS / Linux
+uv venv --python 3.12
+uv pip install -e ".[dev]"
+uv run pytest -q
+uv run ruff check .
 ```
 
----
+## Repo Layout
 
-## Project layout
-
-```
+```text
 src/wednesday_tts/
-  normalize/      17 normalization modules + pipeline
-  server/         Flask HTTP server + backends (pocket, kokoro, sam, soprano, chatterbox)
-  client/         Thin HTTP client library
-  platform.py     Cross-platform helpers
+  normalize/      normalization pipeline and rules
+  server/         macOS daemon, Windows HTTP app, backends
+  client/         thin HTTP client
 integrations/
-  claude-code/    Hooks + install script
-data/             tts-dictionary.json, tts-filenames.json
-config/           Config template + macOS plist
-scripts/          Start/stop/install scripts
-docs/normalization/  Rule library (15 rule docs)
-tests/            489 tests
+  claude-code/    hook clients for the daemon
+docs/             architecture, playback, voice, normalization docs
+scripts/          analytics and control helpers
+tests/            daemon, backend, hook, and normalization coverage
 ```
-
----
-
-## Credits
-
-[Kyutai Labs](https://github.com/kyutai-labs) — creators of
-[Pocket TTS](https://github.com/kyutai-labs/pocket-tts), the default backend.
-Brilliant lightweight TTS that runs on CPU with voice cloning support.
-Several streaming and chunking patterns in this project are drawn from their work.
-
-Rope logo by Tamm, generated with AI assistance.
