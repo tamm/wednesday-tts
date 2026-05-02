@@ -47,6 +47,20 @@ moss = [
     "torch==2.7.0",
     "torchaudio==2.7.0",
 ]
+vibevoice = [
+    # Microsoft VibeVoice-Realtime-0.5B (streaming TTS)
+    # Install upstream first:
+    #   git clone https://github.com/microsoft/VibeVoice ~/dev/VibeVoice
+    #   uv pip install -e ~/dev/VibeVoice[streamingtts]
+    # Voice prompts (.pt) live in ~/dev/VibeVoice/demo/voices/streaming_model/
+    "torch",
+    "transformers==4.51.3",
+    "diffusers",
+    "accelerate",
+    "sounddevice",
+    "soundfile",
+    "numpy",
+]
 test = [
     "pytest>=7",
     "pytest-cov",

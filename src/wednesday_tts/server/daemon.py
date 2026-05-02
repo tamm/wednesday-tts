@@ -70,9 +70,23 @@ def _check_competing_instances() -> list[str]:
             text=True,
             timeout=5,
         )
-        other_pids = [
+        candidate_pids = [
             int(p) for p in result.stdout.strip().splitlines() if p.strip() and int(p) != my_pid
         ]
+        # pgrep -f matches the whole command line, so a zsh shell that
+        # invoked `launchctl kickstart` (and therefore has the daemon
+        # module name in argv) will show up here. Filter to only python
+        # processes actually executing the module.
+        other_pids: list[int] = []
+        for pid in candidate_pids:
+            try:
+                cmd = subprocess.check_output(
+                    ["ps", "-p", str(pid), "-o", "comm="], text=True, timeout=2
+                ).strip()
+            except Exception:
+                continue
+            if "python" in os.path.basename(cmd).lower():
+                other_pids.append(pid)
         if other_pids:
             warnings.append(
                 f"Other daemon processes already running: {other_pids}. "
@@ -620,6 +634,7 @@ _stop_gen = 0  # incremented on STOP; in-flight chunks compare to bail out
 _skip_gen = 0  # incremented on SKIP; playback write loop bails but queue/renders survive
 _msg_id_counter = 0  # monotonic message ID; incremented per request
 _playing_msg_id: int = -1  # msg_id of the chunk currently being written to audio device
+_last_overlay_msg_id: int = -1  # last msg_id we sent a playback_started/subtitle for
 _playback_current_msg_id: int = (
     -1
 )  # msg_id the playback worker has claimed (set before write starts)
@@ -1366,14 +1381,32 @@ def _audio_health_worker() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _anti_click(audio: np.ndarray, rate: int) -> np.ndarray:
-    """Trim artefacts and apply fade-in/out to prevent clicks between chunks."""
-    TRIM_START = int(rate * 0.005)
-    TRIM_END = int(rate * 0.005)
-    PAD_START = int(rate * 0.050)
-    PAD_END = int(rate * 0.050)
-    FADE_IN = int(rate * 0.015)
-    FADE_OUT = int(rate * 0.015)
+_DEFAULT_ANTI_CLICK_SHAPE = {
+    "trim_start": 0.005,
+    "trim_end": 0.005,
+    "pad_start": 0.050,
+    "pad_end": 0.050,
+    "fade_in": 0.015,
+    "fade_out": 0.015,
+}
+
+
+def _anti_click(audio: np.ndarray, rate: int, shape: dict | None = None) -> np.ndarray:
+    """Trim artefacts and apply fade-in/out to prevent clicks between chunks.
+
+    `shape` lets the active backend override the durations (in seconds). Pass
+    all-zero values to disable trim/fade/pad entirely (useful for streaming
+    backends where every chunk is mid-utterance and there is nothing to fade).
+    """
+    s = shape or _DEFAULT_ANTI_CLICK_SHAPE
+    TRIM_START = int(rate * s.get("trim_start", 0.0))
+    TRIM_END = int(rate * s.get("trim_end", 0.0))
+    PAD_START = int(rate * s.get("pad_start", 0.0))
+    PAD_END = int(rate * s.get("pad_end", 0.0))
+    FADE_IN = int(rate * s.get("fade_in", 0.0))
+    FADE_OUT = int(rate * s.get("fade_out", 0.0))
+    if TRIM_START + TRIM_END + PAD_START + PAD_END + FADE_IN + FADE_OUT == 0:
+        return audio
     if len(audio) > TRIM_START + TRIM_END + FADE_IN + FADE_OUT:
         audio = audio[TRIM_START:]
         audio = audio[:-TRIM_END].copy()
@@ -1679,7 +1712,7 @@ def playback_worker(backend: TTSBackend) -> None:
             break
 
         # Unpack (audio, subtitle_text, msg_id) tuple or bare array
-        global _playing_msg_id, _playback_current_msg_id
+        global _playing_msg_id, _playback_current_msg_id, _last_overlay_msg_id
         if isinstance(item, tuple):
             if len(item) >= 3:
                 item, subtitle_text, _playing_msg_id = item[0], item[1], item[2]
@@ -1728,7 +1761,11 @@ def playback_worker(backend: TTSBackend) -> None:
             vpio_ok = False
             if not use_spatial and _vpio is not None and _vpio._running:
                 vpio_audio = _limiter(audio.copy(), ceiling=0.85, rate=backend.sample_rate)
-                vpio_audio = _anti_click(vpio_audio, backend.sample_rate)
+                vpio_audio = _anti_click(
+                    vpio_audio,
+                    backend.sample_rate,
+                    shape=getattr(backend, "anti_click_shape", None),
+                )
                 write_gen_v = _stop_gen
                 write_skip_v = _skip_gen
                 if subtitle_text and not _should_skip_msg(_playing_msg_id):
@@ -1773,15 +1810,25 @@ def playback_worker(backend: TTSBackend) -> None:
                     bt_uid = None
                 else:
                     spatial_audio = _limiter(audio.copy(), ceiling=0.85, rate=backend.sample_rate)
-                    spatial_audio = _anti_click(spatial_audio, backend.sample_rate)
+                    spatial_audio = _anti_click(
+                        spatial_audio,
+                        backend.sample_rate,
+                        shape=getattr(backend, "anti_click_shape", None),
+                    )
                     write_gen = _stop_gen
                     write_skip = _skip_gen
                     if subtitle_text and not _should_skip_msg(_playing_msg_id):
                         dur = _estimate_speech_duration(subtitle_text)
                         _send_subtitle(subtitle_text, audio_dur=dur)
                         subtitle_text = None
-                    elif not subtitle_text and not _should_skip_msg(_playing_msg_id):
+                        _last_overlay_msg_id = _playing_msg_id
+                    elif (
+                        not subtitle_text
+                        and not _should_skip_msg(_playing_msg_id)
+                        and _last_overlay_msg_id != _playing_msg_id
+                    ):
                         _send_overlay({"type": "playback_started"})
+                        _last_overlay_msg_id = _playing_msg_id
                     CHUNK = int(backend.sample_rate * 0.1)
                     offset = 0
 
@@ -1812,19 +1859,51 @@ def playback_worker(backend: TTSBackend) -> None:
                             _playback_heartbeat = time.monotonic()
                             offset = end
                         # Wait for actual playback to finish — the pipe
-                        # write completes much faster than real-time.
+                        # write completes much faster than real-time. Skip the
+                        # wait when this chunk is part of an in-progress
+                        # streaming message: another chunk for the same
+                        # msg_id is queued or imminent, and waiting the full
+                        # play-out here introduces gaps between chunks.
                         _write_elapsed = time.monotonic() - _spatial_write_t0
                         _play_dur = len(spatial_audio) / backend.sample_rate
                         _wait = _play_dur - _write_elapsed
+                        _is_streaming = bool(getattr(backend, "supports_streaming", False))
+
+                        def _same_msg_chunk_pending() -> bool:
+                            try:
+                                with playback_queue.mutex:  # type: ignore[attr-defined]
+                                    for _q in playback_queue.queue:  # type: ignore[attr-defined]
+                                        if (
+                                            isinstance(_q, tuple)
+                                            and len(_q) >= 3
+                                            and _q[2] == _playing_msg_id
+                                        ):
+                                            return True
+                            except Exception:
+                                return False
+                            return False
+
                         if _wait > 0 and not _should_bail():
-                            print(
-                                f"[playback] spatial: waiting {_wait:.1f}s for playback to finish",
-                                flush=True,
-                            )
-                            _wait_end = time.monotonic() + _wait
-                            while time.monotonic() < _wait_end and not _should_bail():
-                                time.sleep(min(0.2, _wait_end - time.monotonic()))
-                                _playback_heartbeat = time.monotonic()
+                            # Streaming backends: if the next same-msg chunk is
+                            # already queued, return immediately. The spatial
+                            # subprocess buffers what we wrote and will play
+                            # straight into the next write with no gap.
+                            if _is_streaming and _same_msg_chunk_pending():
+                                pass
+                            else:
+                                print(
+                                    f"[playback] spatial: waiting {_wait:.1f}s for playback to finish",
+                                    flush=True,
+                                )
+                                _wait_end = time.monotonic() + _wait
+                                while time.monotonic() < _wait_end and not _should_bail():
+                                    # While waiting, keep checking — the moment
+                                    # the next chunk lands, bail out so playback
+                                    # is continuous.
+                                    if _is_streaming and _same_msg_chunk_pending():
+                                        break
+                                    time.sleep(min(0.05, _wait_end - time.monotonic()))
+                                    _playback_heartbeat = time.monotonic()
                         spatial_ok = True
                     except (BrokenPipeError, OSError) as exc:
                         print(
@@ -1841,7 +1920,11 @@ def playback_worker(backend: TTSBackend) -> None:
             # --- PortAudio path (speakers or BT fallback) ---
             audio = _upsample(audio, backend.sample_rate, device_rate)
             audio = _limiter(audio, ceiling=0.85, rate=device_rate)
-            audio = _anti_click(audio, device_rate)
+            audio = _anti_click(
+                audio,
+                device_rate,
+                shape=getattr(backend, "anti_click_shape", None),
+            )
 
             need_reopen = out_stream is None or not out_stream.active
             if need_reopen:
@@ -2127,6 +2210,38 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     # ── Render ────────────────────────────────────────────────────────
     gen_snap = _stop_gen
     speed = DEFAULT_SPEED
+
+    # Direct-play streaming: backend opens its own OutputStream and writes
+    # chunks straight to the audio device, bypassing playback_queue/spatial
+    # processing entirely. Used for VibeVoice where every extra hop adds
+    # audible gaps.
+    use_direct_play = (
+        not needs_backend_switch
+        and not any(v == "sam" for v, _, _ in segments)
+        and getattr(backend, "supports_streaming", False)
+        and hasattr(backend, "play_streaming")
+        and _stop_gen == gen_snap
+    )
+    if use_direct_play:
+        print(
+            f"[req] DIRECT-PLAY msg_id={msg_id}, {len(text)} chars, voice={_voice_label(voice)}",
+            flush=True,
+        )
+        _gs = gen_snap
+        _mid = msg_id
+        try:
+            backend.play_streaming(
+                text,
+                speed=speed,
+                voice=voice,
+                stop_check=lambda: _stop_gen != _gs or _should_skip_msg(_mid),
+                msg_id=msg_id,
+            )
+        except Exception as exc:
+            print(f"[direct-play] failed: {exc}", flush=True)
+        _mark_msg_done(msg_id)
+        _stat_inc("requests_completed")
+        return
 
     # Streaming: single voice on primary backend, no backend switching
     use_streaming = (
@@ -2490,6 +2605,20 @@ def main() -> None:
         for _gen_key in ("temperature", "top_p", "top_k", "repetition_penalty"):
             if _model_config.get(_gen_key) is not None:
                 _kwargs[_gen_key] = _model_config[_gen_key]
+
+    elif backend_name == "vibevoice":
+        for _key in ("model_path", "voice", "voices_dir", "device"):
+            if _model_config.get(_key):
+                _kwargs[_key] = _model_config[_key]
+        for _num_key in (
+            "cfg_scale",
+            "ddpm_steps",
+            "speed",
+            "prebuffer_sec",
+            "ringbuffer_sec",
+        ):
+            if _model_config.get(_num_key) is not None:
+                _kwargs[_num_key] = _model_config[_num_key]
 
     global _active_backend, _active_backend_name
     backend = backend_cls(**_kwargs)

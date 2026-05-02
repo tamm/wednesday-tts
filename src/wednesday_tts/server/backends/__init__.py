@@ -23,6 +23,7 @@ from .pocket import PocketTTSBackend
 from .qwen3 import Qwen3TTSBackend
 from .sam import SAMBackend
 from .soprano import SopranoBackend
+from .vibevoice import VibeVoiceBackend
 
 REGISTRY: dict[str, type[TTSBackend]] = {
     "kokoro": KokoroBackend,
@@ -32,6 +33,7 @@ REGISTRY: dict[str, type[TTSBackend]] = {
     "chatterbox": ChatterboxBackend,
     "qwen3": Qwen3TTSBackend,
     "moss": MossNanoBackend,
+    "vibevoice": VibeVoiceBackend,
 }
 
 __all__ = [
@@ -43,5 +45,6 @@ __all__ = [
     "ChatterboxBackend",
     "Qwen3TTSBackend",
     "MossNanoBackend",
+    "VibeVoiceBackend",
     "REGISTRY",
 ]
