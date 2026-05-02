@@ -139,8 +139,7 @@ class SAMBackend(TTSBackend):
             duration = arr.size / self.sample_rate if self.sample_rate else 0.0
             rtf = f"{elapsed / duration:.2f}" if duration > 0 else "n/a"
             print(
-                f"[sam] generated {duration:.1f}s audio in {elapsed:.1f}s "
-                f"(RTF {rtf}, voice=sam)",
+                f"[sam] generated {duration:.1f}s audio in {elapsed:.1f}s (RTF {rtf}, voice=sam)",
                 flush=True,
             )
             return arr

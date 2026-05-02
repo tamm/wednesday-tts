@@ -647,6 +647,7 @@ def _should_skip_msg(msg_id: int) -> bool:
     """Check if a message should be skipped (single skip or session flush)."""
     return _skip_msg_id == msg_id or msg_id in _skip_msg_ids
 
+
 # Barge-in queue-and-delay. When the barge-in flag from wednesday-yarn is
 # fresh (user is currently dictating), new speak requests are NOT rejected —
 # they are appended to _barge_in_pending and held. The currently playing
@@ -837,9 +838,7 @@ def _flush_session(session_id: str) -> None:
     """
     # Find all msg_ids belonging to this session
     with _msg_session_lock:
-        session_msg_ids = {
-            mid for mid, sid in _msg_session.items() if sid == session_id
-        }
+        session_msg_ids = {mid for mid, sid in _msg_session.items() if sid == session_id}
 
     if not session_msg_ids:
         return
@@ -2750,6 +2749,7 @@ def main() -> None:
         backend.load()
     except Exception as exc:
         import traceback
+
         print(f"FATAL: failed to load {backend_name}: {exc}", flush=True)
         print(traceback.format_exc(), flush=True)
         raise SystemExit(2)

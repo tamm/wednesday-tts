@@ -108,9 +108,13 @@ PAT_FIRST_CHUNK = re.compile(
     r"^(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+\[playback\]\s+first-chunk\s+msg_id=(-?\d+)"
 )
 # 21:44:53 [spatial] [SpatialStream] ready rate=48000.0 pan=0.47 device=...
-PAT_SPATIAL = re.compile(r"^(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+\[spatial\]\s+\[SpatialStream\]\s+ready")
+PAT_SPATIAL = re.compile(
+    r"^(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+\[spatial\]\s+\[SpatialStream\]\s+ready"
+)
 # 21:44:53 [playback] opening PortAudio stream / PortAudio stream opened
-PAT_PLAYBACK_OPEN = re.compile(r"^(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+\[playback\]\s+(opening|PortAudio stream opened)")
+PAT_PLAYBACK_OPEN = re.compile(
+    r"^(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+\[playback\]\s+(opening|PortAudio stream opened)"
+)
 # 23:14:38.743 Ready! [qwen3] Listening on /tmp/tts-daemon.sock
 PAT_DAEMON_READY = re.compile(r"^\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?\s+Ready!\s+\[(\w+)\]")
 # 23:07:38 Loaded speech tokenizer from .../models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-4bit/...
@@ -155,7 +159,7 @@ def parse_log(lines, since: time | None = None) -> list[Utt]:
     # everything except the last session for each id.
     utts: list[Utt] = []
     pending_cold_for: str | None = None  # backend whose next utt is cold-start
-    qwen3_variant: str | None = None     # current qwen3 model variant (e.g. "0.6B-Base-4bit")
+    qwen3_variant: str | None = None  # current qwen3 model variant (e.g. "0.6B-Base-4bit")
 
     def _last() -> Utt | None:
         return utts[-1] if utts else None
@@ -184,15 +188,17 @@ def parse_log(lines, since: time | None = None) -> list[Utt]:
         if m:
             msg_id = int(m.group(2))
             voice = m.group(4)
-            utts.append(Utt(
-                msg_id=msg_id,
-                req_ts=ts,
-                source=m.group(3),
-                voice=voice,
-                chars=int(m.group(5)),
-                req_latency=float(m.group(6)),
-                backend="?",
-            ))
+            utts.append(
+                Utt(
+                    msg_id=msg_id,
+                    req_ts=ts,
+                    source=m.group(3),
+                    voice=voice,
+                    chars=int(m.group(5)),
+                    req_latency=float(m.group(6)),
+                    backend="?",
+                )
+            )
             continue
 
         m = PAT_GEN.match(line)
@@ -383,12 +389,12 @@ def _total_to_play(u: Utt) -> float | None:
 
 METRICS: list[tuple[str, callable]] = [
     ("hook_to_daemon", lambda u: u.req_latency),
-    ("synth_dt",       _synth_dt),
-    ("synth_elapsed",  lambda u: u.synth_elapsed),
-    ("play_dt",        _play_dt),
-    ("total_to_play",  _total_to_play),
-    ("audio_s",        lambda u: u.audio_s),
-    ("rtf",            lambda u: u.rtf),
+    ("synth_dt", _synth_dt),
+    ("synth_elapsed", lambda u: u.synth_elapsed),
+    ("play_dt", _play_dt),
+    ("total_to_play", _total_to_play),
+    ("audio_s", lambda u: u.audio_s),
+    ("rtf", lambda u: u.rtf),
 ]
 
 
@@ -408,9 +414,17 @@ def render_per_utt(utts: list[Utt], per_backend_last: int | None) -> str:
         utts = rows
 
     headers = [
-        "msg", "backend", "voice", "src", "chars",
-        "hook→daemon", "synth_dt", "play_dt", "TTFS",
-        "audio_s", "rtf",
+        "msg",
+        "backend",
+        "voice",
+        "src",
+        "chars",
+        "hook→daemon",
+        "synth_dt",
+        "play_dt",
+        "TTFS",
+        "audio_s",
+        "rtf",
     ]
     out = [_md_row(headers), _md_row(["---"] * len(headers))]
     for u in utts:
@@ -418,19 +432,23 @@ def render_per_utt(utts: list[Utt], per_backend_last: int | None) -> str:
         ms = u.extras.get("ttfs_ms")
         backend_first = ms / 1000.0 if ms is not None else _play_dt(u)
         ttfs = u.req_latency + backend_first if backend_first is not None else None
-        out.append(_md_row([
-            str(u.msg_id),
-            u.backend,
-            voice_short(u.voice),
-            u.source[:12],
-            str(u.chars),
-            f"{u.req_latency:.2f}s",
-            fmt_delta(_synth_dt(u)).strip() + "s" if _synth_dt(u) is not None else "—",
-            fmt_delta(_play_dt(u)).strip() + "s" if _play_dt(u) is not None else "—",
-            fmt_delta(ttfs).strip() + "s" if ttfs is not None else "—",
-            f"{u.audio_s:.2f}s" if u.audio_s is not None else "—",
-            f"{u.rtf:.2f}" if u.rtf is not None else "—",
-        ]))
+        out.append(
+            _md_row(
+                [
+                    str(u.msg_id),
+                    u.backend,
+                    voice_short(u.voice),
+                    u.source[:12],
+                    str(u.chars),
+                    f"{u.req_latency:.2f}s",
+                    fmt_delta(_synth_dt(u)).strip() + "s" if _synth_dt(u) is not None else "—",
+                    fmt_delta(_play_dt(u)).strip() + "s" if _play_dt(u) is not None else "—",
+                    fmt_delta(ttfs).strip() + "s" if ttfs is not None else "—",
+                    f"{u.audio_s:.2f}s" if u.audio_s is not None else "—",
+                    f"{u.rtf:.2f}" if u.rtf is not None else "—",
+                ]
+            )
+        )
     return "\n".join(out)
 
 
@@ -458,15 +476,15 @@ def render_summary(utts: list[Utt]) -> str:
         return u.req_latency + backend_ttfs
 
     stages = [
-        ("hook→daemon",      lambda u: u.req_latency),
-        ("→synth_done",      _synth_dt),
-        ("→playback",        _play_dt),
-        ("TTFS",             _ttfs),
+        ("hook→daemon", lambda u: u.req_latency),
+        ("→synth_done", _synth_dt),
+        ("→playback", _play_dt),
+        ("TTFS", _ttfs),
     ]
     extras = [
-        ("synth_elapsed",    lambda u: u.synth_elapsed),
-        ("audio_s",          lambda u: u.audio_s),
-        ("rtf",              lambda u: u.rtf),
+        ("synth_elapsed", lambda u: u.synth_elapsed),
+        ("audio_s", lambda u: u.audio_s),
+        ("rtf", lambda u: u.rtf),
     ]
     stat_labels = ["mean", "p50", "p90", "p99", "max"]
 
@@ -516,7 +534,12 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--log", type=Path, default=DEFAULT_LOG)
     p.add_argument("--since", help="HH:MM, filter to log entries from this time of day")
-    p.add_argument("--last", type=int, default=5, help="Show last N utterances per backend in the detail table (default 5)")
+    p.add_argument(
+        "--last",
+        type=int,
+        default=5,
+        help="Show last N utterances per backend in the detail table (default 5)",
+    )
     p.add_argument("--backend", help="Filter to a specific backend (moss, qwen3, pocket, ...)")
     p.add_argument("--no-detail", action="store_true", help="Skip per-utterance table")
     p.add_argument(

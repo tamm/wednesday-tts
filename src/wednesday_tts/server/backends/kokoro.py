@@ -181,8 +181,8 @@ class KokoroBackend(TTSBackend):
 
         # Ring buffer state — guarded by cond.
         ring = np.zeros(ring_capacity, dtype=np.float32)
-        write_idx = 0   # absolute samples written
-        read_idx = 0    # absolute samples read
+        write_idx = 0  # absolute samples written
+        read_idx = 0  # absolute samples read
         gen_done = False
         cond = threading.Condition()
         underrun_events = 0
@@ -196,9 +196,7 @@ class KokoroBackend(TTSBackend):
             n = arr.size
             with cond:
                 # Back-pressure: wait if ring is full.
-                while _available() + n > ring_capacity and not (
-                    stop_check and stop_check()
-                ):
+                while _available() + n > ring_capacity and not (stop_check and stop_check()):
                     cond.wait(timeout=0.5)
                 if stop_check and stop_check():
                     return
@@ -278,9 +276,7 @@ class KokoroBackend(TTSBackend):
                     for piece_idx, piece in enumerate(text_pieces):
                         if stop_check and stop_check():
                             break
-                        for result in self._pipeline(
-                            piece, voice=use_voice, speed=use_speed
-                        ):
+                        for result in self._pipeline(piece, voice=use_voice, speed=use_speed):
                             if stop_check and stop_check():
                                 break
                             if result.audio is None:
@@ -318,9 +314,7 @@ class KokoroBackend(TTSBackend):
                     cond.notify_all()
 
         t0 = time.time()
-        drain_thread = threading.Thread(
-            target=_drain_generator, name="kokoro-drain", daemon=True
-        )
+        drain_thread = threading.Thread(target=_drain_generator, name="kokoro-drain", daemon=True)
         drain_thread.start()
 
         # Wait until prebuffer_max_samples are ready OR generation finishes.
@@ -386,8 +380,7 @@ class KokoroBackend(TTSBackend):
         first_audio_ms = (time.time() - t0) * 1000.0
         prebuf_s = min(prebuffer_filled / sr, self._prebuffer_sec)
         print(
-            f"[kokoro-play] prebuffer={prebuf_s:.2f}s "
-            f"first-audio={first_audio_ms:.0f}ms",
+            f"[kokoro-play] prebuffer={prebuf_s:.2f}s first-audio={first_audio_ms:.0f}ms",
             flush=True,
         )
 
@@ -434,9 +427,7 @@ class KokoroBackend(TTSBackend):
             synth_elapsed = gen_t_end[0] - gen_t_start[0]
         else:
             synth_elapsed = 0.0
-        synth_rtf = (
-            f"{synth_elapsed / gen_audio_sec:.2f}" if gen_audio_sec > 0 else "n/a"
-        )
+        synth_rtf = f"{synth_elapsed / gen_audio_sec:.2f}" if gen_audio_sec > 0 else "n/a"
         play_rtf = f"{elapsed / played_sec:.2f}" if played_sec > 0 else "n/a"
         underrun_ms = underrun_samples * 1000.0 / sr
         # Field names: `rtf` = synth-only (matches batch-mode RTF semantics);

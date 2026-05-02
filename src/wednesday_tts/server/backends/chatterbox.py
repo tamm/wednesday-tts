@@ -65,9 +65,11 @@ class ChatterboxBackend(TTSBackend):
             try:
                 if self._turbo:
                     from chatterbox.tts_turbo import ChatterboxTurboTTS  # type: ignore[import]
+
                     self._model = ChatterboxTurboTTS.from_pretrained(device="cpu")
                 else:
                     from chatterbox.tts import ChatterboxTTS  # type: ignore[import]
+
                     self._model = ChatterboxTTS.from_pretrained(device="cpu")
             finally:
                 torch.load = original_torch_load
@@ -79,9 +81,11 @@ class ChatterboxBackend(TTSBackend):
         else:
             if self._turbo:
                 from chatterbox.tts_turbo import ChatterboxTurboTTS  # type: ignore[import]
+
                 self._model = ChatterboxTurboTTS.from_pretrained(device=self._device)
             else:
                 from chatterbox.tts import ChatterboxTTS  # type: ignore[import]
+
                 self._model = ChatterboxTTS.from_pretrained(device=self._device)
 
         self.sample_rate = self._model.sr
@@ -129,9 +133,7 @@ class ChatterboxBackend(TTSBackend):
             elapsed = time.monotonic() - t0
             duration = arr.size / self.sample_rate if self.sample_rate else 0.0
             rtf = f"{elapsed / duration:.2f}" if duration > 0 else "n/a"
-            voice_label = (
-                os.path.basename(use_voice).rsplit(".", 1)[0] if use_voice else "default"
-            )
+            voice_label = os.path.basename(use_voice).rsplit(".", 1)[0] if use_voice else "default"
             tag = "chatterbox-turbo" if self._turbo else "chatterbox"
             print(
                 f"[{tag}] generated {duration:.1f}s audio in {elapsed:.1f}s "

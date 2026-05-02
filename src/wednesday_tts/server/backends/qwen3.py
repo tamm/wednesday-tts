@@ -284,7 +284,7 @@ class Qwen3TTSBackend(TTSBackend):
         # Ring buffer state — all guarded by `cond`.
         ring = np.zeros(ring_capacity, dtype=np.float32)
         write_idx = 0  # absolute sample count written
-        read_idx = 0   # absolute sample count read
+        read_idx = 0  # absolute sample count read
         gen_done = False
         cond = threading.Condition()
         underrun_events = 0
@@ -301,9 +301,7 @@ class Qwen3TTSBackend(TTSBackend):
             n = arr.size
             with cond:
                 # Back-pressure if ring is full.
-                while _available() + n > ring_capacity and not (
-                    stop_check and stop_check()
-                ):
+                while _available() + n > ring_capacity and not (stop_check and stop_check()):
                     cond.wait(timeout=0.5)
                 if stop_check and stop_check():
                     return
@@ -345,12 +343,7 @@ class Qwen3TTSBackend(TTSBackend):
             cb_t1 = time.perf_counter()
             lock_wait_us = (lock_acquired_at - cb_t0) * 1e6
             cb_total_us = (cb_t1 - cb_t0) * 1e6
-            if (
-                take < frames
-                or status_flags
-                or cb_total_us > 1500
-                or lock_wait_us > 500
-            ):
+            if take < frames or status_flags or cb_total_us > 1500 or lock_wait_us > 500:
                 if len(cb_log) < cb_log_max:
                     cb_log.append((cb_t0, frames, take, avail, cb_total_us))
 
@@ -513,14 +506,12 @@ class Qwen3TTSBackend(TTSBackend):
             synth_elapsed = synth_t_last[0] - synth_t_first[0]
         else:
             synth_elapsed = 0.0
-        synth_rtf = (
-            f"{synth_elapsed / gen_audio_sec:.2f}" if gen_audio_sec > 0 else "n/a"
-        )
+        synth_rtf = f"{synth_elapsed / gen_audio_sec:.2f}" if gen_audio_sec > 0 else "n/a"
         play_rtf = f"{elapsed / played_sec:.2f}" if played_sec > 0 else "n/a"
         underrun_ms = underrun_samples * 1000.0 / sr
-        frames_summary = ", ".join(
-            f"{n}x{cnt}" for n, cnt in sorted(cb_frames_seen.items())
-        ) or "(none)"
+        frames_summary = (
+            ", ".join(f"{n}x{cnt}" for n, cnt in sorted(cb_frames_seen.items())) or "(none)"
+        )
         voice_desc = ref_audio if ref_audio else f"seed={seed}"
         # `rtf` = synth-only (matches batch RTF semantics);
         # `play_rtf` = wall/playback ratio (~1.0 for streaming, kept for parity).

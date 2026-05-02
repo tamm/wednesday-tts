@@ -135,9 +135,7 @@ class TestSplitVoiceSegments:
         """««instruct|text»» routes instruct to the request voice, no SAM."""
         text = "««whispered|the guillemet syntax already exposes instruct»»"
         segs = _split_voice_segments(text)
-        assert segs == [
-            (None, "whispered", "the guillemet syntax already exposes instruct")
-        ]
+        assert segs == [(None, "whispered", "the guillemet syntax already exposes instruct")]
 
     def test_instruct_shorthand_excited(self) -> None:
         text = "««excited and fast|oi, guillemets ALREADY do instruct, just clunky as!»»"

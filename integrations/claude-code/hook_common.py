@@ -31,18 +31,23 @@ def _log_subagent_decision(payload: dict, result: bool, reason: str) -> None:
     """Log is_subagent() decision to debug log so we can trace teammate false-negatives."""
     try:
         log_path = os.path.join(_TEMP, "wednesday-tts-hook-debug.log")
-        line = json.dumps({
-            "t": time.time(),
-            "hook": "is_subagent",
-            "result": result,
-            "reason": reason,
-            "session_id": payload.get("session_id"),
-            "agent_id": payload.get("agent_id"),
-            "agent_type": payload.get("agent_type"),
-            "team_name": payload.get("team_name"),
-            "teammate_name": payload.get("teammate_name"),
-            "transcript_path": payload.get("transcript_path"),
-        }) + "\n"
+        line = (
+            json.dumps(
+                {
+                    "t": time.time(),
+                    "hook": "is_subagent",
+                    "result": result,
+                    "reason": reason,
+                    "session_id": payload.get("session_id"),
+                    "agent_id": payload.get("agent_id"),
+                    "agent_type": payload.get("agent_type"),
+                    "team_name": payload.get("team_name"),
+                    "teammate_name": payload.get("teammate_name"),
+                    "transcript_path": payload.get("transcript_path"),
+                }
+            )
+            + "\n"
+        )
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception:
@@ -248,7 +253,18 @@ def _log_send_error(source: str, phase: str, exc: Exception | None) -> None:
     """Append a one-line error to the hook debug log. Silent on failure."""
     try:
         log_path = os.path.join(_TEMP, "wednesday-tts-hook-debug.log")
-        line = json.dumps({"t": time.time(), "hook": "send_speak", "source": source, "phase": phase, "error": str(exc)}) + "\n"
+        line = (
+            json.dumps(
+                {
+                    "t": time.time(),
+                    "hook": "send_speak",
+                    "source": source,
+                    "phase": phase,
+                    "error": str(exc),
+                }
+            )
+            + "\n"
+        )
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception:

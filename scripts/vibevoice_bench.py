@@ -49,9 +49,7 @@ def main() -> None:
     p.add_argument("--device", default=None, help="mps | cuda | cpu (auto)")
     args = p.parse_args()
 
-    backend = VibeVoiceBackend(
-        voice=args.voice, prebuffer_sec=args.prebuffer, device=args.device
-    )
+    backend = VibeVoiceBackend(voice=args.voice, prebuffer_sec=args.prebuffer, device=args.device)
     print(f"[bench] loading model on {backend._resolve_device()}…", flush=True)
     backend.load()
     print("[bench] loaded. running warm-up pass…", flush=True)
@@ -135,17 +133,11 @@ def main() -> None:
 
     # Chunk timeline.
     print("\n=== Chunks ===")
-    print(
-        f"{'idx':>4}  {'t_arr_ms':>9}  "
-        f"{'gap_ms':>8}  {'samples':>8}  {'ms_audio':>9}"
-    )
+    print(f"{'idx':>4}  {'t_arr_ms':>9}  {'gap_ms':>8}  {'samples':>8}  {'ms_audio':>9}")
     last_t = 0.0
     for i, (t_arr, n) in enumerate(chunk_log):
         gap_ms = (t_arr - last_t) * 1000
-        print(
-            f"{i:>4}  {t_arr * 1000:>9.0f}  {gap_ms:>8.0f}  "
-            f"{n:>8d}  {n / sr * 1000:>9.0f}"
-        )
+        print(f"{i:>4}  {t_arr * 1000:>9.0f}  {gap_ms:>8.0f}  {n:>8d}  {n / sr * 1000:>9.0f}")
         last_t = t_arr
 
     # Simulate playback drain at real-time, given pre-buffer threshold.

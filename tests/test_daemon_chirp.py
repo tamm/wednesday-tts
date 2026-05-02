@@ -57,9 +57,7 @@ class TestGetVoiceCommandChirpPath:
         """Config has the key but the referenced sound file does not exist → returns None."""
         sound_path = str(tmp_path / "chirp.mp3")  # does not exist
         cfg = tmp_path / "tts-config.json"
-        cfg.write_text(
-            json.dumps({"voice_command_chirp": sound_path}), encoding="utf-8"
-        )
+        cfg.write_text(json.dumps({"voice_command_chirp": sound_path}), encoding="utf-8")
         d = _get_daemon()
         original_expanduser = os.path.expanduser
 
@@ -80,9 +78,7 @@ class TestGetVoiceCommandChirpPath:
         sound_file = tmp_path / "chirp.mp3"
         sound_file.write_bytes(b"fake audio")
         cfg = tmp_path / "tts-config.json"
-        cfg.write_text(
-            json.dumps({"voice_command_chirp": str(sound_file)}), encoding="utf-8"
-        )
+        cfg.write_text(json.dumps({"voice_command_chirp": str(sound_file)}), encoding="utf-8")
         d = _get_daemon()
         # expanduser is called for both the config path and the sound path;
         # only patch at the config-resolution level by patching isfile selectively

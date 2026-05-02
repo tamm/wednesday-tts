@@ -161,7 +161,9 @@ class TestFlushSessionDrainsQueue:
             d._flush_session(session_id)
 
         remaining = _drain_playback_queue(d)
-        msg_ids_remaining = [item[2] for item in remaining if isinstance(item, tuple) and len(item) >= 3]
+        msg_ids_remaining = [
+            item[2] for item in remaining if isinstance(item, tuple) and len(item) >= 3
+        ]
         assert 10 not in msg_ids_remaining, "msg_id=10 (same session) must be dropped"
         assert 11 not in msg_ids_remaining, "msg_id=11 (same session) must be dropped"
 
@@ -178,7 +180,9 @@ class TestFlushSessionDrainsQueue:
             d._flush_session(session_flush)
 
         remaining = _drain_playback_queue(d)
-        msg_ids_remaining = [item[2] for item in remaining if isinstance(item, tuple) and len(item) >= 3]
+        msg_ids_remaining = [
+            item[2] for item in remaining if isinstance(item, tuple) and len(item) >= 3
+        ]
         assert 20 not in msg_ids_remaining, "same-session chunk must be dropped"
         assert 21 in msg_ids_remaining, "other-session chunk must survive"
 
@@ -198,7 +202,9 @@ class TestFlushSessionDrainsQueue:
             d._flush_session(session_b)
 
         remaining = _drain_playback_queue(d)
-        msg_ids_remaining = [item[2] for item in remaining if isinstance(item, tuple) and len(item) >= 3]
+        msg_ids_remaining = [
+            item[2] for item in remaining if isinstance(item, tuple) and len(item) >= 3
+        ]
         assert 31 not in msg_ids_remaining, "session_b chunk must be dropped"
         assert 30 in msg_ids_remaining, "session_a chunks must survive"
         assert 32 in msg_ids_remaining, "session_a chunks must survive"
@@ -300,7 +306,9 @@ class TestFlushCuePrepended:
             patch.object(d, "_split_voice_segments", side_effect=lambda t: [(None, None, t)]),
             patch.object(d, "run_normalize", side_effect=lambda t, **kw: t),
             patch.object(d, "_pick_flush_cue", return_value="Oh!"),
-            patch.object(d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}),
+            patch.object(
+                d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}
+            ),
         ):
             with d._speak_pipeline_lock:
                 d._process_speak_locked(msg, mock_backend)
@@ -334,15 +342,15 @@ class TestFlushCuePrepended:
             ),
             patch.object(d, "run_normalize", side_effect=lambda t, **kw: t),
             patch.object(d, "_pick_flush_cue", return_value="Okay —"),
-            patch.object(d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}),
+            patch.object(
+                d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}
+            ),
         ):
             with d._speak_pipeline_lock:
                 d._process_speak_locked(msg, MagicMock())
 
         assert split_calls, "Expected _split_voice_segments to be called"
-        assert split_calls[0] == "Okay — Done.", (
-            f"Expected 'Okay — Done.', got: {split_calls[0]!r}"
-        )
+        assert split_calls[0] == "Okay — Done.", f"Expected 'Okay — Done.', got: {split_calls[0]!r}"
 
     def test_empty_cue_means_no_prefix(self):
         """When _pick_flush_cue returns '', the text is passed through unchanged."""
@@ -368,14 +376,14 @@ class TestFlushCuePrepended:
             ),
             patch.object(d, "run_normalize", side_effect=lambda t, **kw: t),
             patch.object(d, "_pick_flush_cue", return_value=""),
-            patch.object(d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}),
+            patch.object(
+                d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}
+            ),
         ):
             with d._speak_pipeline_lock:
                 d._process_speak_locked(msg, MagicMock())
 
-        assert split_calls == ["Done."], (
-            f"Expected unchanged 'Done.', got: {split_calls!r}"
-        )
+        assert split_calls == ["Done."], f"Expected unchanged 'Done.', got: {split_calls!r}"
 
     def test_no_prefix_without_flush_session(self):
         """Regular speaks (no flush_session) must NOT get the 'Oh! ' prefix."""
@@ -398,7 +406,9 @@ class TestFlushCuePrepended:
                 side_effect=lambda t: (split_calls.append(t), [(None, None, t)])[1],
             ),
             patch.object(d, "run_normalize", side_effect=lambda t, **kw: t),
-            patch.object(d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}),
+            patch.object(
+                d, "_resolve_voice_for_request", return_value={"name": "default", "voice": "x"}
+            ),
         ):
             with d._speak_pipeline_lock:
                 d._process_speak_locked(msg, MagicMock())

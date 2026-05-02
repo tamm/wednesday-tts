@@ -192,8 +192,7 @@ class TestTeammateFilter:
     def test_transcript_with_teamName_blocks(self, sock_path, listener, tmp_path):
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text(
-            json.dumps({"teamName": "review-team", "agentName": "reviewer", "type": "user"})
-            + "\n"
+            json.dumps({"teamName": "review-team", "agentName": "reviewer", "type": "user"}) + "\n"
         )
         payload = {
             "session_id": "teammate-test",
