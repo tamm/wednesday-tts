@@ -389,7 +389,7 @@ def play_chime(sentiment: str = "neutral") -> None:
         try:
             import sounddevice as sd  # type: ignore[import]
 
-            with sd.OutputStream(samplerate=sr, channels=1) as stream:
+            with sd.OutputStream(samplerate=sr, channels=1, blocksize=1024) as stream:
                 stream.write(audio_scaled)
         except Exception:
             pass

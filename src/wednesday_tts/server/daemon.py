@@ -26,6 +26,7 @@ import struct
 import subprocess
 import threading
 import time
+import types
 
 import numpy as np
 import sounddevice as sd  # type: ignore[import]
@@ -1583,6 +1584,7 @@ def playback_worker(backend: TTSBackend) -> None:
                         device=device,
                         channels=2,
                         dtype="float32",
+                        blocksize=1024,
                     )
                     s.start()
                 with _playback_stream_lock:
@@ -2229,6 +2231,13 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
         )
         _gs = gen_snap
         _mid = msg_id
+        # Hand the backend a tiny audio context so it can cooperate with our
+        # PortAudio lock and react to device-change events instead of opening
+        # a raw stream that ignores both.
+        ac = types.SimpleNamespace(
+            lock=_portaudio_lock,
+            device_changed=_device_changed,
+        )
         try:
             backend.play_streaming(
                 text,
@@ -2236,6 +2245,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
                 voice=voice,
                 stop_check=lambda: _stop_gen != _gs or _should_skip_msg(_mid),
                 msg_id=msg_id,
+                audio_context=ac,
             )
         except Exception as exc:
             print(f"[direct-play] failed: {exc}", flush=True)

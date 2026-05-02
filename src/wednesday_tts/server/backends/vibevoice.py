@@ -5,12 +5,38 @@ from __future__ import annotations
 import copy
 import glob
 import os
+import queue
 import threading
 import time
 
 import numpy as np
 
 from .base import DEFAULT_SPEED, TTSBackend, soundstretch_tempo
+
+_LOG_QUEUE: queue.Queue[str | None] = queue.Queue(maxsize=1024)
+
+
+def _log_worker() -> None:
+    while True:
+        msg = _LOG_QUEUE.get()
+        if msg is None:
+            break
+        try:
+            print(msg, flush=True)
+        except Exception:  # noqa: BLE001 — logging must never crash the worker
+            pass
+
+
+_LOG_THREAD = threading.Thread(target=_log_worker, name="vibevoice-log", daemon=True)
+_LOG_THREAD.start()
+
+
+def _alog(msg: str) -> None:
+    """Non-blocking log — drops the message if the queue is saturated."""
+    try:
+        _LOG_QUEUE.put_nowait(msg)
+    except queue.Full:
+        pass
 
 
 def _chunk_pause_offset(
@@ -306,6 +332,7 @@ class VibeVoiceBackend(TTSBackend):
         voice: str | None = None,
         stop_check=None,
         msg_id: int = -1,
+        audio_context=None,
     ) -> bool:
         """Pre-buffered, callback-driven playback straight from the model.
 
@@ -334,11 +361,6 @@ class VibeVoiceBackend(TTSBackend):
         # we never see a chunk-end pause, start anyway after this much.
         prebuffer_max_samples = max(1, int(self._prebuffer_sec * sr))
         ring_capacity = max(prebuffer_max_samples * 4, int(self._ringbuffer_sec * sr))
-        # When ring drops below low_water AND we're at a pause mark, the
-        # callback parks on silence to let the generator catch up.
-        low_water = int(0.5 * sr)
-        catchup_water = low_water * 2  # resume normal play once buffer recovers
-        max_stretch_samples = int(1.5 * sr)  # cap pause extension at 1.5s
 
         # Ring buffer state — all guarded by `cond`.
         ring = np.zeros(ring_capacity, dtype=np.float32)
@@ -346,13 +368,24 @@ class VibeVoiceBackend(TTSBackend):
         read_idx = 0  # absolute count of samples read
         gen_done = False
         cond = threading.Condition()
-        # Absolute sample positions where it's safe to stretch a pause.
-        # Each entry is the absolute write count at the start of the
-        # trailing-silence run inside a chunk.
+        # Underrun stats — incremented from the audio callback when the
+        # ring didn't have enough samples to fill a callback block.
+        underrun_events = 0
+        underrun_samples = 0
+        # Per-callback samples for visibility: every block received, what
+        # fraction of frames we delivered, lead at that moment, and how
+        # long we spent in the lock. Bounded to recent history so we can
+        # dump it after each utterance without unbounded memory.
+        cb_log: list[tuple[float, int, int, int, float]] = []
+        cb_log_max = 4096
+        # Detect frame-count anomalies (PortAudio asking for unusual block
+        # sizes — possibly a sign of resampler weirdness).
+        cb_frames_seen: dict[int, int] = {}
+        # Absolute sample positions where the drain thread saw end-of-chunk
+        # silence. The drain thread uses these to decide where to inject
+        # silence padding into the ring; the audio callback never inspects
+        # them — playback never parks or stretches at these.
         pause_marks: list[int] = []
-        stretched_samples = 0
-        currently_stretching = False
-        stretch_run = 0  # how long we've been parked on the current pause
 
         def _available() -> int:
             return write_idx - read_idx
@@ -383,41 +416,14 @@ class VibeVoiceBackend(TTSBackend):
                 cond.notify_all()
 
         def _audio_callback(outdata, frames, time_info, status) -> None:  # noqa: ARG001
-            nonlocal read_idx, stretched_samples, currently_stretching, stretch_run
+            nonlocal read_idx, underrun_events, underrun_samples
+            cb_t0 = time.perf_counter()
+            cb_frames_seen[frames] = cb_frames_seen.get(frames, 0) + 1
+            # Note any PortAudio status flags (input/output underflow/overflow).
+            status_flags = int(status) if status else 0
             with cond:
+                lock_acquired_at = time.perf_counter()
                 avail = _available()
-
-                # Drop pause marks we've already passed.
-                while pause_marks and pause_marks[0] < read_idx:
-                    pause_marks.pop(0)
-
-                # Pause-aware stretching: if buffer is low AND we're at
-                # (or just past) the next pause mark, park on silence
-                # until either buffer recovers or we hit the stretch cap.
-                if not gen_done:
-                    next_mark = pause_marks[0] if pause_marks else None
-                    at_pause = (
-                        next_mark is not None
-                        and read_idx >= next_mark
-                    )
-                    if currently_stretching:
-                        # Continue stretching unless buffer recovered or capped.
-                        if avail >= catchup_water or stretch_run >= max_stretch_samples:
-                            currently_stretching = False
-                            stretch_run = 0
-                        else:
-                            outdata[:, 0] = 0.0
-                            stretched_samples += frames
-                            stretch_run += frames
-                            return
-                    elif avail < low_water and at_pause:
-                        # Enter stretching mode.
-                        currently_stretching = True
-                        stretch_run = frames
-                        stretched_samples += frames
-                        outdata[:, 0] = 0.0
-                        return
-
                 take = min(frames, avail)
                 if take > 0:
                     idx0 = read_idx % ring_capacity
@@ -431,7 +437,28 @@ class VibeVoiceBackend(TTSBackend):
                     read_idx += take
                     cond.notify_all()
                 if take < frames:
-                    outdata[take:, 0] = 0.0  # underrun → silence
+                    outdata[take:, 0] = 0.0
+                    underrun_events += 1
+                    underrun_samples += frames - take
+            cb_t1 = time.perf_counter()
+            lock_wait_us = (lock_acquired_at - cb_t0) * 1e6
+            cb_total_us = (cb_t1 - cb_t0) * 1e6
+            # Record only the events we'd want to inspect: anomalies
+            # (underrun, slow callback, lock contention, status flags).
+            if (
+                take < frames
+                or status_flags
+                or cb_total_us > 1500
+                or lock_wait_us > 500
+            ):
+                if len(cb_log) < cb_log_max:
+                    cb_log.append((
+                        cb_t0,
+                        frames,
+                        take,
+                        avail,
+                        cb_total_us,
+                    ))
 
         streamer = AudioStreamer(batch_size=1, stop_signal=None, timeout=None)
         gen_error: list[BaseException] = []
@@ -456,8 +483,35 @@ class VibeVoiceBackend(TTSBackend):
             finally:
                 streamer.end()
 
+        # Predictive silence injection — see docs/streaming-buffer-pacing.md.
+        # Inject silence ONLY at chunk boundaries that ended in trailing
+        # silence (sample-aligned zero crossings — no clicks). Decision is
+        # driven by an EMA of buffer fill, not instantaneous fill, so we
+        # don't react to momentary jitter. Three regions:
+        #   critical: fill_ema < critical_sec → long hold at this pause
+        #   comfort:  fill_ema < comfort_sec  → short hold at this pause
+        #   healthy:  otherwise               → no padding
+        critical_sec = 0.25
+        comfort_sec = 0.7
+        ema_alpha = 0.3
+        small_pad_ms = 150.0
+        large_pad_ms = 400.0
+        fill_ema_sec = 0.0  # smoothed buffer fill, in seconds
+        total_injected_sec = 0.0
+        # Padding is only meaningful once the audio callback is actually
+        # draining the ring. Pre-stream-start, buffer fill is low simply
+        # because we're still filling — that's expected, not starvation.
+        playback_started = threading.Event()
+
+        def _inject_silence(ms: float) -> None:
+            n = max(1, int(ms * sr / 1000))
+            silence = np.zeros(n, dtype=np.float32)
+            _ring_write(silence, None)
+
         def _drain_streamer() -> None:
-            nonlocal gen_done
+            nonlocal gen_done, fill_ema_sec, total_injected_sec
+            chunk_idx = 0
+            last_chunk_end = time.time()
             try:
                 for chunk in streamer.get_stream(0):
                     if stop_check and stop_check():
@@ -469,7 +523,54 @@ class VibeVoiceBackend(TTSBackend):
                         continue
                     arr32 = arr.astype(np.float32, copy=False)
                     pause_off = _chunk_pause_offset(arr32, sr)
+                    now = time.time()
+                    gen_ms = (now - last_chunk_end) * 1000.0
                     _ring_write(arr32, pause_off)
+                    with cond:
+                        fill_sec = _available() / sr
+
+                    # Update EMA — first sample seeds it directly so we don't
+                    # start at 0 and bias the first decisions low.
+                    if chunk_idx == 0:
+                        fill_ema_sec = fill_sec
+                    else:
+                        fill_ema_sec = (
+                            ema_alpha * fill_sec + (1 - ema_alpha) * fill_ema_sec
+                        )
+
+                    # Pause-only injection: only act if THIS chunk ended in
+                    # silence AND playback has started (no point padding
+                    # against starvation when nothing is draining yet).
+                    pad_tag = "-"
+                    if pause_off is not None and playback_started.is_set():
+                        pad_ms = 0.0
+                        if fill_ema_sec < critical_sec:
+                            pad_ms = large_pad_ms
+                        elif fill_ema_sec < comfort_sec:
+                            pad_ms = small_pad_ms
+                        if pad_ms > 0:
+                            _inject_silence(pad_ms)
+                            total_injected_sec += pad_ms / 1000.0
+                            # Bump EMA optimistically so we don't double-pad
+                            # the next chunk on the same dip.
+                            fill_ema_sec += pad_ms / 1000.0
+                            pad_tag = f"{pad_ms:.0f}ms"
+
+                    chunk_dur_ms = arr32.size * 1000.0 / sr
+                    inst_rtf = gen_ms / chunk_dur_ms if chunk_dur_ms > 0 else 0.0
+                    pause_tag = "-"
+                    if pause_off is not None:
+                        pause_ms = (arr32.size - pause_off) * 1000.0 / sr
+                        pause_tag = f"{pause_ms:.0f}ms"
+                    _alog(
+                        f"[vibevoice-chunk] msg_id={msg_id} i={chunk_idx} "
+                        f"gen={gen_ms:.0f}ms dur={chunk_dur_ms:.0f}ms "
+                        f"rtf={inst_rtf:.2f} lead={fill_sec:.2f}s "
+                        f"pause={pause_tag} pad={pad_tag} "
+                        f"underruns={underrun_events} cb_anomalies={len(cb_log)}"
+                    )
+                    chunk_idx += 1
+                    last_chunk_end = now
             except Exception as exc:  # noqa: BLE001
                 print(f"[vibevoice-play] streamer drain error: {exc}", flush=True)
             finally:
@@ -488,9 +589,15 @@ class VibeVoiceBackend(TTSBackend):
         drain_thread.start()
 
         # Wait for either the first natural pause OR the hard ceiling.
+        # Require a minimum fill regardless of pause detection — the first
+        # chunk often ends in a tiny 30ms silence that's not a real pause,
+        # and starting playback at fill≈0.1s causes underrun pops for the
+        # first several chunks until the buffer catches up.
+        min_start_fill = int(0.5 * sr)
         with cond:
             while (
-                not pause_marks
+                _available() < min_start_fill
+                and not (pause_marks and _available() >= min_start_fill)
                 and _available() < prebuffer_max_samples
                 and not gen_done
                 and not (stop_check and stop_check())
@@ -501,17 +608,44 @@ class VibeVoiceBackend(TTSBackend):
         if stop_check and stop_check():
             return False
 
-        try:
-            stream = sd.OutputStream(
+        # audio_context (optional, supplied by daemon) lets us cooperate with
+        # the daemon's PortAudio lock and device-change machinery so that
+        # mid-utterance device swaps (headphones ↔ speakers) reopen the
+        # stream against the current default device instead of silently
+        # writing to a stale device.
+        ac_lock = getattr(audio_context, "lock", None) if audio_context else None
+        ac_device_changed = (
+            getattr(audio_context, "device_changed", None) if audio_context else None
+        )
+
+        def _open_stream():
+            opener = lambda: sd.OutputStream(  # noqa: E731
                 samplerate=sr,
                 channels=1,
                 dtype="float32",
-                blocksize=0,
+                blocksize=1024,
                 latency="low",
                 callback=_audio_callback,
             )
-        except Exception as exc:
-            print(f"[vibevoice-play] failed to open OutputStream: {exc}", flush=True)
+            try:
+                if ac_lock is not None:
+                    with ac_lock:
+                        # Re-init under the daemon's lock so the device list
+                        # is fresh and we don't race with the daemon's own
+                        # _terminate/_initialize calls.
+                        try:
+                            sd._terminate()
+                            sd._initialize()
+                        except Exception as exc:  # noqa: BLE001
+                            _alog(f"[vibevoice-play] sd reinit warn: {exc}")
+                        return opener()
+                return opener()
+            except Exception as exc:  # noqa: BLE001
+                _alog(f"[vibevoice-play] open stream failed: {exc}")
+                return None
+
+        stream = _open_stream()
+        if stream is None:
             with cond:
                 gen_done = True
                 cond.notify_all()
@@ -526,15 +660,38 @@ class VibeVoiceBackend(TTSBackend):
             flush=True,
         )
 
-        with stream:
+        stream.start()
+        playback_started.set()
+        try:
             # Wait until generation is done AND ringbuffer drained, or stop.
+            # Also watch for device-change events: on each one, close the
+            # current stream and open a fresh one against the new default.
             while True:
                 if stop_check and stop_check():
                     break
+                if ac_device_changed is not None and ac_device_changed.is_set():
+                    _alog("[vibevoice-play] device changed — reopening stream")
+                    try:
+                        stream.stop()
+                        stream.close()
+                    except Exception as exc:  # noqa: BLE001
+                        _alog(f"[vibevoice-play] close-on-swap warn: {exc}")
+                    ac_device_changed.clear()
+                    new_stream = _open_stream()
+                    if new_stream is None:
+                        break
+                    stream = new_stream
+                    stream.start()
                 with cond:
                     if gen_done and _available() <= 0:
                         break
                     cond.wait(timeout=0.2)
+        finally:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
 
         gen_thread.join(timeout=5.0)
         drain_thread.join(timeout=5.0)
@@ -546,12 +703,30 @@ class VibeVoiceBackend(TTSBackend):
         # write_idx is now an absolute sample count (no wrap), so this is exact.
         played_sec = write_idx / sr if write_idx else 0.0
         rtf = f"{elapsed / played_sec:.2f}" if played_sec > 0 else "n/a"
+        underrun_ms = underrun_samples * 1000.0 / sr
+        # Summarise frame-size distribution (PortAudio's block sizes).
+        frames_summary = ", ".join(
+            f"{n}x{cnt}" for n, cnt in sorted(cb_frames_seen.items())
+        ) or "(none)"
         print(
             f"[vibevoice-play] done elapsed={elapsed:.1f}s audio={played_sec:.1f}s "
-            f"rtf={rtf} stretched={stretched_samples / sr:.2f}s "
+            f"rtf={rtf} injected={total_injected_sec:.2f}s "
+            f"underruns={underrun_events} ({underrun_ms:.0f}ms) "
+            f"cb_blocks=[{frames_summary}] anomalies={len(cb_log)} "
             f"voice={os.path.basename(voice_path)} ok={ok}",
             flush=True,
         )
+        # Dump first 20 callback anomalies if any — these are the moments
+        # most likely to contain the cause of audible pops.
+        for ev in cb_log[:20]:
+            ts, fr, took, av, us = ev
+            rel = ts - t0
+            print(
+                f"[vibevoice-cb] t+{rel:.3f}s frames={fr} delivered={took} "
+                f"avail_at_entry={av} ({av / sr * 1000.0:.0f}ms) "
+                f"cb_total={us:.0f}us",
+                flush=True,
+            )
         return ok
 
     def generate_streaming(

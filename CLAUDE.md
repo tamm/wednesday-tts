@@ -74,3 +74,18 @@ No need to ask first. This command is always allowed.
 GitHub: https://github.com/kyutai-labs/pocket-tts
 
 **Read the README before making changes to the pocket backend.** Predefined voice names (alba, marius, fantine, etc.) are passed directly to `get_state_for_audio_prompt("name")` — do NOT resolve them through `PREDEFINED_VOICES` or construct `hf://` URIs manually.
+
+## VibeVoice (streaming backend)
+
+GitHub: https://github.com/microsoft/VibeVoice
+
+VibeVoice isn't on PyPI — it has to be installed from a local clone. The `vibevoice` extra in `pyproject.toml` only pulls runtime deps (torch, transformers==4.51.3, diffusers, …); the package itself is a separate step.
+
+```bash
+git clone https://github.com/microsoft/VibeVoice ~/dev/VibeVoice
+uv pip install -e "/Users/tammsjodin/dev/VibeVoice[streamingtts]"   # quote the extras — zsh expands brackets
+```
+
+After install, restart the daemon: `launchctl kickstart -k gui/$(id -u)/com.tamm.wednesday-tts`.
+
+Voice prompts (`.pt` files) live in `~/dev/VibeVoice/demo/voices/streaming_model/` — the backend matches voice names from `tts-config.json` (`Carter`, `Davis`, `Emma`, …) against filenames there. The 0.5B model pulls from HF on first load (microsoft/VibeVoice-Realtime-0.5B).
