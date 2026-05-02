@@ -9,8 +9,9 @@ Stages tracked per utterance (all in seconds):
                        (the daemon's `latency=Xs` field, which is wall(req) − wall(hook))
     synth_dt         — req accept → "generated Xs audio in Ys" line
     synth_elapsed    — backend's own reported synth time
-    play_dt          — req accept → first `[spatial] ready` / portaudio open
-    total_to_play    — hook_to_daemon + play_dt (HEADLINE: hook fire → audio out)
+    play_dt          — req accept → first sample played
+    TTFS             — HEADLINE: hook fire → first sample heard
+                       (hook_to_daemon + first-audio marker, or play_dt fallback)
     audio_s          — duration of generated audio
     rtf              — synth_elapsed / audio_s (lower = faster than realtime)
 
@@ -408,11 +409,15 @@ def render_per_utt(utts: list[Utt], per_backend_last: int | None) -> str:
 
     headers = [
         "msg", "backend", "voice", "src", "chars",
-        "hook→daemon", "synth_dt", "play_dt", "total→play",
+        "hook→daemon", "synth_dt", "play_dt", "TTFS",
         "audio_s", "rtf",
     ]
     out = [_md_row(headers), _md_row(["---"] * len(headers))]
     for u in utts:
+        # TTFS = hook→daemon + first-audio (matches summary table).
+        ms = u.extras.get("ttfs_ms")
+        backend_first = ms / 1000.0 if ms is not None else _play_dt(u)
+        ttfs = u.req_latency + backend_first if backend_first is not None else None
         out.append(_md_row([
             str(u.msg_id),
             u.backend,
@@ -422,7 +427,7 @@ def render_per_utt(utts: list[Utt], per_backend_last: int | None) -> str:
             f"{u.req_latency:.2f}s",
             fmt_delta(_synth_dt(u)).strip() + "s" if _synth_dt(u) is not None else "—",
             fmt_delta(_play_dt(u)).strip() + "s" if _play_dt(u) is not None else "—",
-            fmt_delta(_total_to_play(u)).strip() + "s" if _total_to_play(u) is not None else "—",
+            fmt_delta(ttfs).strip() + "s" if ttfs is not None else "—",
             f"{u.audio_s:.2f}s" if u.audio_s is not None else "—",
             f"{u.rtf:.2f}" if u.rtf is not None else "—",
         ]))
@@ -439,20 +444,23 @@ def render_summary(utts: list[Utt]) -> str:
         by_backend.setdefault(u.backend, []).append(u)
 
     def _ttfs(u: Utt) -> float | None:
-        # Prefer backend-reported ms-precision (vibevoice).
+        """TTFS = hook fire → first sample heard.
+
+        This is the user-perceived latency from "I did a thing" to "I hear
+        Claude start talking". It's hook→daemon (request latency) PLUS the
+        backend's first-audio time (either an ms-precision marker like
+        vibevoice's, or the log-timestamp delta from request → first chunk).
+        """
         ms = u.extras.get("ttfs_ms")
-        if ms is not None:
-            return ms / 1000.0
-        # Fall back to log-timestamp delta. Honest TTFS for every other
-        # backend now that log timestamps have ms precision; for older
-        # second-precision rows this is rounded to whole seconds.
-        return _play_dt(u)
+        backend_ttfs = ms / 1000.0 if ms is not None else _play_dt(u)
+        if backend_ttfs is None:
+            return None
+        return u.req_latency + backend_ttfs
 
     stages = [
         ("hook→daemon",      lambda u: u.req_latency),
         ("→synth_done",      _synth_dt),
         ("→playback",        _play_dt),
-        ("hook→playback",    _total_to_play),
         ("TTFS",             _ttfs),
     ]
     extras = [

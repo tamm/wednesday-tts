@@ -2065,18 +2065,60 @@ _FLUSH_CUES = (
     "Look,",
     "Actually,",
 )
-_FLUSH_EMPTY_RATE = 0.25  # explicit silent-transition probability
+_FLUSH_EMPTY_RATE = 0.70  # silent ~70% of the time; cue ~30%
 _last_flush_cue: str | None = None
 
+# Words that, if the response already starts with them, mean we should NOT
+# prepend a cue — the response is already opening with a transition word and
+# stacking another would sound like a stutter ("Right, right, ...").
+_FLUSH_CUE_LEADING_WORDS = frozenset(
+    {
+        "oh",
+        "right",
+        "so",
+        "anyway",
+        "okay",
+        "ok",
+        "ah",
+        "yeah",
+        "look",
+        "actually",
+        "well",
+        "alright",
+        "hmm",
+    }
+)
 
-def _pick_flush_cue() -> str:
+
+def _response_starts_with_cue(text: str) -> bool:
+    """True if the response's first word would dupe a transition cue."""
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    # Take leading word: alpha chars only, lowercased.
+    first = ""
+    for ch in stripped:
+        if ch.isalpha():
+            first += ch.lower()
+        else:
+            break
+    return first in _FLUSH_CUE_LEADING_WORDS
+
+
+def _pick_flush_cue(response_text: str = "") -> str:
     """Random cue, no back-to-back duplicates.
 
-    First, an explicit empty-rate roll: ~25% of the time, no transition cue
-    at all. Otherwise, pick a non-empty cue from the pool, avoiding the
-    immediately previous one.
+    Behaviour:
+    - If the response already starts with a transition word ("Right,",
+      "Yeah so,", "Actually,", …) — skip the cue. Stacking would sound like
+      a stutter.
+    - Otherwise roll the empty-rate die: ~70% of the time, no cue.
+    - Otherwise pick a non-empty cue from the pool, avoiding the previous one.
     """
     global _last_flush_cue
+    if response_text and _response_starts_with_cue(response_text):
+        _last_flush_cue = ""
+        return ""
     if random.random() < _FLUSH_EMPTY_RATE:
         _last_flush_cue = ""
         return ""
@@ -2105,7 +2147,7 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
         # Prepend a transition cue so the jump from a pre-tool chunk to the
         # final response sounds deliberate rather than abrupt. Random pick
         # from a small pool, avoiding back-to-back repeats.
-        cue = _pick_flush_cue()
+        cue = _pick_flush_cue(text)
         text = f"{cue} {text}" if cue else text
         msg = {**msg, "text": text}
 
