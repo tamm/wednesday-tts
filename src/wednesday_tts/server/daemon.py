@@ -1167,18 +1167,24 @@ def _get_spatial_stream(sample_rate: int, pan: float, device_uid: str) -> subpro
 
 
 def _kill_spatial_stream() -> None:
-    """Terminate any running SpatialStream subprocess."""
+    """Terminate any running SpatialStream subprocess immediately.
+
+    Sends SIGKILL straight away — closing stdin gracefully would let the
+    subprocess play out anything it has buffered (potentially many seconds),
+    which is the opposite of what stop/skip/barge-in want. A fresh process
+    is spawned for the next chunk by _get_spatial_stream.
+    """
     global _spatial_proc
     with _spatial_lock:
         if _spatial_proc is not None:
             try:
-                _spatial_proc.stdin.close()
-                _spatial_proc.wait(timeout=2)
+                _spatial_proc.kill()
             except Exception:
-                try:
-                    _spatial_proc.kill()
-                except Exception:
-                    pass
+                pass
+            try:
+                _spatial_proc.wait(timeout=0.5)
+            except Exception:
+                pass
             _spatial_proc = None
 
 

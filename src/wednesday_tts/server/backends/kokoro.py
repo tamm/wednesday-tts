@@ -9,6 +9,7 @@ import time
 import numpy as np
 
 from ...normalize.chunking import chunk_text_intelligently  # noqa: TID252
+from ...platform import suppress_dictation, unsuppress_dictation  # noqa: TID252
 from .base import DEFAULT_SPEED, TTSBackend
 
 
@@ -170,6 +171,12 @@ class KokoroBackend(TTSBackend):
 
         import sounddevice as sd  # type: ignore[import]
 
+        # Mark dictation as suppressed for the entire duration of this call so
+        # the dictation pipeline (which reads /tmp/dictation-suppress) can detect
+        # that TTS is playing and run its barge-in path. Per-chunk refreshes
+        # below keep the file mtime fresh against the reader's staleness window.
+        suppress_dictation()
+
         use_speed = speed if speed is not None else self._speed
         use_voice = voice or self._voice
         if isinstance(use_voice, dict):
@@ -301,6 +308,12 @@ class KokoroBackend(TTSBackend):
                                     f"text={chunk_text[:60]!r}",
                                     flush=True,
                                 )
+                                # Refresh the suppress-dictation sentinel per chunk so
+                                # the dictation pipeline keeps seeing TTS as active and
+                                # its barge-in detection can fire. The file mtime is
+                                # checked against a 60s staleness window on the reader
+                                # side, so re-touching every chunk keeps it fresh.
+                                suppress_dictation()
                                 gen_audio_samples[0] += arr.size
                                 _ring_write(arr)
                                 last_chunk_t = now
@@ -329,6 +342,7 @@ class KokoroBackend(TTSBackend):
 
         if stop_check and stop_check():
             drain_thread.join(timeout=5.0)
+            unsuppress_dictation()
             return False
 
         ac_lock = getattr(audio_context, "lock", None) if audio_context else None
@@ -347,7 +361,7 @@ class KokoroBackend(TTSBackend):
                 samplerate=sr,
                 channels=1,
                 dtype="float32",
-                blocksize=1024,
+                blocksize=2048,
                 latency="low",
                 callback=_audio_callback,
             )
@@ -362,6 +376,28 @@ class KokoroBackend(TTSBackend):
                         return opener()
                 return opener()
             except Exception as exc:  # noqa: BLE001
+                # PortAudio can wedge after a BT flap — retry once with reinit
+                # so we recover instead of throwing the whole utterance away.
+                if not force_reinit:
+                    print(
+                        f"[kokoro-play] open failed ({exc}), retrying with reinit",
+                        flush=True,
+                    )
+                    try:
+                        if ac_lock is not None:
+                            with ac_lock:
+                                sd._terminate()
+                                sd._initialize()
+                                return opener()
+                        sd._terminate()
+                        sd._initialize()
+                        return opener()
+                    except Exception as exc2:  # noqa: BLE001
+                        print(
+                            f"[kokoro-play] reinit retry failed: {exc2}",
+                            flush=True,
+                        )
+                        return None
                 print(f"[kokoro-play] open stream failed: {exc}", flush=True)
                 return None
 
@@ -371,6 +407,7 @@ class KokoroBackend(TTSBackend):
                 gen_done = True
                 cond.notify_all()
             drain_thread.join(timeout=5.0)
+            unsuppress_dictation()
             return False
 
         # first-audio = time from request to first sample heading to the speaker.
@@ -439,4 +476,5 @@ class KokoroBackend(TTSBackend):
             f"voice={use_voice} ok={ok}",
             flush=True,
         )
+        unsuppress_dictation()
         return ok
