@@ -210,9 +210,10 @@ class TestDaemonStreamingToQueue:
             mock_backend.supports_streaming = True
             mock_backend.sample_rate = 24000
             # Force the daemon onto the generate_streaming path; the
-            # DIRECT-PLAY path requires play_streaming, so remove it from
-            # the mock's attribute set.
-            del mock_backend.play_streaming
+            # DIRECT-PLAY path requires backend.supports_direct_play to
+            # be truthy, and MagicMock auto-truthies attributes so we
+            # must set it explicitly to False.
+            mock_backend.supports_direct_play = False
 
             # generate_streaming returns None = audio was queued directly
             mock_backend.generate_streaming.return_value = None
@@ -253,7 +254,7 @@ class TestDaemonStreamingToQueue:
             mock_backend.supports_streaming = True
             mock_backend.sample_rate = 24000
             # Force generate_streaming path — see other test for context.
-            del mock_backend.play_streaming
+            mock_backend.supports_direct_play = False
 
             # generate_streaming returns audio array (didn't queue directly)
             mock_audio = np.zeros(100, dtype=np.float32)

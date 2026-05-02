@@ -10,6 +10,16 @@
       "qwen3": "VPIO"
     },
     {
+      "pattern": "VibeVoice",
+      "replacement": "vibe voice",
+      "case_sensitive": false
+    },
+    {
+      "pattern": "vibevoice",
+      "replacement": "vibe voice",
+      "case_sensitive": false
+    },
+    {
       "pattern": "''",
       "replacement": "empty string",
       "literal": true

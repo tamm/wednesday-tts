@@ -94,6 +94,7 @@ class VibeVoiceBackend(TTSBackend):
 
     sample_rate = 24000
     supports_streaming = True
+    supports_direct_play = True
     # Streaming chunks are mid-utterance — no trim/fade/pad. Default values
     # would slice 5ms off each end and add 50ms of silence, creating an
     # audible seam at every coalesced-buffer boundary.
@@ -491,11 +492,14 @@ class VibeVoiceBackend(TTSBackend):
         #   critical: fill_ema < critical_sec → long hold at this pause
         #   comfort:  fill_ema < comfort_sec  → short hold at this pause
         #   healthy:  otherwise               → no padding
-        critical_sec = 0.25
-        comfort_sec = 0.7
+        # Disabled — set non-zero to re-enable predictive pad-at-pause.
+        # Kept in place (non-destructive) because the blocksize=1024 fix
+        # solved the popping; this layer was symptom-bandaging.
+        critical_sec = 0.0
+        comfort_sec = 0.0
         ema_alpha = 0.3
-        small_pad_ms = 150.0
-        large_pad_ms = 400.0
+        small_pad_ms = 0.0
+        large_pad_ms = 0.0
         fill_ema_sec = 0.0  # smoothed buffer fill, in seconds
         total_injected_sec = 0.0
         # Padding is only meaningful once the audio callback is actually

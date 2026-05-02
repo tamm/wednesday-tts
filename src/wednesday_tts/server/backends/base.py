@@ -92,6 +92,11 @@ class TTSBackend:
 
     sample_rate: int = 24000
     supports_streaming: bool = False
+    # When True, the daemon hands the request straight to play_streaming
+    # (DIRECT-PLAY) instead of feeding playback_queue. Backends that drive
+    # their own audio device set this; backends that produce chunks for the
+    # daemon's queue do not.
+    supports_direct_play: bool = False
 
     def load(self) -> None:
         """Load the model into memory. Called once at startup."""
@@ -106,7 +111,13 @@ class TTSBackend:
     # Streaming extension — only required when supports_streaming = True.
 
     def play_streaming(
-        self, text: str, speed: float = DEFAULT_SPEED, voice: str | None = None
+        self,
+        text: str,
+        speed: float = DEFAULT_SPEED,
+        voice: str | None = None,
+        stop_check=None,
+        msg_id: int = -1,
+        audio_context=None,
     ) -> None:
         """Stream audio directly to the output device (lowest latency)."""
         raise NotImplementedError

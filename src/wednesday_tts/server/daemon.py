@@ -2217,11 +2217,16 @@ def _process_speak_locked(msg: dict, backend: TTSBackend) -> None:
     # chunks straight to the audio device, bypassing playback_queue/spatial
     # processing entirely. Used for VibeVoice where every extra hop adds
     # audible gaps.
+    # DIRECT-PLAY requires the backend to *opt in* via supports_direct_play,
+    # not just inherit the play_streaming stub. This is a separate flag from
+    # supports_streaming because some backends stream chunks into the daemon's
+    # playback_queue (kokoro, pocket) rather than driving their own audio
+    # device. Only vibevoice currently opts into DIRECT-PLAY.
     use_direct_play = (
         not needs_backend_switch
         and not any(v == "sam" for v, _, _ in segments)
         and getattr(backend, "supports_streaming", False)
-        and hasattr(backend, "play_streaming")
+        and getattr(backend, "supports_direct_play", False)
         and _stop_gen == gen_snap
     )
     if use_direct_play:
