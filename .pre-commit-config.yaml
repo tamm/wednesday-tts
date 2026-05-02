@@ -25,3 +25,11 @@ repos:
         language: script
         stages: [pre-commit]
         types: [text]
+
+      - id: pytest
+        name: pytest (pre-push gate)
+        entry: uv run pytest -q
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

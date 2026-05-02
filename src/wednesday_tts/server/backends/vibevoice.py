@@ -194,7 +194,9 @@ class VibeVoiceBackend(TTSBackend):
                 )
         except Exception as exc:
             if attn == "flash_attention_2":
-                print(f"[vibevoice] flash_attention_2 failed ({exc}), retrying with sdpa", flush=True)
+                print(
+                    f"[vibevoice] flash_attention_2 failed ({exc}), retrying with sdpa", flush=True
+                )
                 model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
                     self._model_path,
                     torch_dtype=dtype,
@@ -251,7 +253,9 @@ class VibeVoiceBackend(TTSBackend):
         if cached is not None:
             return cached
         target = self._device if self._device != "cpu" else "cpu"
-        prefilled = torch.load(voice_path, map_location=target, weights_only=False)
+        # Voice prompts are local .pt files produced by VibeVoice's own pipeline
+        # (cached prefill state, not just tensors), under ~/dev/VibeVoice. Trusted source.
+        prefilled = torch.load(voice_path, map_location=target, weights_only=False)  # nosec B614
         self._voice_cache[voice_path] = prefilled
         return prefilled
 
@@ -396,9 +400,7 @@ class VibeVoiceBackend(TTSBackend):
             n = arr.size
             with cond:
                 # Back-pressure if ring is full.
-                while _available() + n > ring_capacity and not (
-                    stop_check and stop_check()
-                ):
+                while _available() + n > ring_capacity and not (stop_check and stop_check()):
                     cond.wait(timeout=0.5)
                 if stop_check and stop_check():
                     return
@@ -446,20 +448,17 @@ class VibeVoiceBackend(TTSBackend):
             cb_total_us = (cb_t1 - cb_t0) * 1e6
             # Record only the events we'd want to inspect: anomalies
             # (underrun, slow callback, lock contention, status flags).
-            if (
-                take < frames
-                or status_flags
-                or cb_total_us > 1500
-                or lock_wait_us > 500
-            ):
+            if take < frames or status_flags or cb_total_us > 1500 or lock_wait_us > 500:
                 if len(cb_log) < cb_log_max:
-                    cb_log.append((
-                        cb_t0,
-                        frames,
-                        take,
-                        avail,
-                        cb_total_us,
-                    ))
+                    cb_log.append(
+                        (
+                            cb_t0,
+                            frames,
+                            take,
+                            avail,
+                            cb_total_us,
+                        )
+                    )
 
         streamer = AudioStreamer(batch_size=1, stop_signal=None, timeout=None)
         gen_error: list[BaseException] = []
@@ -549,9 +548,7 @@ class VibeVoiceBackend(TTSBackend):
                     if chunk_idx == 0:
                         fill_ema_sec = fill_sec
                     else:
-                        fill_ema_sec = (
-                            ema_alpha * fill_sec + (1 - ema_alpha) * fill_ema_sec
-                        )
+                        fill_ema_sec = ema_alpha * fill_sec + (1 - ema_alpha) * fill_ema_sec
 
                     # Pause-only injection: only act if THIS chunk ended in
                     # silence AND playback has started (no point padding
@@ -593,12 +590,8 @@ class VibeVoiceBackend(TTSBackend):
                     gen_done = True
                     cond.notify_all()
 
-        gen_thread = threading.Thread(
-            target=_run, name="vibevoice-gen", daemon=True
-        )
-        drain_thread = threading.Thread(
-            target=_drain_streamer, name="vibevoice-drain", daemon=True
-        )
+        gen_thread = threading.Thread(target=_run, name="vibevoice-gen", daemon=True)
+        drain_thread = threading.Thread(target=_drain_streamer, name="vibevoice-drain", daemon=True)
         t0 = time.time()
         gen_thread.start()
         drain_thread.start()
@@ -723,15 +716,13 @@ class VibeVoiceBackend(TTSBackend):
             synth_elapsed = synth_t_last[0] - synth_t_first[0]
         else:
             synth_elapsed = 0.0
-        synth_rtf = (
-            f"{synth_elapsed / gen_audio_sec:.2f}" if gen_audio_sec > 0 else "n/a"
-        )
+        synth_rtf = f"{synth_elapsed / gen_audio_sec:.2f}" if gen_audio_sec > 0 else "n/a"
         play_rtf = f"{elapsed / played_sec:.2f}" if played_sec > 0 else "n/a"
         underrun_ms = underrun_samples * 1000.0 / sr
         # Summarise frame-size distribution (PortAudio's block sizes).
-        frames_summary = ", ".join(
-            f"{n}x{cnt}" for n, cnt in sorted(cb_frames_seen.items())
-        ) or "(none)"
+        frames_summary = (
+            ", ".join(f"{n}x{cnt}" for n, cnt in sorted(cb_frames_seen.items())) or "(none)"
+        )
         # Field names: `rtf` = synth-only (matches batch RTF semantics);
         # `play_rtf` = wall/playback ratio (~1.0 for streaming, kept for parity).
         print(

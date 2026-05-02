@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 
 
 def _load_module():
-    path = Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "pre-tool-speak.py"
+    path = (
+        Path(__file__).resolve().parents[1] / "integrations" / "claude-code" / "pre-tool-speak.py"
+    )
     hooks_dir = str(path.parent)
     if hooks_dir not in sys.path:
         sys.path.insert(0, hooks_dir)
