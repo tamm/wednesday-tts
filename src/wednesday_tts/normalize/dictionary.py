@@ -31,9 +31,7 @@ def load_dictionary(dict_path, backend="pocket"):
         # replacement using the original pattern as the visible word.
         if backend == "kokoro" and entry.get(backend):
             already_wrapped = (
-                replacement.startswith("[")
-                and "](" in replacement
-                and replacement.endswith(")")
+                replacement.startswith("[") and "](" in replacement and replacement.endswith(")")
             )
             if not already_wrapped:
                 pattern_text = entry.get("pattern", "") or replacement
