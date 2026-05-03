@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-import time
 from unittest.mock import MagicMock, patch
 
 
@@ -119,20 +118,18 @@ class TestPlayVoiceCommandChirp:
         assert args[1] == fake_path
 
     def test_synthesised_fallback_when_no_path(self):
-        """No configured path → synthesised chirp via sounddevice (no crash)."""
+        """No configured path → falls back to afplay system sound."""
         d = _get_daemon()
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
         with (
             patch.object(d, "_get_voice_command_chirp_path", return_value=None),
-            patch("wednesday_tts.server.daemon.sd.OutputStream", return_value=mock_stream),
+            patch("wednesday_tts.server.daemon.subprocess.Popen") as mock_popen,
         ):
             d._play_voice_command_chirp()
-            # Give the daemon thread a moment to run
-            time.sleep(0.1)
 
-        mock_stream.write.assert_called_once()
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
+        assert args[0] == "afplay"
+        assert "Tink" in args[1]
 
 
 # ---------------------------------------------------------------------------

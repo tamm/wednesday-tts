@@ -208,30 +208,12 @@ def _play_voice_command_chirp() -> None:
         except Exception:
             pass
 
-    # Synthesised fallback: deliberately bland E5→A5 two-tone chime.
-    # HEARING-SAFETY CONTRACT (see docs/chimes-and-fallback-tones.md):
-    #   - frequency ≤ 880 Hz, amplitude ≤ 0.1, fade tail.
-    #   - Never raise these. Never reintroduce high-pitched chirps.
-    #   - Configure `voice_command_chime` in ~/.claude/tts-config.json with a
-    #     real sound file to replace this fallback entirely.
-    def _synth_chirp() -> None:
-        try:
-            sr = _VOICE_COMMAND_CHIRP_SR
-            dur = 0.08  # seconds per tone
-            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
-            # Hearing safety: low, gentle E5→A5 pair. Never high-pitched.
-            tone1 = 0.1 * np.sin(2 * np.pi * 659 * t)
-            tone2 = 0.1 * np.sin(2 * np.pi * 880 * t)
-            chirp = np.concatenate([tone1, tone2]).astype(np.float32)
-            # Fade out the tail to avoid a click
-            fade_len = int(sr * 0.02)
-            chirp[-fade_len:] *= np.linspace(1.0, 0.0, fade_len)
-            with sd.OutputStream(samplerate=sr, channels=1) as stream:
-                stream.write(chirp.reshape(-1, 1))
-        except Exception:
-            pass
-
-    threading.Thread(target=_synth_chirp, daemon=True).start()
+    # Fallback: play a system sound rather than synthesising tones.
+    subprocess.Popen(
+        ["afplay", "/System/Library/Sounds/Tink.aiff"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 # ---------------------------------------------------------------------------

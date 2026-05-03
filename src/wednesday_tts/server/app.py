@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import tempfile
 import threading
@@ -342,7 +343,7 @@ def play_chime(sentiment: str = "neutral") -> None:
     """Play a brief notification chime in a daemon thread.
 
     Randomly picks from ~/Music/chirps (neutral) or ~/Music/errors (negative).
-    Falls back to a mathematical E5->A5 beep if no sound files are found.
+    Falls back to a system sound via afplay if no sound files are found.
     """
     import glob
     import random
@@ -374,16 +375,12 @@ def play_chime(sentiment: str = "neutral") -> None:
                 audio = None
 
     if audio is None:
-        # HEARING-SAFETY FALLBACK (see docs/chimes-and-fallback-tones.md):
-        # gentle E5→A5 pair, freq ≤ 880 Hz, amp ≤ 0.1. Never raise. Configure
-        # TTS_CHIME_DIR to point at real sound files to skip this entirely.
-        duration = 0.15
-        t = np.linspace(0, duration, int(samplerate * duration))
-        tone1 = 0.1 * np.sin(2 * np.pi * 659 * t[: len(t) // 2])
-        tone2 = 0.1 * np.sin(2 * np.pi * 880 * t[len(t) // 2 :])
-        audio = np.concatenate([tone1, tone2])
-        fade = np.linspace(1.0, 0.0, int(samplerate * 0.05))
-        audio[-len(fade) :] *= fade
+        subprocess.Popen(
+            ["afplay", "/System/Library/Sounds/Tink.aiff"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
 
     audio_scaled = (audio * CHIME_VOLUME).astype(np.float32).reshape(-1, 1)
     sr = samplerate

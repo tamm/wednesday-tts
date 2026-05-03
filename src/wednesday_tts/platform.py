@@ -261,23 +261,11 @@ def _play_chime_mac() -> None:
 
 
 def _play_chime_windows() -> None:
-    """Generate a brief two-tone beep. The Star Trek chimes are played by the
-    service itself when queuing — this is just for hook-level fallback."""
+    """Play a brief beep. Hook-level fallback when the TTS service isn't queuing."""
     try:
-        import numpy as np
-        import sounddevice as sd
+        import winsound  # type: ignore[import]
 
-        # HEARING-SAFETY FALLBACK (see docs/chimes-and-fallback-tones.md):
-        # gentle E5→A5 pair, freq ≤ 880 Hz, amp ≤ 0.1. Never raise.
-        duration = 0.15
-        sr = 24000
-        t = np.linspace(0, duration, int(sr * duration))
-        tone1 = 0.1 * np.sin(2 * np.pi * 659 * t[: len(t) // 2])
-        tone2 = 0.1 * np.sin(2 * np.pi * 880 * t[len(t) // 2 :])
-        chime = np.concatenate([tone1, tone2])
-        fade = np.linspace(1.0, 0.0, int(sr * 0.05))
-        chime[-len(fade) :] *= fade
-        sd.play(chime, samplerate=sr, blocking=False)
+        winsound.MessageBeep()
     except Exception:
         pass
 
