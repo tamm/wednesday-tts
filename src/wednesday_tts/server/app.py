@@ -374,10 +374,13 @@ def play_chime(sentiment: str = "neutral") -> None:
                 audio = None
 
     if audio is None:
+        # HEARING-SAFETY FALLBACK (see docs/chimes-and-fallback-tones.md):
+        # gentle E5→A5 pair, freq ≤ 880 Hz, amp ≤ 0.1. Never raise. Configure
+        # TTS_CHIME_DIR to point at real sound files to skip this entirely.
         duration = 0.15
         t = np.linspace(0, duration, int(samplerate * duration))
-        tone1 = 0.3 * np.sin(2 * np.pi * 659 * t[: len(t) // 2])
-        tone2 = 0.3 * np.sin(2 * np.pi * 880 * t[len(t) // 2 :])
+        tone1 = 0.1 * np.sin(2 * np.pi * 659 * t[: len(t) // 2])
+        tone2 = 0.1 * np.sin(2 * np.pi * 880 * t[len(t) // 2 :])
         audio = np.concatenate([tone1, tone2])
         fade = np.linspace(1.0, 0.0, int(samplerate * 0.05))
         audio[-len(fade) :] *= fade

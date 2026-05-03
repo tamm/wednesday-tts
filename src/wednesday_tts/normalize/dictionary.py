@@ -25,6 +25,20 @@ def load_dictionary(dict_path, backend="pocket"):
         replacement = entry.get(backend) or entry.get("replacement", "")
         if not replacement:
             continue
+        # Misaki (kokoro's G2P) injects IPA via markdown-link syntax:
+        # `[Word](/IPA/)`. Bare IPA, or just /slashes/, are not parsed and
+        # get spelled out letter by letter. Auto-wrap the kokoro-specific
+        # replacement using the original pattern as the visible word.
+        if backend == "kokoro" and entry.get(backend):
+            already_wrapped = (
+                replacement.startswith("[")
+                and "](" in replacement
+                and replacement.endswith(")")
+            )
+            if not already_wrapped:
+                pattern_text = entry.get("pattern", "") or replacement
+                ipa = replacement.strip("/")
+                replacement = f"[{pattern_text}](/{ipa}/)"
         resolved.append(
             {
                 "pattern": entry.get("pattern", ""),

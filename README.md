@@ -114,6 +114,33 @@ Recommended next step:
 3. Keep `scripts/analyse_latency.py` as the single parser instead of spawning
    new ad hoc stats tools.
 
+## Chimes and Fallback Tones
+
+The daemon plays short audio cues for events like voice-command activation,
+cross-session queuing, and request errors. Each cue prefers a real sound file
+and only synthesises a tone if no file is configured or available.
+
+**Hearing-safety contract:** every synthesised fallback is restricted to
+659 Hz (E5) and 880 Hz (A5) at amplitude `0.1`. No fallback tone is ever
+high-pitched or loud. These tones exist only so something audible plays when
+no sound file is configured — they are deliberately bland and you should
+configure your own. See `docs/chimes-and-fallback-tones.md` for full detail.
+
+Configuration points (in `~/.claude/tts-config.json` unless otherwise noted):
+
+- `error_chime` — path to a sound file played on request errors / timeouts.
+  Falls back to `/System/Library/Sounds/Sosumi.aiff`, then to the synthesised
+  E5→A5 pair.
+- `voice_command_chime` — path to a sound file played when the voice-command
+  socket message is received. Falls back to the synthesised E5→A5 pair.
+- `TTS_CHIME_DIR` env var — directory of `.wav` / `.aiff` / `.mp3` files used
+  for cross-session queuing chimes (random pick per event). Falls back to the
+  synthesised E5→A5 pair.
+
+Plenty of free Star Trek and sci-fi UI sound packs work well as drop-in
+replacements. Point the keys above at any sound file you own and the
+synthesised tones will never play.
+
 ## Install Notes
 
 ### Pocket
