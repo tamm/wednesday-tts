@@ -48,6 +48,9 @@ def _run_hook(
     env = os.environ.copy()
     env.pop("ITERM_SESSION_ID", None)
     env.pop("TTS_MUTE", None)
+    # Point TTS_MUTE_PATH at a path that never exists so a local /tmp/tts-mute
+    # file on the developer's machine doesn't silently suppress the hook.
+    env.setdefault("TTS_MUTE_PATH", f"/tmp/tts-mute-nonexistent-{os.getpid()}")
     if sock_path:
         env["TTS_SOCKET_PATH"] = sock_path
     if env_extra:

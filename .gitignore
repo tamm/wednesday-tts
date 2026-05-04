@@ -64,3 +64,6 @@ tts-server.py
 # Clacks inter-session messaging
 .clacks/
 .tmp/
+
+# Swift compiled binary — built in CI and locally via build.sh, not committed
+integrations/claude-code/tts-hook
