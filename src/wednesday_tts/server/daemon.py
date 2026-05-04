@@ -43,6 +43,11 @@ _TTS_CONFIG_PATH = str(TTS_CONFIG_PATH)
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
 DEFAULT_SPEED = float(os.environ.get("TTS_SPEED", "1.15"))
+_MUTE_PATH = "/tmp/tts-mute"  # nosec B108
+
+
+def _is_muted() -> bool:
+    return os.path.exists(_MUTE_PATH)
 
 # Path to the SpatialStream binary for head-tracked playback on BT headphones
 _SPATIAL_STREAM_BIN = os.path.join(
@@ -2463,8 +2468,11 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
 
         # ── CHIRP — voice-command recognition acknowledgement ─────────────
         if command == "chirp":
-            print("[cmd] CHIRP received", flush=True)
-            _play_voice_command_chirp()
+            if _is_muted():
+                print("[cmd] CHIRP muted, skipping", flush=True)
+            else:
+                print("[cmd] CHIRP received", flush=True)
+                _play_voice_command_chirp()
             conn.send(b"ok")
             return
 
@@ -2553,6 +2561,13 @@ def handle_client(conn: socket.socket, backend: TTSBackend) -> None:
         # Ack first, process second. The client is fire-and-forget and
         # _process_speak may take many seconds. The reply byte just tells
         # the hook the daemon is alive.
+        if _is_muted():
+            print("[cmd] speak muted, skipping", flush=True)
+            try:
+                conn.send(b"ok")
+            except Exception:
+                pass
+            return
         try:
             conn.send(b"ok")
         except Exception:
