@@ -32,10 +32,13 @@ import numpy as np
 import sounddevice as sd  # type: ignore[import]
 
 from wednesday_tts.platform import suppress_dictation, unsuppress_dictation
+from wednesday_tts.user_config import TTS_CONFIG_PATH
 
 from ..normalize.chunking import chunk_text_server
 from .backends import REGISTRY, TTSBackend
 from .vpio import VPIOUnit
+
+_TTS_CONFIG_PATH = str(TTS_CONFIG_PATH)
 
 SOCKET_PATH = "/tmp/tts-daemon.sock"
 PID_PATH = "/tmp/tts-daemon.pid"
@@ -136,7 +139,7 @@ _SYSTEM_CHIME = "/System/Library/Sounds/Sosumi.aiff"
 
 def _get_error_chime_path() -> str | None:
     """Resolve error chime path from config, falling back to system sound."""
-    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    cfg_path = _TTS_CONFIG_PATH
     if os.path.isfile(cfg_path):
         try:
             with open(cfg_path, encoding="utf-8") as f:
@@ -175,7 +178,7 @@ _VOICE_COMMAND_CHIRP_SR = 24000
 
 def _get_voice_command_chirp_path() -> str | None:
     """Resolve voice-command chirp path from config. Returns None if not set."""
-    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    cfg_path = _TTS_CONFIG_PATH
     if os.path.isfile(cfg_path):
         try:
             with open(cfg_path, encoding="utf-8") as f:
@@ -235,7 +238,7 @@ def _get_override_backend(name: str) -> TTSBackend | None:
         return None
     try:
         # Read config for this backend if available
-        cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+        cfg_path = _TTS_CONFIG_PATH
         model_cfg: dict = {}
         if os.path.isfile(cfg_path):
             with open(cfg_path) as f:
@@ -349,7 +352,7 @@ def _load_voice_config() -> tuple[list[dict], dict | None, str | None]:
     Returns (pool, default_voice_entry, guillemet_voice).
     Called per-request so config changes take effect without restart.
     """
-    cfg_path = os.path.expanduser("~/.claude/tts-config.json")
+    cfg_path = _TTS_CONFIG_PATH
     try:
         with open(cfg_path) as f:
             cfg = json.load(f)
@@ -2614,7 +2617,7 @@ def main() -> None:
     _stats["service_start_time"] = time.time()
 
     # Load config file first — active_model drives backend selection.
-    _config_path = os.path.join(os.path.expanduser("~"), ".claude", "tts-config.json")
+    _config_path = _TTS_CONFIG_PATH
     _cfg: dict = {}
     _model_config: dict = {}
     try:

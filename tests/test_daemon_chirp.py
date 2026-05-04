@@ -45,10 +45,7 @@ class TestGetVoiceCommandChirpPath:
         cfg = tmp_path / "tts-config.json"
         cfg.write_text(json.dumps({"active_model": "pocket"}), encoding="utf-8")
         d = _get_daemon()
-        with patch(
-            "wednesday_tts.server.daemon.os.path.expanduser",
-            return_value=str(cfg),
-        ):
+        with patch("wednesday_tts.server.daemon._TTS_CONFIG_PATH", str(cfg)):
             result = d._get_voice_command_chirp_path()
         assert result is None
 
@@ -58,17 +55,7 @@ class TestGetVoiceCommandChirpPath:
         cfg = tmp_path / "tts-config.json"
         cfg.write_text(json.dumps({"voice_command_chirp": sound_path}), encoding="utf-8")
         d = _get_daemon()
-        original_expanduser = os.path.expanduser
-
-        def _fake_expanduser(p):
-            if "tts-config" in p:
-                return str(cfg)
-            return original_expanduser(p)
-
-        with patch(
-            "wednesday_tts.server.daemon.os.path.expanduser",
-            side_effect=_fake_expanduser,
-        ):
+        with patch("wednesday_tts.server.daemon._TTS_CONFIG_PATH", str(cfg)):
             result = d._get_voice_command_chirp_path()
         assert result is None
 
@@ -79,19 +66,7 @@ class TestGetVoiceCommandChirpPath:
         cfg = tmp_path / "tts-config.json"
         cfg.write_text(json.dumps({"voice_command_chirp": str(sound_file)}), encoding="utf-8")
         d = _get_daemon()
-        # expanduser is called for both the config path and the sound path;
-        # only patch at the config-resolution level by patching isfile selectively
-        original_expanduser = os.path.expanduser
-
-        def _fake_expanduser(p):
-            if "tts-config" in p:
-                return str(cfg)
-            return original_expanduser(p)
-
-        with patch(
-            "wednesday_tts.server.daemon.os.path.expanduser",
-            side_effect=_fake_expanduser,
-        ):
+        with patch("wednesday_tts.server.daemon._TTS_CONFIG_PATH", str(cfg)):
             result = d._get_voice_command_chirp_path()
         assert result == str(sound_file)
 

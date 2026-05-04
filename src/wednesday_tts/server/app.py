@@ -30,11 +30,13 @@ from logging.handlers import RotatingFileHandler
 
 from flask import Flask, Response, jsonify, request
 
+from wednesday_tts.user_config import TTS_CONFIG_PATH
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
-CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".claude", "tts-config.json")
+CONFIG_PATH = str(TTS_CONFIG_PATH)
 LOG_PATH = os.path.join(tempfile.gettempdir(), "wednesday-tts.log")
 
 _logger = logging.getLogger("wednesday-tts")
